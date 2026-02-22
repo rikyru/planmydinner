@@ -1,12 +1,12 @@
 {
   "domain": "planmydinner",
   "name": "Plan My Dinner",
-  "documentation": "https://github.com/your-repo/planmydinner",
-  "issue_tracker": "https://github.com/your-repo/planmydinner/issues",
-  "codeowners": ["@your-github-handle"],
+  "documentation": "https://github.com/rikyru/planmydinner",
+  "issue_tracker": "https://github.com/rikyru/planmydinner/issues",
+  "codeowners": ["@rikyru"],
   "requirements": [],
   "dependencies": [],
-  "version": "0.1.0",
+  "version": "1.0.0",
   "iot_class": "local_polling",
   "config_flow": true
 }
