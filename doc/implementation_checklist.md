@@ -138,19 +138,18 @@ This document tracks the step-by-step implementation and testing of the Meal Pla
 
 -   [X] **Task**: Implement UI with "Pranzo" and "Cena" sections based on entity attributes.
 -   [X] **Task**: Add buttons to call `mark_consumed` and `override_consumed` services.
--   [ ] **Test**: Verify the new UI displays meal attributes and buttons call HA services correctly.
+-   [X] **Test**: Verify the new UI displays meal attributes and buttons call HA services correctly.
 
 ### 4.3: Visual Card Editor
 
--   [ ] **Task**: Implement `static getConfigElement()` and `static getStubConfig()` to enable the visual editor.
--   [ ] **Task**: Create the editor UI element to allow configuring the card's entity via a form.
--   [ ] **Test**: Verify the visual editor appears and correctly saves the card configuration.
+-   [X] **Task**: Implement `static getConfigElement()` and `static getStubConfig()` to enable the visual editor.
+-   [X] **Task**: Create the editor UI element to allow configuring the card's entity via a form.
+-   [X] **Test**: Verify the visual editor appears and correctly saves the card configuration.
 
 ---
 
-## Phase 3: V2 - Auto-Learning & LLM (Checklist TBD)
+## Phase 3: V2 - Auto-Learning & LLM
 
--   [ ] LLM Gateway
--   [ ] Auto-Learning Logic
--   [ ] Candidate Recipe Management
--   [ ] UI View (Candidate Recipes)
+-   [X] LLM Gateway
+-   [X] Auto-Learning Logic
+-   [X] Candidate Recipe Management

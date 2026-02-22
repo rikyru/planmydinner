@@ -7,9 +7,9 @@ from io import BytesIO # Required for mocking file content
 # client: TestClient (FastAPI test client)
 # setup_database: fixture to create/drop test database
 
-from pdf_parser import PDFParser, PDFParsingError
-import schemas
-from database import UnitConversion # Import directly
+from planmydinner_addon.pdf_parser import PDFParser, PDFParsingError
+from planmydinner_addon import schemas
+from planmydinner_addon.database import UnitConversion # Import directly
 
 # Define the mock content once
 MOCK_PRANZO_CENA_PDF_CONTENT = """
@@ -64,7 +64,7 @@ def test_pdf_parser_extracts_and_structures_data(mock_extract_text_content, mock
 
     assert structured_plan.profile_id == profile_id
     assert len(structured_plan.daily_plans) == 1
-    assert structured_plan.daily_plans[0].date == date.today() # Placeholder
+    assert structured_plan.daily_plans[0].date == date.today().isoformat() # Placeholder
     assert len(structured_plan.daily_plans[0].meals) == 2
 
     # Test Pranzo

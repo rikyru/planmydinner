@@ -26,9 +26,51 @@ async def async_setup_entry(
         MealPlanTodaySensor(api_client, entry),
         MealPlanWeekSensor(api_client, entry),
         ShoppingListAggregatedSensor(api_client, entry),
+        RecipeCatalogSensor(api_client, entry),
+        WebUISensor(entry),
     ]
     async_add_entities(sensors, update_before_add=True)
 
+
+class WebUISensor(SensorEntity):
+    """Representation of the Web UI URL sensor."""
+
+    def __init__(self, entry: ConfigEntry):
+        """Initialize the sensor."""
+        self._attr_name = "Plan My Dinner Web UI"
+        self._attr_unique_id = f"{entry.entry_id}_web_ui"
+        
+        host = entry.data["host"]
+        port = entry.data["port"]
+        self._attr_native_value = f"http://{host}:{port}/ui"
+
+    @property
+    def icon(self):
+        """Return the icon of the sensor."""
+        return "mdi:web"
+
+class RecipeCatalogSensor(SensorEntity):
+    """Representation of a Recipe Catalog sensor."""
+
+    def __init__(self, api_client: PlanMyDinnerApiClient, entry: ConfigEntry):
+        """Initialize the sensor."""
+        self._api_client = api_client
+        self._attr_name = "Recipe Catalog"
+        self._attr_unique_id = f"{entry.entry_id}_recipe_catalog"
+        self._attr_native_value = None
+        self._attr_extra_state_attributes = {}
+
+    async def async_update(self) -> None:
+        """Fetch new state data for the sensor."""
+        try:
+            recipes = await self._api_client.get_recipes()
+            self._attr_native_value = len(recipes)
+            self._attr_extra_state_attributes["recipes"] = recipes
+            self._attr_available = True
+        except Exception as e:
+            _LOGGER.error("Error updating Recipe Catalog sensor: %s", e)
+            self._attr_available = False
+            self._attr_native_value = None
 
 class PantrySummarySensor(SensorEntity):
     """Representation of a Pantry Summary sensor."""
@@ -142,12 +184,15 @@ class ShoppingListAggregatedSensor(SensorEntity):
     async def async_update(self) -> None:
         """Fetch new state data for the sensor."""
         try:
-            # For MVP, this is a placeholder. Shopping list generation is V1+
+            # These should be configurable
+            profile_id_A = "persona_a"
+            profile_id_B = "persona_b"
+            start_date = date.today().isoformat()
+            
+            shopping_list = await self._api_client.get_shopping_list(profile_id_A, profile_id_B, start_date)
+            
             self._attr_native_value = "Generated"
-            self._attr_extra_state_attributes["items"] = [
-                {"name": "Placeholder Item 1", "quantity": 1, "unit": "kg"},
-                {"name": "Placeholder Item 2", "quantity": 2, "unit": "units"},
-            ]
+            self._attr_extra_state_attributes = shopping_list
             self._attr_available = True
         except Exception as e:
             _LOGGER.error("Error updating Shopping List Aggregated sensor: %s", e)

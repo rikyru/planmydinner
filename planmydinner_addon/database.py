@@ -36,7 +36,7 @@ class PantryItem(Base):
     quantity = Column(Float)
     unit = Column(String)
     category = Column(String, nullable=True)
-    expiration_date = Column(Date, nullable=True)
+    expiration_date = Column(String, nullable=True)
     synonyms = Column(JSON)
 
 class ConsumedEntry(Base):
@@ -44,7 +44,7 @@ class ConsumedEntry(Base):
 
     id = Column(String, primary_key=True, index=True)
     profile_id = Column(String, index=True)
-    date = Column(Date, index=True)
+    date = Column(String, index=True)
     meal_type = Column(String)
     type = Column(String) # 'planned' or 'override'
     consumed_recipe_id = Column(String, nullable=True)
@@ -101,7 +101,7 @@ class StructuredMealPlan(Base):
 
     id = Column(String, primary_key=True, index=True) # UUID for the plan (e.g., weekly plan ID)
     profile_id = Column(String, index=True)
-    start_date = Column(Date)
+    start_date = Column(String)
     rotation_rules = Column(JSON) # Stored as JSON copy of RotationRule objects, or IDs
     allowed_cooking_methods = Column(JSON)
     daily_plans = Column(JSON) # Stores DailyPlannedMeals objects as JSON

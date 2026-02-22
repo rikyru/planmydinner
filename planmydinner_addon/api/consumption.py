@@ -1,14 +1,15 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from typing import List
 import uuid
 from datetime import date
 import logging # Added import
+import json # Added import
 
 _LOGGER = logging.getLogger(__name__) # Added logger setup
 
-import schemas
-from database import get_db, ConsumedEntry, Recipe, consume_ingredients_from_pantry
+from .. import schemas
+from ..database import get_db, ConsumedEntry, Recipe, CandidateRecipe, consume_ingredients_from_pantry
 
 router = APIRouter(
     prefix="/consumed-entries",
@@ -28,7 +29,7 @@ def create_consumed_entry(entry: schemas.ConsumedEntryCreate, db: Session = Depe
     return db_entry
 
 @router.post("/mark-planned", response_model=schemas.ConsumedEntry)
-def mark_meal_as_consumed_planned(profile_id: str, meal_date: date, meal_type: str, recipe_id: str, db: Session = Depends(get_db)):
+def mark_meal_as_consumed_planned(profile_id: str, meal_date: str, meal_type: str, recipe_id: str, db: Session = Depends(get_db)):
     """
     Mark a planned meal as consumed.
     """
@@ -84,7 +85,14 @@ def mark_meal_as_consumed_planned(profile_id: str, meal_date: date, meal_type: s
 
 
 @router.post("/override", response_model=schemas.ConsumedEntry)
-def mark_meal_as_consumed_override(profile_id: str, meal_date: date, meal_type: str, override_details: schemas.OverrideConsumedDetails, db: Session = Depends(get_db)):
+async def mark_meal_as_consumed_override(
+    profile_id: str,
+    meal_date: str,
+    meal_type: str,
+    override_details: schemas.OverrideConsumedDetails,
+    request: Request,
+    db: Session = Depends(get_db)
+):
     """
     Mark a meal as consumed with override details.
     """
@@ -111,16 +119,115 @@ def mark_meal_as_consumed_override(profile_id: str, meal_date: date, meal_type: 
             })
         if ingredients_to_consume_data:
             consume_ingredients_from_pantry(db, ingredients_to_consume_data)
+        
+        # Create a CandidateRecipe if structured ingredients are provided
+        candidate_recipe_data = schemas.RecipeCreate(
+            name=override_details.free_text_name,
+            content=[
+                schemas.RecipeIngredient(
+                    name=ing.name,
+                    food_group="altro", # LLM or user can refine this later
+                    quantities={profile_id: schemas.QuantityPerProfile(qty=ing.qty, unit=ing.unit)}
+                ) for ing in override_details.ingredients
+            ],
+            steps=[], # Not provided in override
+            total_time_minutes=0, # Not provided in override
+            difficulty="sconosciuto", # Not provided in override
+            tags={"mood": ["override"]},
+            llm_generated_metadata={"source_prompt": override_details.free_text_name}
+        )
+        db_candidate_recipe = CandidateRecipe(
+            id=str(uuid.uuid4()),
+            status="draft_structured",
+            usage_count=1,
+            origin_override_id=db_entry.id,
+            recipe_data=candidate_recipe_data.model_dump_json() # Store as JSON
+        )
+        db.add(db_candidate_recipe)
+        db.commit()
+        _LOGGER.info(f"Created draft_structured CandidateRecipe from override: {db_candidate_recipe.id}")
+
+    elif override_details.free_text_name:
+        llm_gateway = request.app.state.llm_gateway
+        if llm_gateway:
+            # Attempt to generate structured recipe from free text
+            # Placeholder for actual profile IDs needed for quantities
+            profile_ids = [profile_id] # Assuming single profile for now
+            structured_recipe_data = llm_gateway.generate_structured_recipe_from_text(
+                override_details.free_text_name,
+                profile_ids
+            )
+            
+            if structured_recipe_data:
+                candidate_recipe_data = schemas.RecipeCreate(**structured_recipe_data)
+                db_candidate_recipe = CandidateRecipe(
+                    id=str(uuid.uuid4()),
+                    status="draft_structured",
+                    usage_count=1,
+                    origin_override_id=db_entry.id,
+                    recipe_data=candidate_recipe_data.model_dump_json()
+                )
+                db.add(db_candidate_recipe)
+                db.commit()
+                _LOGGER.info(f"Created draft_structured CandidateRecipe from LLM override: {db_candidate_recipe.id}")
+            else:
+                _LOGGER.warning(f"LLM failed to generate structured recipe for '{override_details.free_text_name}'. Storing as draft_free_text.")
+                # Store as draft_free_text if LLM fails
+                candidate_recipe_data = {
+                    "id": str(uuid.uuid4()),
+                    "name": override_details.free_text_name,
+                    "description": override_details.notes,
+                    "is_composed_dish": False, # Assume simple for free text
+                    "content": [],
+                    "steps": [],
+                    "total_time_minutes": 0,
+                    "difficulty": "sconosciuto",
+                    "tags": {"mood": ["override"]},
+                    "llm_generated_metadata":{"source_prompt": override_details.free_text_name}
+                }
+                db_candidate_recipe = CandidateRecipe(
+                    id=candidate_recipe_data["id"],
+                    status="draft_free_text",
+                    usage_count=1,
+                    origin_override_id=db_entry.id,
+                    recipe_data=json.dumps(candidate_recipe_data)
+                )
+                db.add(db_candidate_recipe)
+                db.commit()
+                _LOGGER.info(f"Created draft_free_text CandidateRecipe from override: {db_candidate_recipe.id}")
+        else:
+            _LOGGER.warning("LLM Gateway not initialized. Cannot generate structured recipe from free text.")
+            # Store as draft_free_text if LLM is not available
+            candidate_recipe_data = {
+                "id": str(uuid.uuid4()),
+                "name": override_details.free_text_name,
+                "description": override_details.notes,
+                "is_composed_dish": False, # Assume simple for free text
+                "content": [],
+                "steps": [],
+                "total_time_minutes": 0,
+                "difficulty": "sconosciuto",
+                "tags": {"mood": ["override"]},
+                "llm_generated_metadata":{"source_prompt": override_details.free_text_name}
+            }
+            db_candidate_recipe = CandidateRecipe(
+                id=candidate_recipe_data["id"],
+                status="draft_free_text",
+                usage_count=1,
+                origin_override_id=db_entry.id,
+                recipe_data=json.dumps(candidate_recipe_data)
+            )
+            db.add(db_candidate_recipe)
+            db.commit()
+            _LOGGER.info(f"Created draft_free_text CandidateRecipe from override (LLM not available): {db_candidate_recipe.id}")
     else:
-        _LOGGER.debug("No ingredients specified in override_details to consume from pantry.")
+        _LOGGER.debug("No ingredients or free_text_name specified in override_details. No CandidateRecipe created.")
     
-    # Here, you would also trigger the logic to create a 'CandidateRecipe'
-    # For now, we just save the consumption entry.
     return db_entry
 
 
 @router.get("/", response_model=List[schemas.ConsumedEntry])
-def read_consumed_entries(profile_id: str = None, start_date: date = None, end_date: date = None, db: Session = Depends(get_db)):
+def read_consumed_entries(profile_id: str = None, start_date: str = None, end_date: str = None, db: Session = Depends(get_db)):
     """
     Retrieve consumed entries, with optional filters.
     """

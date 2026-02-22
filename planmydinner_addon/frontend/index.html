@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Plan My Dinner Configuration</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="app">
+        <nav>
+            <a @click="page = 'pantry'">Pantry</a>
+            <a @click="page = 'recipes'">Recipes</a>
+            <a @click="page = 'import'">Import</a>
+        </nav>
+        
+        <main>
+            <pantry v-if="page === 'pantry'"></pantry>
+            <recipes v-if="page === 'recipes'"></recipes>
+            <import-wizard v-if="page === 'import'"></import-wizard>
+        </main>
+    </div>
+
+    <script type="module">
+        import { createApp } from 'vue';
+        import Pantry from './pantry.js';
+        import Recipes from './recipes.js';
+        import ImportWizard from './import.js';
+
+        const app = {
+            data() {
+                return {
+                    page: 'pantry'
+                }
+            },
+            components: {
+                Pantry,
+                Recipes,
+                'import-wizard': ImportWizard,
+            }
+        };
+
+        createApp(app).mount('#app');
+    </script>
+</body>
+</html>
+

@@ -1,13 +1,14 @@
 import logging
 import uuid
+import json
 from datetime import date, timedelta
 from typing import List, Dict, Any, Optional
 
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
-import schemas
-from database import (
+from . import schemas
+from .database import (
     UserProfile, StructuredMealPlan, Recipe, CandidateRecipe,
     PantryItem, ConsumedEntry, RotationRule, SeasonalityItem, UnitConversion
 )
@@ -37,9 +38,9 @@ class PlannerEngine:
     def _get_active_meal_plan(self, profile_id: str, current_date: date) -> Optional[schemas.StructuredMealPlan]:
         db_plan = self.db.query(StructuredMealPlan).filter(
             StructuredMealPlan.profile_id == profile_id,
-            StructuredMealPlan.start_date <= current_date,
+            func.julianday(StructuredMealPlan.start_date) <= func.julianday(current_date.isoformat()),
             # Assuming plans are weekly and we take the latest
-            func.julianday(StructuredMealPlan.start_date) + 7 > func.julianday(current_date)
+            func.julianday(StructuredMealPlan.start_date) + 7 > func.julianday(current_date.isoformat())
         ).order_by(StructuredMealPlan.start_date.desc()).first()
         if db_plan:
             return schemas.StructuredMealPlan.from_orm(db_plan)
@@ -49,8 +50,8 @@ class PlannerEngine:
         start_date = end_date - timedelta(days=days_back)
         db_entries = self.db.query(ConsumedEntry).filter(
             ConsumedEntry.profile_id == profile_id,
-            ConsumedEntry.date >= start_date,
-            ConsumedEntry.date <= end_date
+            func.julianday(ConsumedEntry.date) >= func.julianday(start_date.isoformat()),
+            func.julianday(ConsumedEntry.date) <= func.julianday(end_date.isoformat())
         ).all()
         return [schemas.ConsumedEntry.from_orm(entry) for entry in db_entries]
 
@@ -177,8 +178,8 @@ class PlannerEngine:
         # --- 8. Anti-Repetition ---
         # current_date is passed as a parameter to suggest_recipes_for_meal, use it
         
-        recent_recipe_ids_A = {entry.consumed_recipe_id for entry in consumed_entries_A if entry.consumed_recipe_id and (current_date - entry.date).days < self.ANTI_REPETITION_DAYS}
-        recent_recipe_ids_B = {entry.consumed_recipe_id for entry in consumed_entries_B if entry.consumed_recipe_id and (current_date - entry.date).days < self.ANTI_REPETITION_DAYS}
+        recent_recipe_ids_A = {entry.consumed_recipe_id for entry in consumed_entries_A if entry.consumed_recipe_id and (current_date - date.fromisoformat(entry.date)).days < self.ANTI_REPETITION_DAYS}
+        recent_recipe_ids_B = {entry.consumed_recipe_id for entry in consumed_entries_B if entry.consumed_recipe_id and (current_date - date.fromisoformat(entry.date)).days < self.ANTI_REPETITION_DAYS}
         
         if recipe.id in recent_recipe_ids_A or recipe.id in recent_recipe_ids_B:
             _LOGGER.debug(f"Recipe {recipe.id} failed anti-repetition.")
@@ -222,14 +223,16 @@ class PlannerEngine:
 
         # --- Expiration Score ---
         expiration_bonus = 0.0
+        max_bonus_days = 14 # Max days before expiration to start giving bonus
         for rec_ing in recipe_ingredients:
             for pi in pantry_items:
                 if pi.name.lower() == rec_ing.name.lower() and pi.expiration_date:
-                    days_to_expire = (pi.expiration_date - current_date).days
-                    if 0 < days_to_expire <= 7: # High bonus for expiring soon
-                        expiration_bonus += 0.5
-                    elif 7 < days_to_expire <= 14: # Medium bonus
-                        expiration_bonus += 0.2
+                    days_to_expire = (date.fromisoformat(pi.expiration_date) - current_date).days
+                    if 0 < days_to_expire <= max_bonus_days:
+                        # Linear decay: bonus increases as days_to_expire decreases
+                        # Bonus = ( (max_bonus_days - days_to_expire) / max_bonus_days ) * max_possible_bonus
+                        # max_possible_bonus can be 0.5 for example
+                        expiration_bonus += ((max_bonus_days - days_to_expire) / max_bonus_days) * 0.5
         score += expiration_bonus * 0.3 # Weight for expiration
 
         # --- Seasonality Score ---
@@ -247,35 +250,112 @@ class PlannerEngine:
 
         return score
 
-    def generate_weekly_plan(self, profile_id_A: str, profile_id_B: str, current_date: date) -> List[schemas.DailyPlannedMeals]:
+    def generate_weekly_plan(self, profile_id_A: str, profile_id_B: str, start_date: date) -> List[schemas.DailyPlannedMeals]:
         """
         Generates a full weekly meal plan for both profiles.
-        For MVP, this is a placeholder. It will return a very basic plan.
         """
-        _LOGGER.warning("generate_weekly_plan is a placeholder and returns a fixed plan for MVP.")
         
-        # For MVP, return a hardcoded simple structure
-        return [
-            schemas.DailyPlannedMeals(
-                date=current_date,
-                meals=[
-                    schemas.PlannedMeal(
-                        meal_type="pranzo",
-                        items=[
-                            schemas.PlannedItem(item_name="Pasta al Pesto", food_group="carboidrati", quantity=100, unit="g"),
-                            schemas.PlannedItem(item_name="Verdure Miste", food_group="verdure", quantity=150, unit="g")
-                        ]
-                    ),
-                    schemas.PlannedMeal(
-                        meal_type="cena",
-                        items=[
-                            schemas.PlannedItem(item_name="Pollo al Limone", food_group="proteine", quantity=150, unit="g"),
-                            schemas.PlannedItem(item_name="Riso Basmati", food_group="carboidrati", quantity=80, unit="g")
-                        ]
-                    )
-                ]
+        weekly_plan_A_raw = self._get_active_meal_plan(profile_id_A, start_date)
+        weekly_plan_B_raw = self._get_active_meal_plan(profile_id_B, start_date)
+
+        if not weekly_plan_A_raw or not weekly_plan_B_raw:
+            _LOGGER.error("Could not find active meal plans for one or both profiles.")
+            return []
+
+        # Parse daily_plans from string to Pydantic models
+        weekly_plan_A = schemas.StructuredMealPlan(
+            **weekly_plan_A_raw.model_dump(exclude={"daily_plans"}),
+            daily_plans=[schemas.DailyPlannedMeals.model_validate(dp) for dp in weekly_plan_A_raw.daily_plans]
+        )
+        weekly_plan_B = schemas.StructuredMealPlan(
+            **weekly_plan_B_raw.model_dump(exclude={"daily_plans"}),
+            daily_plans=[schemas.DailyPlannedMeals.model_validate(dp) for dp in weekly_plan_B_raw.daily_plans]
+        )
+
+
+        generated_plan: List[schemas.DailyPlannedMeals] = []
+        for i in range(7):
+            current_date = start_date + timedelta(days=i)
+            
+            daily_plan_A = next((d for d in weekly_plan_A.daily_plans if date.fromisoformat(d.date) == current_date), None)
+            daily_plan_B = next((d for d in weekly_plan_B.daily_plans if date.fromisoformat(d.date) == current_date), None)
+
+            if not daily_plan_A or not daily_plan_B:
+                continue
+
+            generated_day = schemas.DailyPlannedMeals(date=current_date.isoformat(), meals=[])
+            
+            for meal_type in ["pranzo", "cena"]:
+                meal_plan_A = next((m for m in daily_plan_A.meals if m.meal_type == meal_type), None)
+                meal_plan_B = next((m for m in daily_plan_B.meals if m.meal_type == meal_type), None)
+
+                if not meal_plan_A or not meal_plan_B:
+                    continue
+
+                best_recipe = self._find_best_recipe(
+                    meal_plan_A, meal_plan_B, profile_id_A, profile_id_B, current_date
+                )
+
+                if best_recipe:
+                    generated_day.meals.append(schemas.PlannedMeal(
+                        meal_type=meal_type,
+                        items=[schemas.PlannedItem(
+                            item_name=best_recipe.name,
+                            food_group="recipe", # Placeholder
+                            quantity=1,
+                            unit="recipe"
+                        )]
+                    ))
+
+            generated_plan.append(generated_day)
+
+        return generated_plan
+
+    def _find_best_recipe(self, meal_plan_A, meal_plan_B, profile_id_A, profile_id_B, current_date):
+        
+        profile_A = self._get_user_profile(profile_id_A)
+        profile_B = self._get_user_profile(profile_id_B)
+        if not profile_A or not profile_B:
+            _LOGGER.error(f"User profiles not found for {profile_id_A} or {profile_id_B}.")
+            return None
+
+        all_recipes = self._get_all_recipes()
+        pantry_items = self._get_pantry_items()
+        seasonality_data = self._get_seasonality_data()
+        consumed_entries_A = self._get_consumed_entries(profile_id_A, current_date, self.ANTI_REPETITION_DAYS)
+        consumed_entries_B = self._get_consumed_entries(profile_id_B, current_date, self.ANTI_REPETITION_DAYS)
+
+        valid_recipes = []
+        for recipe in all_recipes:
+            is_valid, divergence_strategy, divergence_details = self._filter_hard_constraints(
+                recipe, meal_plan_A, meal_plan_B,
+                profile_A, profile_B,
+                consumed_entries_A, consumed_entries_B, {},
+                current_date
             )
-        ]
+            
+            if is_valid:
+                valid_recipes.append({
+                    "recipe": recipe,
+                    "divergence_strategy": divergence_strategy,
+                    "divergence_details": divergence_details
+                })
+        
+        for recipe_info in valid_recipes:
+            recipe = recipe_info["recipe"]
+            
+            # Calculate dosing (MVP: assume pre-calculated in recipe)
+            dosed_recipe = self._calculate_dosing(recipe, profile_A, profile_B)
+            
+            score = self._score_soft_constraints(dosed_recipe, pantry_items, seasonality_data, current_date)
+            recipe_info["score"] = score
+        
+        if not valid_recipes:
+            return None
+
+        valid_recipes.sort(key=lambda x: x["score"], reverse=True)
+        
+        return valid_recipes[0]["recipe"]
 
     def suggest_recipes_for_meal(
         self,
@@ -378,3 +458,68 @@ class PlannerEngine:
         """
         _LOGGER.warning("apply_recipe_to_plan is a placeholder for MVP.")
         return True
+
+    def generate_shopping_list_for_week(self, profile_id_A: str, profile_id_B: str, start_date: date) -> schemas.AggregatedShoppingList:
+        """
+        Generates a shopping list for the week starting from start_date.
+        """
+        weekly_plan = self.generate_weekly_plan(profile_id_A, profile_id_B, start_date)
+        pantry_items = self._get_pantry_items()
+        
+        required_items: Dict[str, Dict[str, Any]] = {}
+
+        for day in weekly_plan:
+            for meal in day.meals:
+                # In a real implementation, you would fetch the recipe from the DB
+                # For now, we'll assume the recipe is in the meal.items
+                if not meal.items:
+                    continue
+                
+                recipe_name = meal.items[0].item_name
+                recipe = next((r for r in self._get_all_recipes() if r.name == recipe_name), None)
+
+                if not recipe:
+                    continue
+
+                recipe_ingredients = recipe.content.components if recipe.is_composed_dish else recipe.content
+                for ingredient in recipe_ingredients:
+                    
+                    qty_A = ingredient.quantities["persona_a"].grams_equiv
+                    qty_B = ingredient.quantities["persona_b"].grams_equiv
+                    total_qty = qty_A + qty_B
+
+                    if ingredient.name in required_items:
+                        required_items[ingredient.name]["quantity"] += total_qty
+                    else:
+                        required_items[ingredient.name] = {
+                            "name": ingredient.name,
+                            "quantity": total_qty,
+                            "unit": "g", # All quantities are in grams
+                            "category": ingredient.food_group,
+                        }
+        
+        shopping_list_items: List[schemas.ShoppingListItem] = []
+        for item_name, item_data in required_items.items():
+            pantry_item = next((p for p in pantry_items if p.name.lower() == item_name.lower()), None)
+            if pantry_item:
+                if pantry_item.quantity < item_data["quantity"]:
+                    shopping_list_items.append(schemas.ShoppingListItem(
+                        name=item_data["name"],
+                        quantity=item_data["quantity"] - pantry_item.quantity,
+                        unit=item_data["unit"],
+                        category=item_data["category"],
+                    ))
+            else:
+                shopping_list_items.append(schemas.ShoppingListItem(**item_data))
+        
+        # Group by category
+        items_by_category: Dict[str, List[schemas.ShoppingListItem]] = {}
+        for item in shopping_list_items:
+            if item.category not in items_by_category:
+                items_by_category[item.category] = []
+            items_by_category[item.category].append(item)
+
+        return schemas.AggregatedShoppingList(
+            generated_at=date.today().isoformat(),
+            items_by_category=items_by_category
+        )

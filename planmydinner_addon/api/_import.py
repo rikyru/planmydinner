@@ -5,9 +5,9 @@ import uuid
 import shutil
 import os
 
-import schemas
-from database import get_db, StructuredMealPlan
-from pdf_parser import PDFParser, PDFParsingError
+from .. import schemas
+from ..database import get_db, StructuredMealPlan
+from ..pdf_parser import PDFParser, PDFParsingError
 
 router = APIRouter(
     prefix="/import",
@@ -36,12 +36,6 @@ async def import_pdf_meal_plan(
         parser = PDFParser(db)
         structured_plan = parser.parse_pdf(temp_pdf_path, profile_id, template_name)
 
-        # Save the structured plan to the database
-        db_plan = StructuredMealPlan(**structured_plan.model_dump())
-        db.add(db_plan)
-        db.commit()
-        db.refresh(db_plan)
-
         return structured_plan
     except PDFParsingError as e:
         raise HTTPException(status_code=400, detail=f"PDF parsing error: {e}")
@@ -50,3 +44,20 @@ async def import_pdf_meal_plan(
     finally:
         if os.path.exists(temp_pdf_path):
             os.remove(temp_pdf_path)
+
+@router.post("/save", status_code=201)
+async def save_structured_meal_plan(
+    plan: schemas.StructuredMealPlan,
+    db: Session = Depends(get_db)
+):
+    """
+    Saves a (potentially modified) structured meal plan to the database.
+    """
+    try:
+        db_plan = StructuredMealPlan(**plan.model_dump())
+        db.add(db_plan)
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Internal server error while saving plan: {e}")
+    return {"message": "Plan saved successfully"}

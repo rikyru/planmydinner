@@ -24,14 +24,43 @@ class PlanMyDinnerApiClient:
             _LOGGER.error("API request error: %s", err)
             raise
 
-    async def add_pantry_item(self, name: str, quantity: float, unit: str) -> Dict[str, Any]:
+    async def add_item(self, item: Dict[str, Any]) -> Dict[str, Any]:
         """Add an item to the pantry."""
-        payload = {"name": name, "quantity": quantity, "unit": unit}
-        return await self._request("POST", "/pantry/items", json=payload)
+        return await self._request("POST", "/pantry/items", json=item)
+
+    async def update_item(self, item_id: int, item: Dict[str, Any]) -> Dict[str, Any]:
+        """Update an item in the pantry."""
+        return await self._request("PUT", f"/pantry/items/{item_id}", json=item)
     
+    async def remove_item(self, item_id: int) -> Dict[str, Any]:
+        """Remove an item from the pantry."""
+        return await self._request("DELETE", f"/pantry/items/{item_id}")
+        
     async def get_pantry_items(self) -> Dict[str, Any]:
         """Get all items from the pantry."""
         return await self._request("GET", "/pantry/items")
+
+    async def get_recipes(self) -> Dict[str, Any]:
+        """Get all recipes from the catalog."""
+        return await self._request("GET", "/recipes")
+
+    async def add_recipe(self, recipe: Dict[str, Any]) -> Dict[str, Any]:
+        """Add a recipe to the catalog."""
+        return await self._request("POST", "/recipes", json=recipe)
+    
+    async def update_recipe(self, recipe_id: int, recipe: Dict[str, Any]) -> Dict[str, Any]:
+        """Update a recipe in the catalog."""
+        return await self._request("PUT", f"/recipes/{recipe_id}", json=recipe)
+    
+    async def delete_recipe(self, recipe_id: int) -> Dict[str, Any]:
+        """Delete a recipe from the catalog."""
+        return await self._request("DELETE", f"/recipes/{recipe_id}")
+
+    async def get_shopping_list(self, profile_id_A: str, profile_id_B: str, start_date: str) -> Dict[str, Any]:
+        """Get the shopping list for a given week."""
+        return await self._request("GET", f"/shopping-list?profile_id_A={profile_id_A}&profile_id_B={profile_id_B}&start_date={start_date}")
+
+
 
     async def mark_consumed_planned(self, profile_id: str, meal_date: str, meal_type: str, recipe_id: str) -> Dict[str, Any]:
         """Mark a planned meal as consumed."""

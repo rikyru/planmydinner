@@ -1,0 +1,56 @@
+/* Basic styling for the Import Wizard table */
+table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 20px;
+}
+
+th, td {
+    border: 1px solid #ddd;
+    padding: 8px;
+    text-align: left;
+}
+
+th {
+    background-color: #f2f2f2;
+}
+
+.daily-plan-section {
+    margin-bottom: 30px;
+    border: 1px solid #eee;
+    padding: 15px;
+    border-radius: 8px;
+    background-color: #fdfdfd;
+}
+
+.meal-section {
+    margin-bottom: 20px;
+    padding: 10px;
+    border: 1px solid #f0f0f0;
+    border-radius: 5px;
+    background-color: #fff;
+}
+
+.item-name-input, .quantity-input, .unit-input, .food-group-input {
+    width: 90%;
+    padding: 5px;
+    margin: 2px 0;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+}
+
+/* Highlight for estimated units */
+.estimated-unit {
+    border-color: orange;
+    background-color: #fff3e0; /* Light orange background */
+}
+
+.estimated-unit::placeholder {
+    color: orange;
+}
+
+/* Style for disabled checkbox */
+input[type="checkbox"][disabled] {
+    opacity: 0.6;
+    cursor: not-allowed;
+}

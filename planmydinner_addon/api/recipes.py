@@ -3,8 +3,8 @@ from sqlalchemy.orm import Session
 from typing import List, Optional
 import uuid
 
-import schemas
-from database import get_db, Recipe
+from .. import schemas
+from ..database import get_db, Recipe, CandidateRecipe
 
 router = APIRouter(
     prefix="/recipes",
@@ -83,4 +83,36 @@ def delete_recipe(recipe_id: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Recipe not found")
     db.delete(db_recipe)
     db.commit()
+    return db_recipe
+
+@router.post("/candidate/{candidate_recipe_id}/approve", response_model=schemas.Recipe)
+def approve_candidate_recipe(candidate_recipe_id: str, db: Session = Depends(get_db)):
+    """
+    Approves a candidate recipe, converting it into a full recipe. The candidate recipe's status is updated to "approved".
+    """
+    db_candidate = db.query(CandidateRecipe).filter(CandidateRecipe.id == candidate_recipe_id).first()
+    if not db_candidate:
+        raise HTTPException(status_code=404, detail="Candidate Recipe not found")
+    
+    # Ensure recipe_data is loaded correctly from JSON
+    recipe_create_data = schemas.RecipeCreate(**db_candidate.recipe_data)
+    
+    # Create the new Recipe, using the ID from the candidate recipe's data or generate a new one
+    db_recipe_id = recipe_create_data.id if recipe_create_data.id else str(uuid.uuid4())
+
+    # Check if a recipe with this ID already exists
+    if db.query(Recipe).filter(Recipe.id == db_recipe_id).first():
+        raise HTTPException(status_code=400, detail=f"A recipe with ID {db_recipe_id} already exists.")
+
+    db_recipe = Recipe(**recipe_create_data.model_dump(), id=db_recipe_id)
+        
+    db.add(db_recipe)
+    
+    # Update candidate status
+    db_candidate.status = "approved"
+    db.add(db_candidate)
+
+    db.commit()
+    db.refresh(db_recipe)
+    
     return db_recipe

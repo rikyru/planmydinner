@@ -3,8 +3,8 @@ from sqlalchemy.orm import Session
 from typing import List
 import uuid
 
-import schemas
-from database import get_db, PantryItem
+from .. import schemas
+from ..database import get_db, PantryItem
 
 router = APIRouter(
     prefix="/pantry",

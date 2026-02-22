@@ -3,9 +3,9 @@ from sqlalchemy.orm import Session
 from typing import List
 from datetime import date
 
-import schemas
-from database import get_db
-from planner import PlannerEngine
+from .. import schemas
+from ..database import get_db
+from ..planner import PlannerEngine
 
 router = APIRouter(
     prefix="/planner",

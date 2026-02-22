@@ -8,8 +8,8 @@ from pdfminer.high_level import extract_text
 import tabula
 import pandas as pd
 
-import schemas
-from database import SessionLocal, UnitConversion, RotationRule
+from . import schemas
+from .database import SessionLocal, UnitConversion, RotationRule
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -159,7 +159,7 @@ class PDFParser:
         # --- Extract Daily Plans (simplified) ---
         daily_plans: List[schemas.DailyPlannedMeals] = []
         
-        plan_date = date.today() # Placeholder date, ideally derived from PDF or user input
+        plan_date_str = date.today().isoformat() # Placeholder date, ideally derived from PDF or user input
 
         # Always create PlannedMeal objects, even if items list is empty
         pranzo_items = self._parse_meal_section(text_content, template["section_starters"]["pranzo"], template["item_regex"])
@@ -170,13 +170,13 @@ class PDFParser:
 
         meals_for_day = [pranzo_meal, cena_meal] # Always include both for structure
         
-        daily_plans.append(schemas.DailyPlannedMeals(date=plan_date, meals=meals_for_day))
+        daily_plans.append(schemas.DailyPlannedMeals(date=plan_date_str, meals=meals_for_day))
 
         # --- Construct StructuredMealPlan ---
         return schemas.StructuredMealPlan(
             id=str(uuid.uuid4()), # Generate a plan ID
             profile_id=profile_id,
-            start_date=plan_date, # This needs to be correctly parsed from PDF
+            start_date=plan_date_str, # This needs to be correctly parsed from PDF
             rotation_rules=rotation_rules,
             allowed_cooking_methods=["vapore", "tegame", "forno"], # Placeholder, should be parsed from PDF
             daily_plans=daily_plans

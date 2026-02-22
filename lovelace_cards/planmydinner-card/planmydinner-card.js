@@ -108,6 +108,15 @@ class PlanMyDinnerCard extends LitElement {
     }
   }
 
+  static async getConfigElement() {
+    await import("./planmydinner-card-editor.js");
+    return document.createElement("planmydinner-card-editor");
+  }
+
+  static getStubConfig() {
+    return { entity: "sensor.mealplan_today" };
+  }
+
   setConfig(config) {
     if (!config.entity) {
       throw new Error("You need to define an entity");

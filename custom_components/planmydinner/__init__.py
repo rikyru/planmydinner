@@ -26,74 +26,62 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     # Register services
-    async def handle_pantry_add(call: ServiceCall):
+    async def handle_add_item(call: ServiceCall):
         """Handle the service call to add a pantry item."""
-        name = call.data.get("name")
-        quantity = call.data.get("quantity")
-        unit = call.data.get("unit")
-        if name and quantity and unit:
-            await api_client.add_pantry_item(name, quantity, unit)
-            # Optionally, you can refresh a sensor here
+        item = call.data.get("item")
+        if item:
+            await api_client.add_item(item)
         else:
-            _LOGGER.error("Service pantry.add_item requires name, quantity, and unit")
+            _LOGGER.error("Service add_item requires an item")
 
-    async def handle_mark_consumed(call: ServiceCall):
-        """Handle the service call to mark a meal as consumed."""
-        # This is a simplified version for the MVP
-        profile_id = call.data.get("profile_id")
-        meal_date = call.data.get("date")
-        meal_type = call.data.get("meal_type")
+    async def handle_update_item(call: ServiceCall):
+        """Handle the service call to update a pantry item."""
+        item_id = call.data.get("item_id")
+        item = call.data.get("item")
+        if item_id and item:
+            await api_client.update_item(item_id, item)
+        else:
+            _LOGGER.error("Service update_item requires an item_id and an item")
+            
+    async def handle_remove_item(call: ServiceCall):
+        """Handle the service call to remove a pantry item."""
+        item_id = call.data.get("item_id")
+        if item_id:
+            await api_client.remove_item(item_id)
+        else:
+            _LOGGER.error("Service remove_item requires an item_id")
+
+    async def handle_add_recipe(call: ServiceCall):
+        """Handle the service call to add a recipe."""
+        recipe = call.data.get("recipe")
+        if recipe:
+            await api_client.add_recipe(recipe)
+        else:
+            _LOGGER.error("Service add_recipe requires a recipe")
+            
+    async def handle_update_recipe(call: ServiceCall):
+        """Handle the service call to update a recipe."""
         recipe_id = call.data.get("recipe_id")
-        await api_client.mark_consumed_planned(profile_id, meal_date, meal_type, recipe_id)
-
-    async def handle_override_consumed(call: ServiceCall):
-        """Handle the service call for an override."""
-        # Simplified for MVP
-        profile_id = call.data.get("profile_id")
-        meal_date = call.data.get("date")
-        meal_type = call.data.get("meal_type")
-        free_text_name = call.data.get("free_text_name")
-        override_details = {"free_text_name": free_text_name} # Simplified
-        await api_client.mark_consumed_override(profile_id, meal_date, meal_type, override_details)
-
-    async def handle_generate_week(call: ServiceCall):
-        """Handle the service call to generate a weekly meal plan."""
-        profile_id_A = call.data.get("profile_id_A")
-        profile_id_B = call.data.get("profile_id_B")
-        current_date = call.data.get("current_date")
-        if profile_id_A and profile_id_B and current_date:
-            await api_client.generate_weekly_plan(profile_id_A, profile_id_B, current_date)
+        recipe = call.data.get("recipe")
+        if recipe_id and recipe:
+            await api_client.update_recipe(recipe_id, recipe)
         else:
-            _LOGGER.error("Service mealplan.generate_week requires profile_id_A, profile_id_B, and current_date.")
-
-    async def handle_change_recipe(call: ServiceCall):
-        """Handle the service call to suggest alternative recipes."""
-        profile_id_A = call.data.get("profile_id_A")
-        profile_id_B = call.data.get("profile_id_B")
-        meal_type = call.data.get("meal_type")
-        current_date = call.data.get("current_date")
-        mood = call.data.get("mood")
-        cleanup = call.data.get("cleanup")
-        max_time_minutes = call.data.get("max_time_minutes")
-        if profile_id_A and profile_id_B and meal_type and current_date:
-            await api_client.suggest_recipes_for_meal(profile_id_A, profile_id_B, meal_type, current_date, mood, cleanup, max_time_minutes)
-        else:
-            _LOGGER.error("Service mealplan.change_recipe requires profile_id_A, profile_id_B, meal_type, and current_date.")
-
-    async def handle_apply_recipe_option(call: ServiceCall):
-        """Handle the service call to apply a chosen recipe to the plan."""
-        profile_id_A = call.data.get("profile_id_A")
-        profile_id_B = call.data.get("profile_id_B")
-        meal_type = call.data.get("meal_type")
-        current_date = call.data.get("current_date")
+            _LOGGER.error("Service update_recipe requires a recipe_id and a recipe")
+            
+    async def handle_delete_recipe(call: ServiceCall):
+        """Handle the service call to delete a recipe."""
         recipe_id = call.data.get("recipe_id")
-        if profile_id_A and profile_id_B and meal_type and current_date and recipe_id:
-            await api_client.apply_recipe_to_plan(profile_id_A, profile_id_B, meal_type, current_date, recipe_id)
+        if recipe_id:
+            await api_client.delete_recipe(recipe_id)
         else:
-            _LOGGER.error("Service mealplan.apply_recipe_option requires profile_id_A, profile_id_B, meal_type, current_date, and recipe_id.")
+            _LOGGER.error("Service delete_recipe requires a recipe_id")
 
-
-    hass.services.async_register(DOMAIN, "add_pantry_item", handle_pantry_add)
+    hass.services.async_register(DOMAIN, "add_item", handle_add_item)
+    hass.services.async_register(DOMAIN, "update_item", handle_update_item)
+    hass.services.async_register(DOMAIN, "remove_item", handle_remove_item)
+    hass.services.async_register(DOMAIN, "add_recipe", handle_add_recipe)
+    hass.services.async_register(DOMAIN, "update_recipe", handle_update_recipe)
+    hass.services.async_register(DOMAIN, "delete_recipe", handle_delete_recipe)
     hass.services.async_register(DOMAIN, "mark_consumed", handle_mark_consumed)
     hass.services.async_register(DOMAIN, "override_consumed", handle_override_consumed)
     hass.services.async_register(DOMAIN, "generate_week", handle_generate_week)
@@ -110,7 +98,12 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.data[DOMAIN].pop(entry.entry_id)
 
     # Unregister services
-    hass.services.async_remove(DOMAIN, "add_pantry_item")
+    hass.services.async_remove(DOMAIN, "add_item")
+    hass.services.async_remove(DOMAIN, "update_item")
+    hass.services.async_remove(DOMAIN, "remove_item")
+    hass.services.async_remove(DOMAIN, "add_recipe")
+    hass.services.async_remove(DOMAIN, "update_recipe")
+    hass.services.async_remove(DOMAIN, "delete_recipe")
     hass.services.async_remove(DOMAIN, "mark_consumed")
     hass.services.async_remove(DOMAIN, "override_consumed")
     hass.services.async_remove(DOMAIN, "generate_week")

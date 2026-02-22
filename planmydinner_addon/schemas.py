@@ -26,7 +26,7 @@ class PantryItemBase(BaseModel):
     quantity: float
     unit: str
     category: Optional[str] = None
-    expiration_date: Optional[date] = None
+    expiration_date: Optional[str] = None
     synonyms: Optional[List[str]] = []
 
 class PantryItemCreate(PantryItemBase):
@@ -50,7 +50,7 @@ class OverrideConsumedDetails(BaseModel):
 
 class ConsumedEntryBase(BaseModel):
     profile_id: str
-    date: date
+    date: str
     meal_type: str
     type: str
     consumed_recipe_id: Optional[str] = None
@@ -113,12 +113,12 @@ class PlannedMeal(BaseModel):
     items: List[PlannedItem]
 
 class DailyPlannedMeals(BaseModel):
-    date: date
+    date: str
     meals: List[PlannedMeal]
 
 class StructuredMealPlanBase(BaseModel):
     profile_id: str
-    start_date: date
+    start_date: str
     rotation_rules: Optional[List[RotationRuleCreate]] = [] # Using Create to allow optional ID
     allowed_cooking_methods: Optional[List[str]] = []
     daily_plans: List[DailyPlannedMeals]
@@ -153,7 +153,7 @@ class RecipeBase(BaseModel):
     content: Union[List[RecipeIngredient], ComposedDishContent] # This field contains the actual ingredients/components
     steps: List[str]
     total_time_minutes: int
-    difficulty: str = Field(..., pattern="^(facile|media|difficile)$")
+    difficulty: str = Field(..., pattern="^(facile|media|difficile|sconosciuto)$")
     tags: Optional[Dict[str, List[str]]] = None # mood, cleanup, cooking_methods, other
 
 class RecipeCreate(RecipeBase):
@@ -191,3 +191,14 @@ class ChangeRecipeOption(BaseModel):
     key_ingredients: List[str]
     divergence_strategy: str
     divergence_details: Optional[str] = None
+
+class ShoppingListItem(BaseModel):
+    name: str
+    quantity: float
+    unit: str
+    category: str
+    notes: Optional[str] = None
+
+class AggregatedShoppingList(BaseModel):
+    generated_at: date
+    items_by_category: Dict[str, List[ShoppingListItem]]
