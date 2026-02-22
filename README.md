@@ -28,6 +28,7 @@ The system is built on a modular architecture:
     *   A Vue.js frontend for the Import Wizard and other web-based UI.
 
 This decoupled architecture ensures that the intensive processing of the backend does not impact the performance of your Home Assistant instance.
+Up
 
 ## Setup and Installation
 
