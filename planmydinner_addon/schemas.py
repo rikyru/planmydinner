@@ -106,7 +106,10 @@ class PlannedItem(BaseModel):
     quantity: float
     unit: str
     is_estimated_unit: bool = False
-    alternatives: Optional[List[str]] = []
+    alternatives: List['PlannedItem'] = []
+    shopping_list_quantity: Optional[float] = None
+
+PlannedItem.model_rebuild()
 
 class PlannedMeal(BaseModel):
     meal_type: str = Field(..., pattern="^(pranzo|cena)$")

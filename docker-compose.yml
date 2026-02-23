@@ -1,0 +1,43 @@
+services:
+  home-assistant:
+    container_name: home-assistant
+    image: ghcr.io/home-assistant/home-assistant:stable
+    network_mode: host
+    environment:
+      - TZ=Europe/Rome
+    volumes:
+      - /home/rikyru/homeassistant:/config
+      - /run/dbus:/run/dbus:ro
+    restart: always
+
+  planmydinner-addon:
+    container_name: planmydinner-addon
+    image: planmydinner-addon # Assumes you have built this image locally as instructed in README
+    restart: always
+    ports:
+      - "8000:8000" # FastAPI application runs on port 8000
+    volumes:
+      - /home/rikyru/homeassistant/planmydinner_data:/data # Persistent storage for the SQLite database
+    environment:
+      - LLM_PROVIDER=ollama
+      - LLM_BASE_URL=http://ollama:11434 # Assuming Ollama runs as a service named 'ollama' in the same compose file
+      - LLM_MODEL=llama3
+      # - LLM_API_KEY=your_openai_api_key # Uncomment and set if using OpenAI
+    depends_on:
+      - home-assistant # Ensure Home Assistant starts before the add-on
+
+  # Optional: If you want to run Ollama as part of the same docker-compose
+  ollama:
+    container_name: ollama
+    image: ollama/ollama
+    restart: always
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    # Add your desired Ollama model here (e.g., llama3)
+    # command: serve
+    # entrypoint: ["ollama", "run", "llama3"] # This might download the model on first run
+
+volumes:
+  ollama_data:

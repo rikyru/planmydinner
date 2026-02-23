@@ -64,17 +64,32 @@ class UnitConverter:
         In a real implementation, this would use a lookup table, LLM, or more sophisticated logic.
         """
         item_lower = item_name.lower()
-        if "pasta" in item_lower or "riso" in item_lower or "pane" in item_lower:
+        
+        # Expanded list for better matching
+        vegetables = [
+            "verdure", "insalata", "pomodoro", "cetriolo", "carota", "peperone", 
+            "cipolla", "aglio", "melanzana", "zucchina", "spinaci", "broccoli", 
+            "cavolfiore", "finocchi", "sedano", "asparagi", "funghi", "radicchio",
+            "barbabietola", "zucca"
+        ]
+
+        if "pasta" in item_lower or "riso" in item_lower or "pane" in item_lower or "patate" in item_lower:
             return "carboidrati"
-        # Added 'legumi' to proteins as they are a primary source of protein
-        if "pollo" in item_lower or "salmone" in item_lower or "uova" in item_lower or "lenticchie" in item_lower or "legumi" in item_lower:
+        
+        if "pollo" in item_lower or "tacchino" in item_lower or "manzo" in item_lower or "maiale" in item_lower or \
+           "pesce" in item_lower or "salmone" in item_lower or "tonno" in item_lower or "uova" in item_lower or \
+           "lenticchie" in item_lower or "ceci" in item_lower or "fagioli" in item_lower or "legumi" in item_lower or "tofu" in item_lower:
             return "proteine"
-        if "olio" in item_lower or "burro" in item_lower:
+            
+        if "olio" in item_lower or "burro" in item_lower or "frutta secca" in item_lower or "noci" in item_lower or "mandorle" in item_lower:
             return "grassi"
-        if "mela" in item_lower or "banana" in item_lower or "frutta" in item_lower: # Added "frutta"
+            
+        if "mela" in item_lower or "banana" in item_lower or "arancia" in item_lower or "fragole" in item_lower or "frutta" in item_lower:
             return "frutta"
-        if "broccoli" in item_lower or "carote" in item_lower or "verdure" in item_lower:
+            
+        if any(veg in item_lower for veg in vegetables):
             return "verdure"
+            
         return "altro" # Default fallback
 
 
@@ -162,10 +177,10 @@ class PDFParser:
         plan_date_str = date.today().isoformat() # Placeholder date, ideally derived from PDF or user input
 
         # Always create PlannedMeal objects, even if items list is empty
-        pranzo_items = self._parse_meal_section(text_content, template["section_starters"]["pranzo"], template["item_regex"])
+        pranzo_items = self._parse_meal_section(text_content, template["section_starters"]["pranzo"], template["item_regex"], "pranzo")
         pranzo_meal = schemas.PlannedMeal(meal_type="pranzo", items=pranzo_items)
 
-        cena_items = self._parse_meal_section(text_content, template["section_starters"]["cena"], template["item_regex"])
+        cena_items = self._parse_meal_section(text_content, template["section_starters"]["cena"], template["item_regex"], "cena")
         cena_meal = schemas.PlannedMeal(meal_type="cena", items=cena_items)
 
         meals_for_day = [pranzo_meal, cena_meal] # Always include both for structure
@@ -182,43 +197,93 @@ class PDFParser:
             daily_plans=daily_plans
         )
 
-    def _parse_meal_section(self, text: str, section_regex: str, item_regex: str) -> List[schemas.PlannedItem]:
+    def _parse_meal_section(self, text: str, section_regex: str, item_regex: str, meal_type: str) -> List[schemas.PlannedItem]:
         """
         Parses a specific meal section (e.g., "PRANZO") from the extracted text
         and returns a list of PlannedItems.
+        It now handles alternatives and free vegetable notes for 'cena'.
         """
         items: List[schemas.PlannedItem] = []
+        notes_lines = []
+        last_item = None
+        in_alternatives_block = False
+
         section_match = re.search(section_regex, text, re.IGNORECASE | re.DOTALL)
-        if section_match:
-            section_content = section_match.group(1).strip()
-            # Process content line by line
-            for line in section_content.split('\n'):
-                line = line.strip()
-                if not line:
-                    continue # Skip empty lines
+        if not section_match:
+            return items
 
-                item_match = re.search(item_regex, line, re.IGNORECASE)
-                if item_match:
-                    item_name = item_match.group(1).strip()
-                    quantity = float(item_match.group(2).replace(',', '.'))
-                    unit = item_match.group(3).strip()
+        section_content = section_match.group(1).strip()
+        all_item_names = set()
 
-                    grams_equiv = self.unit_converter.convert_to_grams(quantity, unit)
-                    ml_equiv = self.unit_converter.convert_to_ml(quantity, unit)
-                    _LOGGER.debug(f"Parsing item '{item_name}' (unit: {unit}): grams_equiv={grams_equiv}, ml_equiv={ml_equiv}")
-                    
-                    is_estimated = False
-                    if not (grams_equiv or ml_equiv) and unit.lower() not in ["g", "ml"]:
-                        is_estimated = True 
+        for line in section_content.split('\n'):
+            line = line.strip()
+            if not line:
+                in_alternatives_block = False # Reset on empty line
+                continue
 
-                    items.append(schemas.PlannedItem(
-                        item_name=item_name,
-                        food_group=self.unit_converter.get_food_group_for_item(item_name),
-                        quantity=quantity,
-                        unit=unit,
-                        is_estimated_unit=is_estimated,
-                        alternatives=[] 
-                    ))
+            # Check for alternative marker
+            if re.match(r'^(alternative|alternativa):$', line, re.IGNORECASE):
+                in_alternatives_block = True
+                continue
+
+            item_match = re.search(item_regex, line, re.IGNORECASE)
+            if item_match:
+                item_name = item_match.group(1).strip()
+                quantity_str = item_match.group(2).replace(' e 1/2', '.5').replace(',', '.')
+                quantity = float(quantity_str)
+                unit = item_match.group(3).strip()
+
+                grams_equiv = self.unit_converter.convert_to_grams(quantity, unit)
+                ml_equiv = self.unit_converter.convert_to_ml(quantity, unit)
+                _LOGGER.debug(f"Parsing item '{item_name}' (unit: {unit}): grams_equiv={grams_equiv}, ml_equiv={ml_equiv}")
+                
+                is_estimated = False
+                if not (grams_equiv or ml_equiv) and unit.lower() not in ["g", "ml"]:
+                    is_estimated = True 
+
+                parsed_item = schemas.PlannedItem(
+                    item_name=item_name,
+                    food_group=self.unit_converter.get_food_group_for_item(item_name),
+                    quantity=quantity,
+                    unit=unit,
+                    is_estimated_unit=is_estimated,
+                    alternatives=[] 
+                )
+
+                if in_alternatives_block and last_item:
+                    last_item.alternatives.append(parsed_item)
                 else:
-                    _LOGGER.debug(f"Could not parse item line: '{line}' with regex '{item_regex}' in meal section.")
+                    items.append(parsed_item)
+                    all_item_names.add(item_name.lower())
+                    last_item = parsed_item
+                    in_alternatives_block = False # An item line resets the alternative block unless it's inside one
+            else:
+                notes_lines.append(line)
+                _LOGGER.debug(f"Could not parse item line: '{line}' with regex '{item_regex}' in meal section.")
+
+        # Handle "idee piatti" for CENA
+        if meal_type.lower() == 'cena' and notes_lines:
+            note_text = " ".join(notes_lines)
+            # Simple word extraction, could be improved with NLP
+            words = re.split(r'\s|[,.;()]', note_text)
+            for word in words:
+                word = word.strip().lower()
+                if not word:
+                    continue
+                
+                # Check if the word is a vegetable and not already a planned item
+                food_group = self.unit_converter.get_food_group_for_item(word)
+                if food_group == 'verdure' and word not in all_item_names:
+                    _LOGGER.debug(f"Found free vegetable '{word}' in cena notes.")
+                    items.append(schemas.PlannedItem(
+                        item_name=word,
+                        food_group='verdure',
+                        quantity=0, # Free item
+                        unit='g', # Default unit
+                        is_estimated_unit=True,
+                        alternatives=[],
+                        shopping_list_quantity=200.0 # Default estimated quantity for shopping list
+                    ))
+                    all_item_names.add(word) # Avoid adding duplicates
+
         return items

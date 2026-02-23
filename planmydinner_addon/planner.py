@@ -72,6 +72,38 @@ class PlannerEngine:
         all_recipes.extend([schemas.Recipe(**cand.recipe_data.model_dump(), id=cand.id) for cand in db_candidate_recipes])
         return all_recipes
 
+    def _get_food_group_for_item(self, item_name: str) -> str:
+        """
+        Determines food group for a given item name.
+        """
+        item_lower = item_name.lower()
+        
+        vegetables = [
+            "verdure", "insalata", "pomodoro", "cetriolo", "carota", "peperone", 
+            "cipolla", "aglio", "melanzana", "zucchina", "spinaci", "broccoli", 
+            "cavolfiore", "finocchi", "sedano", "asparagi", "funghi", "radicchio",
+            "barbabietola", "zucca"
+        ]
+
+        if "pasta" in item_lower or "riso" in item_lower or "pane" in item_lower or "patate" in item_lower:
+            return "carboidrati"
+        
+        if "pollo" in item_lower or "tacchino" in item_lower or "manzo" in item_lower or "maiale" in item_lower or \
+           "pesce" in item_lower or "salmone" in item_lower or "tonno" in item_lower or "uova" in item_lower or \
+           "lenticchie" in item_lower or "ceci" in item_lower or "fagioli" in item_lower or "legumi" in item_lower or "tofu" in item_lower:
+            return "proteine"
+            
+        if "olio" in item_lower or "burro" in item_lower or "frutta secca" in item_lower or "noci" in item_lower or "mandorle" in item_lower:
+            return "grassi"
+            
+        if "mela" in item_lower or "banana" in item_lower or "arancia" in item_lower or "fragole" in item_lower or "frutta" in item_lower:
+            return "frutta"
+            
+        if any(veg in item_lower for veg in vegetables):
+            return "verdure"
+            
+        return "altro"
+
     def _filter_hard_constraints(
         self,
         recipe: schemas.Recipe,
@@ -82,110 +114,86 @@ class PlannerEngine:
         consumed_entries_A: List[schemas.ConsumedEntry],
         consumed_entries_B: List[schemas.ConsumedEntry],
         request_params: Dict[str, Any],
-        current_date: date # Added current_date as parameter
-    ) -> (bool, Optional[str], Optional[str]): # (is_valid, divergence_strategy, divergence_details)
+        current_date: date
+    ) -> (bool, Optional[str], Optional[str]):
         """
-        Applies hard constraints to a single recipe.
-        Returns True if valid, False otherwise, along with any divergence strategy.
+        Applies hard constraints to a single recipe, including weekly rotation rules.
         """
         _LOGGER.debug(f"Filtering recipe: {recipe.id}")
 
-        # --- 1. Meal Type Compatibility (already filtered if recipe is from targeted search) ---
-        # Assuming recipe comes from a list already filtered for lunch/dinner
-
-        # --- 2. Time Constraint ---
-        if recipe.total_time_minutes > request_params.get("max_time_minutes", 9999):
-            _LOGGER.debug(f"Recipe {recipe.id} failed time constraint ({recipe.total_time_minutes} > {request_params.get('max_time_minutes', 9999)}).")
+        # --- Time, Mood, Cleanup Constraints ---
+        if recipe.total_time_minutes > request_params.get("max_time_minutes", 9999) or \
+           (request_params.get("mood") and request_params["mood"] not in recipe.tags.get("mood", [])) or \
+           (request_params.get("cleanup") and request_params["cleanup"] not in recipe.tags.get("cleanup", [])):
             return False, None, None
 
-        # --- 3. Mood/Cleanup Tags ---
-        if request_params.get("mood") and request_params["mood"] not in recipe.tags.get("mood", []):
-            _LOGGER.debug(f"Recipe {recipe.id} failed mood constraint (req: {request_params['mood']}, recipe: {recipe.tags.get('mood', [])}).")
-            return False, None, None
-        if request_params.get("cleanup") and request_params["cleanup"] not in recipe.tags.get("cleanup", []):
-            _LOGGER.debug(f"Recipe {recipe.id} failed cleanup constraint (req: {request_params['cleanup']}, recipe: {recipe.tags.get('cleanup', [])}).")
-            return False, None, None
-
-        # --- 4. Cooking Methods (Temporarily commented out for MVP as equipment management is not yet robust) ---
-        # for method in recipe.tags.get("cooking_methods", []):
-        #     if method not in profile_A.equipment and method not in profile_B.equipment: # Both must allow
-        #         _LOGGER.debug(f"Recipe {recipe.id} failed equipment constraint (method: {method}).")
-        #         return False, None, None
-        
-        # --- 5. Allergies/Intolerances/Excluded Foods & Divergence Strategy ---
-        divergence_strategy = "none"
-        divergence_details = ""
-        
+        # --- Allergies/Excluded Foods ---
         recipe_ingredients = recipe.content.components if recipe.is_composed_dish else recipe.content
-
-        # Check for conflicts and try to apply divergence
-        conflicts_A = []
-        conflicts_B = []
-
         for rec_ing in recipe_ingredients:
             ing_name = rec_ing.name.lower()
-            if ing_name in [item.lower() for item in profile_A.allergies + profile_A.excluded_foods]:
-                conflicts_A.append(ing_name)
-            if ing_name in [item.lower() for item in profile_B.allergies + profile_B.excluded_foods]:
-                conflicts_B.append(ing_name)
+            if ing_name in [item.lower() for item in profile_A.allergies + profile_A.excluded_foods] or \
+               ing_name in [item.lower() for item in profile_B.allergies + profile_B.excluded_foods]:
+                _LOGGER.debug(f"Recipe {recipe.id} has unresolvable allergy/exclusion conflicts.")
+                return False, None, None
+
+        # --- Nutritional Plan Adherence ---
+        # This check is now correctly handling items with planned_qty > 0
+        planned_food_groups_A = {item.food_group: item.quantity for item in target_meal_plan_A.items if item.quantity > 0}
+        planned_food_groups_B = {item.food_group: item.quantity for item in target_meal_plan_B.items if item.quantity > 0}
         
-        # For MVP, if a conflict exists, and no explicit swap logic, it fails
-        if conflicts_A or conflicts_B:
-            _LOGGER.debug(f"Recipe {recipe.id} has unresolvable allergy/exclusion conflicts for A: {conflicts_A}, B: {conflicts_B}.")
-            return False, None, None # For MVP, simple fail
+        recipe_food_groups_A = {rec_ing.food_group: rec_ing.quantities["persona_a"].grams_equiv for rec_ing in recipe_ingredients if rec_ing.quantities["persona_a"].grams_equiv is not None}
+        recipe_food_groups_B = {rec_ing.food_group: rec_ing.quantities["persona_b"].grams_equiv for rec_ing in recipe_ingredients if rec_ing.quantities["persona_b"].grams_equiv is not None}
 
-        # --- 6. Nutritional Plan Adherence (Food Groups & Quantities) ---
-        # Aggregate planned food groups and quantities for both profiles
-        planned_food_groups_A: Dict[str, float] = {}
-        for item in target_meal_plan_A.items:
-            planned_food_groups_A[item.food_group] = planned_food_groups_A.get(item.food_group, 0.0) + (item.quantity if item.unit == 'g' else self.db.query(UnitConversion).filter_by(unit=item.unit.lower()).first().grams_equivalent * item.quantity if self.db.query(UnitConversion).filter_by(unit=item.unit.lower()).first() and self.db.query(UnitConversion).filter_by(unit=item.unit.lower()).first().grams_equivalent else 0.0)
-
-        planned_food_groups_B: Dict[str, float] = {}
-        for item in target_meal_plan_B.items:
-            planned_food_groups_B[item.food_group] = planned_food_groups_B.get(item.food_group, 0.0) + (item.quantity if item.unit == 'g' else self.db.query(UnitConversion).filter_by(unit=item.unit.lower()).first().grams_equivalent * item.quantity if self.db.query(UnitConversion).filter_by(unit=item.unit.lower()).first() and self.db.query(UnitConversion).filter_by(unit=item.unit.lower()).first().grams_equivalent else 0.0)
-
-        # Aggregate recipe food groups and quantities for both profiles
-        recipe_food_groups_A: Dict[str, float] = {}
-        recipe_food_groups_B: Dict[str, float] = {}
-        for rec_ing in recipe_ingredients:
-            # Ensure grams_equiv is not None before adding
-            if rec_ing.quantities["persona_a"].grams_equiv is not None:
-                recipe_food_groups_A[rec_ing.food_group] = recipe_food_groups_A.get(rec_ing.food_group, 0.0) + rec_ing.quantities["persona_a"].grams_equiv
-            if rec_ing.quantities["persona_b"].grams_equiv is not None:
-                recipe_food_groups_B[rec_ing.food_group] = recipe_food_groups_B.get(rec_ing.food_group, 0.0) + rec_ing.quantities["persona_b"].grams_equiv
-
-        # Basic check: Ensure main food groups from plan are provided by recipe within tolerance
-        for food_group in ["carboidrati", "proteine", "grassi", "verdure"]:
-            planned_qty_A = planned_food_groups_A.get(food_group, 0)
-            recipe_qty_A = recipe_food_groups_A.get(food_group, 0)
-            
-            if planned_qty_A > 0: # Only check if the plan explicitly requires this food group
-                if not (planned_qty_A * (1 - self.QUANTITY_TOLERANCE_PERCENT) <= recipe_qty_A <= planned_qty_A * (1 + self.QUANTITY_TOLERANCE_PERCENT)):
-                    _LOGGER.debug(f"Recipe {recipe.id} failed qty check for {food_group} A: planned {planned_qty_A}, recipe {recipe_qty_A}. (Range: {planned_qty_A * (1 - self.QUANTITY_TOLERANCE_PERCENT)} - {planned_qty_A * (1 + self.QUANTITY_TOLERANCE_PERCENT)})")
-                    return False, None, None
-            
-            planned_qty_B = planned_food_groups_B.get(food_group, 0)
-            recipe_qty_B = recipe_food_groups_B.get(food_group, 0)
-            if planned_qty_B > 0: # Only check if the plan explicitly requires this food group
-                if not (planned_qty_B * (1 - self.QUANTITY_TOLERANCE_PERCENT) <= recipe_qty_B <= planned_qty_B * (1 + self.QUANTITY_TOLERANCE_PERCENT)):
-                    _LOGGER.debug(f"Recipe {recipe.id} failed qty check for {food_group} B: planned {planned_qty_B}, recipe {recipe_qty_B}. (Range: {planned_qty_B * (1 - self.QUANTITY_TOLERANCE_PERCENT)} - {planned_qty_B * (1 + self.QUANTITY_TOLERANCE_PERCENT)})")
-                    return False, None, None
-
-        # --- 7. Weekly Rotation Rules (Hard Constraints) ---
-        # This needs a comprehensive implementation that counts food groups from ConsumedEntry.
-        # For MVP, a simplified check is present in anti-repetition.
-
-        # --- 8. Anti-Repetition ---
-        # current_date is passed as a parameter to suggest_recipes_for_meal, use it
+        for fg, planned_qty in planned_food_groups_A.items():
+            recipe_qty = recipe_food_groups_A.get(fg, 0)
+            if not (planned_qty * (1 - self.QUANTITY_TOLERANCE_PERCENT) <= recipe_qty <= planned_qty * (1 + self.QUANTITY_TOLERANCE_PERCENT)):
+                return False, None, None
         
-        recent_recipe_ids_A = {entry.consumed_recipe_id for entry in consumed_entries_A if entry.consumed_recipe_id and (current_date - date.fromisoformat(entry.date)).days < self.ANTI_REPETITION_DAYS}
-        recent_recipe_ids_B = {entry.consumed_recipe_id for entry in consumed_entries_B if entry.consumed_recipe_id and (current_date - date.fromisoformat(entry.date)).days < self.ANTI_REPETITION_DAYS}
+        for fg, planned_qty in planned_food_groups_B.items():
+            recipe_qty = recipe_food_groups_B.get(fg, 0)
+            if not (planned_qty * (1 - self.QUANTITY_TOLERANCE_PERCENT) <= recipe_qty <= planned_qty * (1 + self.QUANTITY_TOLERANCE_PERCENT)):
+                return False, None, None
+
+        # --- Weekly Rotation Rules (Hard Constraints) ---
+        all_consumed = consumed_entries_A + consumed_entries_B
+        rotation_rules = self.db.query(RotationRule).filter(RotationRule.is_hard_constraint == True).all()
         
-        if recipe.id in recent_recipe_ids_A or recipe.id in recent_recipe_ids_B:
+        consumption_counts = {}
+        for entry in all_consumed:
+            if entry.consumed_recipe_id:
+                consumed_recipe = self.db.query(Recipe).filter(Recipe.id == entry.consumed_recipe_id).first()
+                if consumed_recipe:
+                    ingredients = consumed_recipe.content.components if consumed_recipe.is_composed_dish else consumed_recipe.content
+                    for ing in ingredients:
+                        consumption_counts[ing.food_group] = consumption_counts.get(ing.food_group, 0) + 1
+                        consumption_counts[ing.name.lower()] = consumption_counts.get(ing.name.lower(), 0) + 1
+            elif entry.override_details and entry.override_details.ingredients:
+                for ing in entry.override_details.ingredients:
+                    food_group = self._get_food_group_for_item(ing.name)
+                    consumption_counts[food_group] = consumption_counts.get(food_group, 0) + 1
+                    consumption_counts[ing.name.lower()] = consumption_counts.get(ing.name.lower(), 0) + 1
+            elif entry.override_details and entry.override_details.free_text_name:
+                food_group = self._get_food_group_for_item(entry.override_details.free_text_name)
+                consumption_counts[food_group] = consumption_counts.get(food_group, 0) + 1
+                consumption_counts[entry.override_details.free_text_name.lower()] = consumption_counts.get(entry.override_details.free_text_name.lower(), 0) + 1
+        
+        for rule in rotation_rules:
+            if rule.max_per_week is not None:
+                count = consumption_counts.get(rule.food_group_or_item.lower(), 0)
+                if count >= rule.max_per_week:
+                    # Check if the current recipe contains this food group/item
+                    for rec_ing in recipe_ingredients:
+                        if rec_ing.food_group == rule.food_group_or_item.lower() or rec_ing.name.lower() == rule.food_group_or_item.lower():
+                            _LOGGER.debug(f"Recipe {recipe.id} failed hard rotation rule for '{rule.food_group_or_item}'. Count: {count}, Max: {rule.max_per_week}")
+                            return False, None, None
+
+        # --- Anti-Repetition (Hard) ---
+        recent_recipe_ids = {e.consumed_recipe_id for e in all_consumed if e.consumed_recipe_id}
+        if recipe.id in recent_recipe_ids:
             _LOGGER.debug(f"Recipe {recipe.id} failed anti-repetition.")
             return False, None, None
 
-        return True, divergence_strategy, divergence_details
+        return True, "none", ""
 
     def _calculate_dosing(self, recipe: schemas.Recipe, profile_A: schemas.UserProfile, profile_B: schemas.UserProfile) -> schemas.Recipe:
         """
@@ -201,7 +209,9 @@ class PlannerEngine:
         recipe: schemas.Recipe,
         pantry_items: List[schemas.PantryItem],
         seasonality_data: Dict[str, schemas.SeasonalityItem],
-        current_date: date
+        current_date: date,
+        consumed_entries_A: List[schemas.ConsumedEntry],
+        consumed_entries_B: List[schemas.ConsumedEntry]
     ) -> float:
         """
         Calculates a score for the recipe based on soft constraints.
@@ -229,9 +239,6 @@ class PlannerEngine:
                 if pi.name.lower() == rec_ing.name.lower() and pi.expiration_date:
                     days_to_expire = (date.fromisoformat(pi.expiration_date) - current_date).days
                     if 0 < days_to_expire <= max_bonus_days:
-                        # Linear decay: bonus increases as days_to_expire decreases
-                        # Bonus = ( (max_bonus_days - days_to_expire) / max_bonus_days ) * max_possible_bonus
-                        # max_possible_bonus can be 0.5 for example
                         expiration_bonus += ((max_bonus_days - days_to_expire) / max_bonus_days) * 0.5
         score += expiration_bonus * 0.3 # Weight for expiration
 
@@ -245,8 +252,26 @@ class PlannerEngine:
             
         score += seasonality_bonus * 0.2 # Weight for seasonality
 
-        # --- Rotation Balance (Soft) ---
-        # For MVP, this remains a placeholder.
+        # --- Soft Anti-Repetition Score ---
+        repetition_penalty = 0.0
+        all_consumed = consumed_entries_A + consumed_entries_B
+        recent_ingredients = set()
+        for entry in all_consumed:
+            if entry.consumed_recipe_id:
+                consumed_recipe = self.db.query(Recipe).filter(Recipe.id == entry.consumed_recipe_id).first()
+                if consumed_recipe:
+                    ingredients = consumed_recipe.content.components if consumed_recipe.is_composed_dish else consumed_recipe.content
+                    for ing in ingredients:
+                        recent_ingredients.add(ing.name.lower())
+            elif entry.override_details and entry.override_details.ingredients:
+                for ing in entry.override_details.ingredients:
+                    recent_ingredients.add(ing.name.lower())
+
+        for rec_ing in recipe_ingredients:
+            if rec_ing.name.lower() in recent_ingredients:
+                repetition_penalty += 0.1 # Penalize for each repeated ingredient
+        
+        score -= repetition_penalty
 
         return score
 
@@ -347,7 +372,7 @@ class PlannerEngine:
             # Calculate dosing (MVP: assume pre-calculated in recipe)
             dosed_recipe = self._calculate_dosing(recipe, profile_A, profile_B)
             
-            score = self._score_soft_constraints(dosed_recipe, pantry_items, seasonality_data, current_date)
+            score = self._score_soft_constraints(dosed_recipe, pantry_items, seasonality_data, current_date, consumed_entries_A, consumed_entries_B)
             recipe_info["score"] = score
         
         if not valid_recipes:
@@ -374,21 +399,28 @@ class PlannerEngine:
             _LOGGER.error(f"User profiles not found for {profile_id_A} or {profile_id_B}.")
             raise HTTPException(status_code=404, detail="One or both profiles not found.")
 
-        # For MVP, the plan structure in the planner is fixed.
-        # This plan is now designed to allow 'rec_pasta_pesto_veg' to pass its checks
-        # when mood="quick", cleanup="low_mess", max_time=60.
-        target_meal_plan_A = schemas.PlannedMeal(meal_type=meal_type, items=[
-            schemas.PlannedItem(item_name="Carboidrato", food_group="carboidrati", quantity=80, unit="g"), # For Pasta
-            schemas.PlannedItem(item_name="Proteine", food_group="proteine", quantity=150, unit="g"), # For Tofu in Pesto
-            schemas.PlannedItem(item_name="Grassi", food_group="grassi", quantity=50, unit="g"), # For Pesto
-            schemas.PlannedItem(item_name="Verdure", food_group="verdure", quantity=50, unit="g"), # Some vegetables
-        ])
-        target_meal_plan_B = schemas.PlannedMeal(meal_type=meal_type, items=[
-            schemas.PlannedItem(item_name="Carboidrato", food_group="carboidrati", quantity=100, unit="g"), # For Pasta
-            schemas.PlannedItem(item_name="Proteine", food_group="proteine", quantity=150, unit="g"), # For Pollo in Pesto
-            schemas.PlannedItem(item_name="Grassi", food_group="grassi", quantity=50, unit="g"), # For Pesto
-            schemas.PlannedItem(item_name="Verdure", food_group="verdure", quantity=50, unit="g"), # Some vegetables
-        ])
+        plan_A = self._get_active_meal_plan(profile_id_A, current_date)
+        plan_B = self._get_active_meal_plan(profile_id_B, current_date)
+
+        if not plan_A or not plan_B:
+            _LOGGER.error(f"Could not find active meal plan for one or both profiles on {current_date.isoformat()}.")
+            return []
+
+        # Find the daily plan for the current date
+        daily_plan_A = next((dp for dp in plan_A.daily_plans if date.fromisoformat(dp.date) == current_date), None)
+        daily_plan_B = next((dp for dp in plan_B.daily_plans if date.fromisoformat(dp.date) == current_date), None)
+
+        if not daily_plan_A or not daily_plan_B:
+            _LOGGER.error(f"Could not find daily plan for one or both profiles on {current_date.isoformat()}.")
+            return []
+            
+        # Find the target meal within the daily plan
+        target_meal_plan_A = next((m for m in daily_plan_A.meals if m.meal_type == meal_type), None)
+        target_meal_plan_B = next((m for m in daily_plan_B.meals if m.meal_type == meal_type), None)
+
+        if not target_meal_plan_A or not target_meal_plan_B:
+            _LOGGER.error(f"Could not find meal type '{meal_type}' for one or both profiles on {current_date.isoformat()}.")
+            return []
 
 
         all_recipes = self._get_all_recipes()
@@ -411,7 +443,7 @@ class PlannerEngine:
             if is_valid:
                 # Calculate dosing (MVP: assume pre-calculated in recipe)
                 dosed_recipe = self._calculate_dosing(recipe, profile_A, profile_B)
-                score = self._score_soft_constraints(dosed_recipe, pantry_items, seasonality_data, current_date)
+                score = self._score_soft_constraints(dosed_recipe, pantry_items, seasonality_data, current_date, consumed_entries_A, consumed_entries_B)
                 
                 filtered_recipes.append({
                     "recipe": dosed_recipe,

@@ -82,6 +82,80 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.services.async_register(DOMAIN, "add_recipe", handle_add_recipe)
     hass.services.async_register(DOMAIN, "update_recipe", handle_update_recipe)
     hass.services.async_register(DOMAIN, "delete_recipe", handle_delete_recipe)
+
+    async def handle_mark_consumed(call: ServiceCall):
+        """Handle the service call to mark a meal as consumed."""
+        profile_id = call.data.get("profile_id")
+        meal_date = call.data.get("meal_date")
+        meal_type = call.data.get("meal_type")
+        recipe_id = call.data.get("recipe_id")
+        if profile_id and meal_date and meal_type and recipe_id:
+            try:
+                await api_client.mark_consumed_planned(profile_id, meal_date, meal_type, recipe_id)
+            except Exception as e:
+                _LOGGER.error("Error calling mark_consumed_planned: %s", e)
+        else:
+            _LOGGER.error("Service mark_consumed requires profile_id, meal_date, meal_type, and recipe_id")
+
+    async def handle_override_consumed(call: ServiceCall):
+        """Handle the service call to override a consumed meal."""
+        profile_id = call.data.get("profile_id")
+        meal_date = call.data.get("meal_date")
+        meal_type = call.data.get("meal_type")
+        override_details = call.data.get("override_details")
+        if profile_id and meal_date and meal_type and override_details:
+            try:
+                await api_client.mark_consumed_override(profile_id, meal_date, meal_type, override_details)
+            except Exception as e:
+                _LOGGER.error("Error calling mark_consumed_override: %s", e)
+        else:
+            _LOGGER.error("Service override_consumed requires profile_id, meal_date, meal_type, and override_details")
+
+    async def handle_generate_week(call: ServiceCall):
+        """Handle the service call to generate a weekly plan."""
+        profile_id_A = call.data.get("profile_id_A")
+        profile_id_B = call.data.get("profile_id_B")
+        current_date = call.data.get("current_date")
+        if profile_id_A and profile_id_B and current_date:
+            try:
+                await api_client.generate_weekly_plan(profile_id_A, profile_id_B, current_date)
+            except Exception as e:
+                _LOGGER.error("Error calling generate_weekly_plan: %s", e)
+        else:
+            _LOGGER.error("Service generate_week requires profile_id_A, profile_id_B, and current_date")
+
+    async def handle_change_recipe(call: ServiceCall):
+        """Handle the service call to change a recipe."""
+        profile_id_A = call.data.get("profile_id_A")
+        profile_id_B = call.data.get("profile_id_B")
+        meal_type = call.data.get("meal_type")
+        current_date = call.data.get("current_date")
+        mood = call.data.get("mood")
+        cleanup = call.data.get("cleanup")
+        max_time_minutes = call.data.get("max_time_minutes")
+        if profile_id_A and profile_id_B and meal_type and current_date:
+            try:
+                await api_client.suggest_recipes_for_meal(profile_id_A, profile_id_B, meal_type, current_date, mood, cleanup, max_time_minutes)
+            except Exception as e:
+                _LOGGER.error("Error calling suggest_recipes_for_meal: %s", e)
+        else:
+            _LOGGER.error("Service change_recipe requires profile_id_A, profile_id_B, meal_type, and current_date")
+
+    async def handle_apply_recipe_option(call: ServiceCall):
+        """Handle the service call to apply a recipe option."""
+        profile_id_A = call.data.get("profile_id_A")
+        profile_id_B = call.data.get("profile_id_B")
+        meal_type = call.data.get("meal_type")
+        current_date = call.data.get("current_date")
+        recipe_id = call.data.get("recipe_id")
+        if profile_id_A and profile_id_B and meal_type and current_date and recipe_id:
+            try:
+                await api_client.apply_recipe_to_plan(profile_id_A, profile_id_B, meal_type, current_date, recipe_id)
+            except Exception as e:
+                _LOGGER.error("Error calling apply_recipe_to_plan: %s", e)
+        else:
+            _LOGGER.error("Service apply_recipe_option requires profile_id_A, profile_id_B, meal_type, current_date, and recipe_id")
+
     hass.services.async_register(DOMAIN, "mark_consumed", handle_mark_consumed)
     hass.services.async_register(DOMAIN, "override_consumed", handle_override_consumed)
     hass.services.async_register(DOMAIN, "generate_week", handle_generate_week)
