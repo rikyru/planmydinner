@@ -48,8 +48,28 @@ def change_recipe(
         "max_time_minutes": max_time_minutes
     }
     planner = PlannerEngine(db)
+
+    # Fetch the active meal plan for the given date to find the target meal composition
+    weekly_plan_A = planner._get_active_meal_plan(profile_id_A, current_date)
+    weekly_plan_B = planner._get_active_meal_plan(profile_id_B, current_date)
+
+    if not weekly_plan_A or not weekly_plan_B:
+        raise HTTPException(status_code=404, detail="Could not find active meal plans for one or both profiles.")
+
+    daily_plan_A = next((d for d in weekly_plan_A.daily_plans if date.fromisoformat(d.date) == current_date), None)
+    daily_plan_B = next((d for d in weekly_plan_B.daily_plans if date.fromisoformat(d.date) == current_date), None)
+
+    if not daily_plan_A or not daily_plan_B:
+        raise HTTPException(status_code=404, detail="Could not find daily plans for the specified date.")
+        
+    meal_plan_A = next((m for m in daily_plan_A.meals if m.meal_type == meal_type), None)
+    meal_plan_B = next((m for m in daily_plan_B.meals if m.meal_type == meal_type), None)
+
+    if not meal_plan_A or not meal_plan_B:
+        raise HTTPException(status_code=404, detail=f"Could not find meal plans for meal type '{meal_type}'.")
+
     options = planner.suggest_recipes_for_meal(
-        profile_id_A, profile_id_B, meal_type, current_date, request_params
+        meal_plan_A, meal_plan_B, profile_id_A, profile_id_B, current_date, request_params
     )
     if not options:
         raise HTTPException(status_code=404, detail="No alternative recipes found.")
