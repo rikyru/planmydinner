@@ -139,7 +139,9 @@ class PlannerEngine:
         # --- Nutritional Plan Adherence ---
         # This check is now correctly handling items with planned_qty > 0
         planned_food_groups_A = {item.food_group: item.quantity for item in target_meal_plan_A.items if item.quantity > 0}
+        _LOGGER.debug(f"Target grammages for profile A from meal plan: {planned_food_groups_A}")
         planned_food_groups_B = {item.food_group: item.quantity for item in target_meal_plan_B.items if item.quantity > 0}
+        _LOGGER.debug(f"Target grammages for profile B from meal plan: {planned_food_groups_B}")
         
         recipe_food_groups_A = {rec_ing.food_group: rec_ing.quantities["persona_a"].grams_equiv for rec_ing in recipe_ingredients if rec_ing.quantities["persona_a"].grams_equiv is not None}
         recipe_food_groups_B = {rec_ing.food_group: rec_ing.quantities["persona_b"].grams_equiv for rec_ing in recipe_ingredients if rec_ing.quantities["persona_b"].grams_equiv is not None}
