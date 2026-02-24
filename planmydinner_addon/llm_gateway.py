@@ -1,5 +1,6 @@
 import logging
 import os
+import json
 from typing import Optional, Dict, Any, List
 
 # Placeholder for actual LLM client imports (e.g., from openai, from ollama)
@@ -78,8 +79,10 @@ class LLMGateway:
             "For `content`, generate appropriate `RecipeIngredient`s. If `is_composed_dish` is true, "
             "then `content` should be a `ComposedDishContent` object with a list of components. "
             "If `is_composed_dish` is false, `content` should be a list of `RecipeIngredient`s. "
-            "Estimate reasonable quantities for the provided profile IDs. "
-            f"The profile IDs are: {', '.join(profile_ids)}. "
+            f"The profile IDs for which quantities should be generated are: {', '.join(profile_ids)}. "
+            "When determining quantities, follow these rules: "
+            "1. **Vegetables without explicit quantity**: If a vegetable is mentioned without a specific weight or amount (e.g., 'con un contorno di spinaci', 'insalata a piacere'), it's a 'free item'. For these, set the `food_group` to 'verdure' and inside the `quantities` object for each profile, set `qty` to 0 and `unit` to 'g'. "
+            "2. **All other ingredients**: Estimate a reasonable quantity based on the recipe context for each profile ID. "
             "For units, use standard Italian units like 'g', 'ml', 'cucchiaio', 'cucchiaino', 'tazza', 'bicchiere', 'porzione', 'pz'. "
             "For `food_group`, categorize ingredients into 'carboidrati', 'proteine', 'grassi', 'verdure', 'frutta', 'latticini', 'altro'. "
             "Set `llm_generated_metadata.source_prompt` to the original free-text. "

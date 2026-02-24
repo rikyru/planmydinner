@@ -502,8 +502,6 @@ class PlannerEngine:
 
         for day in weekly_plan:
             for meal in day.meals:
-                # In a real implementation, you would fetch the recipe from the DB
-                # For now, we'll assume the recipe is in the meal.items
                 if not meal.items:
                     continue
                 
@@ -516,23 +514,40 @@ class PlannerEngine:
                 recipe_ingredients = recipe.content.components if recipe.is_composed_dish else recipe.content
                 for ingredient in recipe_ingredients:
                     
-                    qty_A = ingredient.quantities["persona_a"].grams_equiv
-                    qty_B = ingredient.quantities["persona_b"].grams_equiv
+                    qty_A = ingredient.quantities.get("persona_a").grams_equiv or 0
+                    qty_B = ingredient.quantities.get("persona_b").grams_equiv or 0
                     total_qty = qty_A + qty_B
 
+                    is_free_vegetable = total_qty == 0 and ingredient.food_group == "verdure"
+                    
+                    shopping_qty = 200 if is_free_vegetable else total_qty
+                    note = "Quantità stimata" if is_free_vegetable else None
+
+                    if shopping_qty == 0:
+                        continue
+
                     if ingredient.name in required_items:
-                        required_items[ingredient.name]["quantity"] += total_qty
+                        required_items[ingredient.name]["quantity"] += shopping_qty
+                        if note and not required_items[ingredient.name].get("notes"):
+                             required_items[ingredient.name]["notes"] = note
                     else:
-                        required_items[ingredient.name] = {
+                        item_data = {
                             "name": ingredient.name,
-                            "quantity": total_qty,
+                            "quantity": shopping_qty,
                             "unit": "g", # All quantities are in grams
                             "category": ingredient.food_group,
                         }
+                        if note:
+                            item_data["notes"] = note
+                        required_items[ingredient.name] = item_data
         
         shopping_list_items: List[schemas.ShoppingListItem] = []
         for item_name, item_data in required_items.items():
             pantry_item = next((p for p in pantry_items if p.name.lower() == item_name.lower()), None)
+            
+            # Remove notes if it's None before creating ShoppingListItem
+            notes = item_data.pop("notes", None)
+
             if pantry_item:
                 if pantry_item.quantity < item_data["quantity"]:
                     shopping_list_items.append(schemas.ShoppingListItem(
@@ -540,9 +555,10 @@ class PlannerEngine:
                         quantity=item_data["quantity"] - pantry_item.quantity,
                         unit=item_data["unit"],
                         category=item_data["category"],
+                        notes=notes
                     ))
             else:
-                shopping_list_items.append(schemas.ShoppingListItem(**item_data))
+                shopping_list_items.append(schemas.ShoppingListItem(**item_data, notes=notes))
         
         # Group by category
         items_by_category: Dict[str, List[schemas.ShoppingListItem]] = {}

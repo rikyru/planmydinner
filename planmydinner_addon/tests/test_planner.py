@@ -146,3 +146,63 @@ def test_apply_recipe_to_plan(client, planner_seeded_database):
 
     # In V1, this test would then check the StructuredMealPlan in the DB
     # For MVP, it just confirms the endpoint works.
+
+def test_generate_shopping_list_with_free_vegetable(planner_seeded_database):
+    """
+    Tests that a recipe with a 'free vegetable' (quantity 0) generates a shopping list
+    with a default quantity (200g) and an 'estimated' note.
+    """
+    db_session = planner_seeded_database
+
+    # 1. Create a recipe with a free vegetable
+    recipe_free_veg_data = {
+        "id": "rec_free_veg",
+        "name": "Piatto con verdura libera",
+        "is_composed_dish": False,
+        "content": [
+            {"name": "Pollo", "food_group": "proteine", "quantities": {"persona_a": {"qty": 150, "unit": "g", "grams_equiv": 150}, "persona_b": {"qty": 150, "unit": "g", "grams_equiv": 150}}},
+            {"name": "Insalata", "food_group": "verdure", "quantities": {"persona_a": {"qty": 0, "unit": "g", "grams_equiv": 0}, "persona_b": {"qty": 0, "unit": "g", "grams_equiv": 0}}},
+        ],
+        "steps": ["Cuocere il pollo.", "Servire con insalata."],
+        "total_time_minutes": 20,
+        "difficulty": "facile",
+        "tags": {}
+    }
+    db_recipe = Recipe(**recipe_free_veg_data)
+    db_session.add(db_recipe)
+    db_session.commit()
+
+    # 2. Instantiate PlannerEngine
+    planner = PlannerEngine(db_session)
+
+    # 3. Create a mock weekly plan that uses the new recipe
+    mock_plan = [
+        schemas.DailyPlannedMeals(
+            date=date.today().isoformat(),
+            meals=[
+                schemas.PlannedMeal(
+                    meal_type="cena",
+                    items=[schemas.PlannedItem(item_name="Piatto con verdura libera", food_group="recipe", quantity=1, unit="recipe")]
+                )
+            ]
+        )
+    ]
+
+    # 4. Generate the shopping list with the mocked plan
+    with patch.object(planner, 'generate_weekly_plan', return_value=mock_plan):
+        shopping_list = planner.generate_shopping_list_for_week("persona_a", "persona_b", date.today())
+
+        # 5. Assertions for the shopping list content
+        assert "verdure" in shopping_list.items_by_category
+        
+        insalata_item = next((item for item in shopping_list.items_by_category["verdure"] if item.name == "Insalata"), None)
+        assert insalata_item is not None
+        assert insalata_item.quantity == 200
+        assert insalata_item.notes == "Quantità stimata"
+
+        # Also check the regular ingredient
+        assert "proteine" in shopping_list.items_by_category
+        pollo_item = next((item for item in shopping_list.items_by_category["proteine"] if item.name == "Pollo"), None)
+        assert pollo_item is not None
+        assert pollo_item.quantity == 300  # 150 (A) + 150 (B)
+        assert pollo_item.notes is None

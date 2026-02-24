@@ -16,6 +16,7 @@ class PlanMyDinnerApiClient:
     async def _request(self, method: str, path: str, **kwargs) -> Dict[str, Any]:
         """Make a request to the add-on API."""
         url = f"{self.base_url}{path}"
+        _LOGGER.debug("Requesting URL: %s", url)
         try:
             async with self.session.request(method, url, **kwargs) as resp:
                 resp.raise_for_status()
