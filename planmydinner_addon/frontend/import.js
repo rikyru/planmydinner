@@ -41,7 +41,6 @@ const ImportWizard = defineComponent({
                         </table>
                     </div>
                 </div>
-                </div>
                 
                 <div class="rules-section">
                     <h4>Rotation Rules</h4>
