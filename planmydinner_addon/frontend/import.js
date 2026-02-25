@@ -5,8 +5,14 @@ const ImportWizard = defineComponent({
         <div>
             <h2>Import Wizard</h2>
             <div v-if="!parsedData">
+                <select v-model="selectedProfile">
+                    <option :value="null" disabled>Select a profile</option>
+                    <option v-for="profile in profiles" :key="profile.id" :value="profile.id">
+                        {{ profile.name }} ({{ profile.id }})
+                    </option>
+                </select>
                 <input type="file" @change="onFileChange">
-                <button @click="upload" :disabled="!file">Upload</button>
+                <button @click="upload" :disabled="!file || !selectedProfile">Upload</button>
             </div>
             <div v-if="parsedData">
                 <h3>Review and Edit Meal Plan for Profile: {{ parsedData.profile_id }}</h3>
@@ -69,15 +75,28 @@ const ImportWizard = defineComponent({
         return {
             file: null,
             parsedData: null,
+            profiles: [],
+            selectedProfile: null,
         }
     },
+    mounted() {
+        this.fetchProfiles();
+    },
     methods: {
+        fetchProfiles() {
+            fetch('/profiles')
+                .then(response => response.json())
+                .then(data => {
+                    this.profiles = data;
+                });
+        },
         onFileChange(e) {
             this.file = e.target.files[0];
         },
         upload() {
             const formData = new FormData();
-            formData.append('file', this.file);
+            formData.append('pdf_file', this.file);
+            formData.append('profile_id', this.selectedProfile);
 
             fetch('/import/pdf', {
                 method: 'POST',
@@ -114,6 +133,7 @@ const ImportWizard = defineComponent({
         cancel() {
             this.parsedData = null;
             this.file = null;
+            this.selectedProfile = null;
         },
         updateAlternatives(item) {
             if (typeof item.alternatives === 'string') {
