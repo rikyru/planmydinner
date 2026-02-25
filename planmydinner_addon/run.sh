@@ -8,4 +8,4 @@ echo "Starting Plan My Dinner Add-on"
 echo "Database will be stored at: ${DB_PATH}"
 
 # Run the FastAPI server
-exec uvicorn main:app --host 0.0.0.0 --port 8000
+exec uvicorn planmydinner_addon.main:app --host 0.0.0.0 --port 8000
