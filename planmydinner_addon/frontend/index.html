@@ -5,6 +5,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Plan My Dinner Configuration</title>
     <link rel="stylesheet" href="style.css">
+    <script type="importmap">
+      {
+        "imports": {
+          "vue": "https://unpkg.com/vue@3/dist/vue.esm-browser.js"
+        }
+      }
+    </script>
 </head>
 <body>
     <div id="app">
@@ -26,7 +33,7 @@
     </div>
 
     <script type="module">
-        import { createApp } from 'https://unpkg.com/vue@3/dist/vue.esm-browser.js';
+        import { createApp } from 'vue';
         import Pantry from './pantry.js';
         import Recipes from './recipes.js';
         import ImportWizard from './import.js';
