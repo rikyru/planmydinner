@@ -89,6 +89,10 @@ def test_rotation_rule_fail_food_group(planner, fish_recipe, mock_profiles, mock
     is_valid, _, _ = planner._filter_hard_constraints(
         fish_recipe, plan_A, plan_B, profile_A, profile_B, consumed_A, consumed_B, {}, date.today()
     )
+    print(f"\n--- DEBUG rotation test ---")
+    print(f"Recipe: {fish_recipe.name}, id: {fish_recipe.id}")
+    print(f"Consumed A: {consumed_A}")
+    print(f"Is valid: {is_valid}")
     assert is_valid is False
 
 def test_rotation_rule_fail_specific_item(planner, chicken_recipe, mock_profiles, mock_meal_plans):

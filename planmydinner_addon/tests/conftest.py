@@ -216,6 +216,11 @@ def planner_seeded_database(setup_database):
     db_session.add(StructuredMealPlan(**meal_plan_B_data))
 
     db_session.commit()
+    # Verify the meal plans are in the session after commit
+    retrieved_plan_A = db_session.query(StructuredMealPlan).filter_by(id="plan_a").first()
+    retrieved_plan_B = db_session.query(StructuredMealPlan).filter_by(id="plan_b").first()
+    print(f"\n--- DEBUG: After commit - Retrieved Plan A: {retrieved_plan_A.id if retrieved_plan_A else 'None'} ---")
+    print(f"--- DEBUG: After commit - Retrieved Plan B: {retrieved_plan_B.id if retrieved_plan_B else 'None'} ---")
 
     yield db_session
 

@@ -3,6 +3,7 @@ import uuid
 import json
 from datetime import date, timedelta
 from typing import List, Dict, Any, Optional
+import re
 
 from sqlalchemy.orm import Session
 from sqlalchemy import func
@@ -36,7 +37,7 @@ class PlannerEngine:
         _LOGGER.debug(f"Searching for active meal plan for profile {profile_id} on date {current_date.isoformat()}")
         db_plan = self.db.query(StructuredMealPlan).filter(
             StructuredMealPlan.profile_id == profile_id,
-            func.julianday(StructuredMealPlan.start_date) <= func.julianday(current_date.isoformat()),
+            StructuredMealPlan.start_date <= current_date.isoformat(),
             func.julianday(StructuredMealPlan.start_date) + 7 > func.julianday(current_date.isoformat())
         ).order_by(StructuredMealPlan.start_date.desc()).first()
         if db_plan:
@@ -84,29 +85,32 @@ class PlannerEngine:
         Determines food group for a given item name using a high-confidence keyword whitelist.
         """
         item_lower = item_name.lower()
+        _LOGGER.debug(f"Attempting to get food group for item: '{item_name}'")
 
         keyword_map = {
-            "carne_rossa": ["manzo", "bistecca", "carne trita", "salsiccia"],
-            "pollo": ["pollo", "petti di pollo"],
-            "legumi": ["ceci", "lenticchie", "fagioli"],
-            "pesce": ["pesce", "salmone", "tonno", "merluzzo"],
-            "carboidrato": ["pasta", "riso", "pane", "patate"],
+            "carne_rossa": [r"\bmanzo\b", r"\bbistecca\b", r"\bcarne trita\b", r"\bsalsiccia\b"],
+            "pollo": [r"\bpollo\b", r"\bpetti di pollo\b"],
+            "legumi": [r"\bceci\b", r"\blenticchie\b", r"\bfagioli\b"],
+            "pesce": [r"\bpesce\b", r"\bsalmone\b", r"\btonno\b", r"\bmerluzzo\b"],
+            "carboidrato": [r"\bpasta\b", r"\briso\b", r"\bpane\b", r"\bpatate\b"],
             "verdura": [
-                "verdura", "insalata", "pomodoro", "cetriolo", "carota", "peperone",
-                "cipolla", "aglio", "melanzana", "zucchina", "spinaci", "broccoli",
-                "cavolfiore", "finocchio", "sedano", "asparagi", "fungo", "radicchio",
-                "barbabietola", "zucca"
+                r"\bverdura\b", r"\binsalata\b", r"\bpomodoro\b", r"\bcetriolo\b", r"\bcarota\b", r"\bpeperone\b",
+                r"\bcipolla\b", r"\baglio\b", r"\bmelanzana\b", r"\bzucchina\b", r"\bspinaci\b", r"\bbroccoli\b",
+                r"\bcavolfiore\b", r"\bfinocchio\b", r"\bsedano\b", r"\basparagi\b", r"\bfungo\b", r"\bradicchio\b",
+                r"\bbarbabietola\b", r"\bzucca\b"
             ],
-            "grasso": ["olio", "burro", "frutta secca", "noci", "mandorle"],
-            "frutta": ["mela", "banana", "arancia", "fragola", "frutta"],
-            "proteina": ["uova", "tofu"],
+            "grasso": [r"\bolio\b", r"\bburro\b", r"\bfrutta secca\b", r"\bnoci\b", r"\bmandorle\b"],
+            "frutta": [r"\bmela\b", r"\bbanana\b", r"\barancia\b", r"\bfragola\b", r"\bfrutta\b"],
+            "proteina": [r"\buova\b", r"\btofu\b"],
         }
 
         for group, keywords in keyword_map.items():
-            for keyword in keywords:
-                if keyword in item_lower:
+            for keyword_regex in keywords:
+                if re.search(keyword_regex, item_lower):
+                    _LOGGER.debug(f"Matched '{item_name}' with keyword '{keyword_regex}' to group '{group}'")
                     return group
             
+        _LOGGER.debug(f"No food group found for item: '{item_name}'")
         return None
 
     def _filter_hard_constraints(
@@ -193,7 +197,7 @@ class PlannerEngine:
                     for rec_ing in recipe_ingredients:
                         # A rule can apply to a food group OR a specific ingredient name
                         if self._normalize_food_group(rec_ing.food_group) == normalized_rule_fg or rec_ing.name.lower() == normalized_rule_fg:
-                            _LOGGER.debug(f"Recipe {recipe.id} failed hard rotation rule for '{rule.food_group_or_item}'.")
+                            _LOGGER.debug(f"!!! Rotation rule triggered for recipe {recipe.id} on '{rule.food_group_or_item}' with ing '{rec_ing.name}'. Current count: {count}, Max: {rule.max_per_week}")
                             return False, None, None
         
         recent_recipe_ids = {e.consumed_recipe_id for e in all_consumed if e.consumed_recipe_id}
@@ -354,7 +358,7 @@ class PlannerEngine:
             is_valid, divergence_strategy, divergence_details = self._filter_hard_constraints(
                 recipe, meal_plan_A, meal_plan_B,
                 profile_A, profile_B,
-                consumed_entries_A, consumed_entries_B, {},
+                consumed_entries_A, consumed_entries_B, request_params,
                 current_date
             )
             
@@ -364,6 +368,7 @@ class PlannerEngine:
                     "divergence_strategy": divergence_strategy,
                     "divergence_details": divergence_details
                 })
+        _LOGGER.debug(f"Valid recipes after hard constraints: {[r['recipe'].name for r in valid_recipes]}")
         
         filtered_recipes = []
         for recipe_info in valid_recipes:
@@ -378,6 +383,7 @@ class PlannerEngine:
                 "divergence_strategy": recipe_info["divergence_strategy"],
                 "divergence_details": recipe_info["divergence_details"]
             })
+        _LOGGER.debug(f"Filtered recipes after scoring: {[r['recipe'].name for r in filtered_recipes]}")
         
         filtered_recipes.sort(key=lambda x: x["score"], reverse=True)
         
