@@ -1,14 +1,16 @@
 FROM python:3.11-slim
 
-WORKDIR /usr/src/app
+WORKDIR /app
 
 ENV PYTHONUNBUFFERED=1
-ENV PYTHONPATH=/usr/src/app
+ENV PYTHONPATH=/app
 
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY . .
+COPY . /app/planmydinner_addon
+
+WORKDIR /app
 
 EXPOSE 8000
 
