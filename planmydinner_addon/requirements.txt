@@ -7,3 +7,4 @@ pdfminer.six==20231228
 tabula-py==1.1.0
 jpype1==1.5.0 # Required by tabula-py
 python-multipart==0.0.9 # Required for UploadFile and Form data in FastAPI
+openai
