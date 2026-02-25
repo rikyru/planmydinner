@@ -6,6 +6,7 @@ ENV PYTHONUNBUFFERED=1
 ENV PYTHONPATH=/app
 
 COPY requirements.txt ./
+RUN apt-get update && apt-get install -y default-jre && rm -rf /var/lib/apt/lists/*
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . /app/planmydinner_addon
