@@ -12,12 +12,16 @@
             <a @click="page = 'pantry'">Pantry</a>
             <a @click="page = 'recipes'">Recipes</a>
             <a @click="page = 'import'">Import</a>
+            <a @click="page = 'profiles'">Profiles</a>
+            <a @click="page = 'planner'">Planner</a>
         </nav>
         
         <main>
             <pantry v-if="page === 'pantry'"></pantry>
             <recipes v-if="page === 'recipes'"></recipes>
             <import-wizard v-if="page === 'import'"></import-wizard>
+            <profiles v-if="page === 'profiles'"></profiles>
+            <planner v-if="page === 'planner'"></planner>
         </main>
     </div>
 
@@ -26,6 +30,8 @@
         import Pantry from './pantry.js';
         import Recipes from './recipes.js';
         import ImportWizard from './import.js';
+        import Profiles from './profiles.js';
+        import Planner from './planner.js';
 
         const app = {
             data() {
@@ -37,6 +43,8 @@
                 Pantry,
                 Recipes,
                 'import-wizard': ImportWizard,
+                Profiles,
+                Planner,
             }
         };
 
