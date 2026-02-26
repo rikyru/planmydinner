@@ -1,0 +1,13 @@
+frontend/node_modules/
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+*.db
+*.sqlite
+.env
+.env.*
+tests/
+*.egg-info/
+.pytest_cache/
+.coverage

@@ -4,7 +4,9 @@ sqlalchemy==2.0.25
 pydantic==2.6.1
 httpx==0.26.0
 pdfminer.six==20231228
-tabula-py==1.1.0
-jpype1==1.5.0 # Required by tabula-py
-python-multipart==0.0.9 # Required for UploadFile and Form data in FastAPI
+python-multipart==0.0.9
 openai
+# tabula-py e jpype1 richiedono JRE installato nel sistema.
+# Decommentare se si vuole l'import PDF via tabella (e abilitare JRE nel Dockerfile).
+# tabula-py==1.1.0
+# jpype1==1.5.0

@@ -46,24 +46,17 @@
 
 ### Bug critici trovati
 
-1. **QUANTITY_TOLERANCE_PERCENT = 0.50** (linea 32, planner.py)
-   - Valore debug lasciato: dovrebbe essere 0.10
-   - Con 50% di tolleranza quasi tutto passa i filtri grammage
+1. ~~**QUANTITY_TOLERANCE_PERCENT = 0.50**~~ ✅ FIXATO (→ 0.10)
 
-2. **_calculate_dosing() è uno stub** (linea 220-221)
-   - Ritorna la ricetta invariata, dosi non adattate al profilo
+2. ~~**_calculate_dosing() è uno stub**~~ ✅ FIXATO (somma qty A+B, chiave "combined")
 
-3. **Shopping list non esclude override free-text**
-   - Doc dice di escludere ingredienti quando pasto tracciato come free-text
-   - Il codice non lo fa
+3. ~~**Shopping list non esclude override free-text**~~ ✅ FIXATO (skip se entry.type=="override" con free_text_name)
 
 4. **Soft constraint scoring manca componente rotazioni**
    - Doc descrive 5 componenti (pantry, scadenza, stagionalità, ripetizione, rotazioni)
    - Implementati 4: manca il boost rotazioni soft
 
-5. **_get_active_meal_plan: finestra 7 giorni hardcoded**
-   - Cerca piani con start_date nel range di 7 giorni
-   - Non gestisce piani mensili/bimestrali
+5. ~~**_get_active_meal_plan: finestra 7 giorni hardcoded**~~ ✅ FIXATO (verifica daily_plans reali del piano)
 
 ### Frontend Vue.js - Componenti
 

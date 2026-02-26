@@ -2,6 +2,7 @@ import { defineComponent } from 'vue';
 
 const ShoppingList = defineComponent({
     name: 'ShoppingList',
+    inject: ['toast'],
     template: `
         <div class="shopping-view">
             <h2>Lista della Spesa</h2>
@@ -107,9 +108,9 @@ const ShoppingList = defineComponent({
                 }
             }
             navigator.clipboard.writeText(lines.join('\n')).then(() => {
-                alert('Lista copiata negli appunti!');
+                this.toast.add('Lista copiata negli appunti!', 'success');
             }).catch(() => {
-                alert('Errore nella copia.');
+                this.toast.add('Errore nella copia negli appunti.', 'error');
             });
         },
     },

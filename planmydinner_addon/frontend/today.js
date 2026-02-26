@@ -1,7 +1,9 @@
 import { defineComponent } from 'vue';
 
+
 const TodayView = defineComponent({
     name: 'TodayView',
+    inject: ['toast'],
     template: `
         <div class="today-view">
             <h2>Oggi — {{ formattedDate }}</h2>
@@ -171,7 +173,17 @@ const TodayView = defineComponent({
             if (!this.profileA) return;
             try {
                 const meal = this.todayPlan?.meals.find(m => m.meal_type === mealType);
-                const recipeId = meal?.items?.[0]?.item_name ? null : null;
+                const recipeName = meal?.items?.[0]?.item_name || null;
+                // Cerca l'ID della ricetta per nome
+                let recipeId = null;
+                if (recipeName) {
+                    const recResp = await fetch('/recipes/');
+                    if (recResp.ok) {
+                        const recipes = await recResp.json();
+                        const found = recipes.find(r => r.name === recipeName);
+                        if (found) recipeId = found.id;
+                    }
+                }
                 const body = {
                     profile_id: this.profileA.id,
                     date: this.today,
@@ -179,14 +191,15 @@ const TodayView = defineComponent({
                     type: 'planned',
                     consumed_recipe_id: recipeId,
                 };
-                await fetch('/consumed-entries/', {
+                const resp = await fetch('/consumed-entries/', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(body),
                 });
-                alert('Pasto registrato come consumato!');
+                if (!resp.ok) throw new Error('Errore nel salvataggio.');
+                this.toast.add('Pasto registrato!', 'success');
             } catch (e) {
-                alert('Errore: ' + e.message);
+                this.toast.add('Errore: ' + e.message, 'error');
             }
         },
         closeModal() {

@@ -29,7 +29,7 @@ class PlannerEngine:
     Core logic for filtering, dosing, and ranking recipes based on meal plans, profiles,
     pantry, seasonality, and consumption history.
     """
-    QUANTITY_TOLERANCE_PERCENT = 0.50 # +/- 50% (Temporarily increased for debugging)
+    QUANTITY_TOLERANCE_PERCENT = 0.10 # +/- 10%
     ANTI_REPETITION_DAYS = 7 # Defined as a class variable
 
     def __init__(self, db: Session, llm_gateway: Optional[LLMGateway] = None):
@@ -44,14 +44,21 @@ class PlannerEngine:
 
     def _get_active_meal_plan(self, profile_id: str, current_date: date) -> Optional[schemas.StructuredMealPlan]:
         _LOGGER.debug(f"Searching for active meal plan for profile {profile_id} on date {current_date.isoformat()}")
-        db_plan = self.db.query(StructuredMealPlan).filter(
+        # Prendi tutti i piani con start_date <= current_date, ordinati dal più recente.
+        # La finestra 7-days era hardcoded e non funzionava per piani mensili/bimestrali.
+        # Verifichiamo in Python se current_date è coperta dalle daily_plans del piano.
+        db_plans = self.db.query(StructuredMealPlan).filter(
             StructuredMealPlan.profile_id == profile_id,
             StructuredMealPlan.start_date <= current_date.isoformat(),
-            func.julianday(StructuredMealPlan.start_date) + 7 > func.julianday(current_date.isoformat())
-        ).order_by(StructuredMealPlan.start_date.desc()).first()
-        if db_plan:
-            _LOGGER.debug(f"Found active meal plan: {db_plan.id} starting on {db_plan.start_date}")
-            return schemas.StructuredMealPlan.from_orm(db_plan)
+        ).order_by(StructuredMealPlan.start_date.desc()).all()
+
+        for db_plan in db_plans:
+            plan = schemas.StructuredMealPlan.from_orm(db_plan)
+            plan_dates = {dp.date for dp in plan.daily_plans}
+            if current_date.isoformat() in plan_dates:
+                _LOGGER.debug(f"Found active meal plan: {db_plan.id} starting on {db_plan.start_date}")
+                return plan
+
         _LOGGER.debug(f"No active meal plan found for profile {profile_id}")
         return None
 
@@ -154,8 +161,17 @@ class PlannerEngine:
         planned_food_groups_B = {self._normalize_food_group(item.food_group): item.quantity for item in target_meal_plan_B.items if item.quantity > 0}
         _LOGGER.debug(f"Target grammages for profile B from meal plan: {planned_food_groups_B}")
         
-        recipe_food_groups_A = {self._normalize_food_group(rec_ing.food_group): rec_ing.quantities[profile_A.id].grams_equiv for rec_ing in recipe_ingredients if profile_A.id in rec_ing.quantities and rec_ing.quantities[profile_A.id].grams_equiv is not None}
-        recipe_food_groups_B = {self._normalize_food_group(rec_ing.food_group): rec_ing.quantities[profile_B.id].grams_equiv for rec_ing in recipe_ingredients if profile_B.id in rec_ing.quantities and rec_ing.quantities[profile_B.id].grams_equiv is not None}
+        recipe_food_groups_A: Dict[str, float] = {}
+        recipe_food_groups_B: Dict[str, float] = {}
+        for rec_ing in recipe_ingredients:
+            fg = self._normalize_food_group(rec_ing.food_group)
+            qty_a = rec_ing.quantities.get(profile_A.id)
+            if qty_a and qty_a.grams_equiv is not None:
+                recipe_food_groups_A[fg] = recipe_food_groups_A.get(fg, 0) + qty_a.grams_equiv
+            if profile_B:
+                qty_b = rec_ing.quantities.get(profile_B.id)
+                if qty_b and qty_b.grams_equiv is not None:
+                    recipe_food_groups_B[fg] = recipe_food_groups_B.get(fg, 0) + qty_b.grams_equiv
 
         for fg, planned_qty in planned_food_groups_A.items():
             recipe_qty = recipe_food_groups_A.get(fg, 0)
@@ -218,7 +234,27 @@ class PlannerEngine:
         return True, "none", ""
 
     def _calculate_dosing(self, recipe: schemas.Recipe, profile_A: schemas.UserProfile, profile_B: schemas.UserProfile) -> schemas.Recipe:
-        return recipe
+        """
+        Crea una copia della ricetta con quantità combinate (profilo A + profilo B).
+        Aggiunge una chiave "combined" in quantities per ogni ingrediente.
+        """
+        import copy
+        dosed = copy.deepcopy(recipe)
+        ingredients = dosed.content.components if dosed.is_composed_dish else dosed.content
+        for ing in ingredients:
+            qty_a = ing.quantities.get(profile_A.id)
+            qty_b = ing.quantities.get(profile_B.id) if profile_B else None
+            if qty_a is not None and qty_b is not None:
+                combined_grams = (qty_a.grams_equiv or 0) + (qty_b.grams_equiv or 0)
+                combined_qty = qty_a.qty + qty_b.qty
+                ing.quantities["combined"] = schemas.QuantityPerProfile(
+                    qty=combined_qty,
+                    unit=qty_a.unit,
+                    grams_equiv=combined_grams
+                )
+            elif qty_a is not None:
+                ing.quantities["combined"] = copy.deepcopy(qty_a)
+        return dosed
 
     def _score_soft_constraints(
         self,
@@ -585,13 +621,27 @@ class PlannerEngine:
             weekly_plan = self.generate_weekly_plan(profile_id_A, profile_id_B, start_date)
         pantry_items = self._get_pantry_items()
         
+        # Raccogli pasti mangiati fuori (override free-text) per escluderli dalla spesa
+        override_meals: set = set()  # set di (date_str, meal_type)
+        all_consumed_for_week = self._get_consumed_entries(profile_id_A, week_start + timedelta(days=6), 7)
+        if profile_id_B:
+            all_consumed_for_week += self._get_consumed_entries(profile_id_B, week_start + timedelta(days=6), 7)
+        for entry in all_consumed_for_week:
+            if entry.type == "override" and entry.override_details and entry.override_details.free_text_name:
+                override_meals.add((entry.date, entry.meal_type))
+
         required_items: Dict[str, Dict[str, Any]] = {}
 
         for day in weekly_plan:
             for meal in day.meals:
                 if not meal.items:
                     continue
-                
+
+                # Salta i pasti tracciati come "mangiato fuori" (override free-text)
+                if (day.date, meal.meal_type) in override_meals:
+                    _LOGGER.debug(f"Skipping {meal.meal_type} on {day.date}: tracciato come override free-text")
+                    continue
+
                 recipe_name = meal.items[0].item_name
                 recipe = next((r for r in self._get_all_recipes() if r.name == recipe_name), None)
 

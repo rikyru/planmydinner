@@ -5,8 +5,12 @@ from datetime import date
 from typing import Dict, List, Any, Optional
 
 from pdfminer.high_level import extract_text
-import tabula
-import pandas as pd
+try:
+    import tabula
+    import pandas as pd
+    _TABULA_AVAILABLE = True
+except ImportError:
+    _TABULA_AVAILABLE = False
 
 from . import schemas
 from .database import SessionLocal, UnitConversion, RotationRule
@@ -138,8 +142,11 @@ class PDFParser:
         """Extracts all text content from the PDF."""
         return extract_text(pdf_path)
 
-    def _extract_tables_content(self, pdf_path: str) -> List[pd.DataFrame]:
-        """Extracts tables from the PDF using tabula-py."""
+    def _extract_tables_content(self, pdf_path: str) -> list:
+        """Extracts tables from the PDF using tabula-py (requires tabula-py + Java)."""
+        if not _TABULA_AVAILABLE:
+            _LOGGER.warning("tabula-py non disponibile, estrazione tabelle disabilitata.")
+            return []
         try:
             tables = tabula.read_pdf(pdf_path, pages="all", multiple_tables=True, pandas_options={'header': None})
             return [df for df in tables if not df.empty]

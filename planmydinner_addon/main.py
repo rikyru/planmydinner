@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
+from fastapi.middleware.cors import CORSMiddleware
 from .database import create_db_and_tables # Relative import
 from .llm_gateway import LLMGateway # Import LLMGateway
 
@@ -45,6 +46,16 @@ async def lifespan(app: FastAPI):
     print("Shutting down...")
 
 app = FastAPI(title="Plan My Dinner API", lifespan=lifespan)
+
+# CORS — permette chiamate API da altri client (opzionale in standalone, utile in sviluppo)
+_cors_origins = os.getenv("CORS_ORIGINS", "*").split(",")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Construct the absolute path to the frontend directory
 frontend_dir = os.path.join(os.path.dirname(__file__), "frontend")

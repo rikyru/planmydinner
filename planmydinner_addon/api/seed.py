@@ -1,8 +1,45 @@
+import uuid
+from datetime import date, timedelta
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
-from ..database import get_db, Recipe
+from ..database import get_db, Recipe, UserProfile, StructuredMealPlan
 
 router = APIRouter(prefix="/seed", tags=["seed"])
+
+
+def _get_week_start(d: date) -> date:
+    return d - timedelta(days=d.weekday())
+
+
+def _make_daily_plans(start: date) -> list:
+    """Genera 7 daily_plans con pranzo/cena diversificati per testare il planner."""
+    meal_schedule = [
+        # (pranzo_food_group, pranzo_qty, cena_food_group, cena_qty)
+        ("carboidrati", 80, "pollo",     150),  # lun: pasta, pollo
+        ("carboidrati", 80, "pesce",     150),  # mar: pasta, salmone
+        ("legumi",      80, "proteina",  120),  # mer: lenticchie, frittata
+        ("carboidrati", 80, "legumi",    150),  # gio: pasta, ceci
+        ("carboidrati", 80, "pesce",     120),  # ven: pasta, tonno
+        ("legumi",      80, "pollo",     150),  # sab: lenticchie, pollo
+        ("carboidrati", 80, "pesce",     150),  # dom: pasta, salmone
+    ]
+    plans = []
+    for i, (pfg, pqty, cfg, cqty) in enumerate(meal_schedule):
+        d = start + timedelta(days=i)
+        plans.append({
+            "date": d.isoformat(),
+            "meals": [
+                {
+                    "meal_type": "pranzo",
+                    "items": [{"item_name": pfg, "food_group": pfg, "quantity": pqty, "unit": "g", "is_estimated_unit": False, "alternatives": []}]
+                },
+                {
+                    "meal_type": "cena",
+                    "items": [{"item_name": cfg, "food_group": cfg, "quantity": cqty, "unit": "g", "is_estimated_unit": False, "alternatives": []}]
+                },
+            ]
+        })
+    return plans
 
 SEED_RECIPES = [
     {
@@ -351,3 +388,66 @@ def seed_recipes(db: Session = Depends(get_db)):
         created += 1
     db.commit()
     return {"created": created, "skipped": skipped}
+
+
+@router.post("", status_code=201)
+def seed_all(db: Session = Depends(get_db)):
+    """
+    Seed completo: crea profili, piano pasti settimanale e ricette.
+    Idempotente: salta le entità già esistenti.
+    """
+    result = {}
+
+    # --- Profili ---
+    profiles_created = 0
+    for profile_data in [
+        {"id": "persona_a", "name": "Marco", "allergies": [], "excluded_foods": [], "preferences": [], "equipment": []},
+        {"id": "persona_b", "name": "Sara",  "allergies": [], "excluded_foods": [], "preferences": [], "equipment": []},
+    ]:
+        if not db.query(UserProfile).filter(UserProfile.id == profile_data["id"]).first():
+            db.add(UserProfile(**profile_data))
+            profiles_created += 1
+    db.commit()
+    result["profiles_created"] = profiles_created
+
+    # --- Piano pasti (settimana corrente) ---
+    week_start = _get_week_start(date.today())
+    plan_id = f"seed_plan_{week_start.isoformat()}"
+    if not db.query(StructuredMealPlan).filter(StructuredMealPlan.id == plan_id).first():
+        db.add(StructuredMealPlan(
+            id=plan_id,
+            profile_id="persona_a",
+            start_date=week_start.isoformat(),
+            rotation_rules=[],
+            allowed_cooking_methods=[],
+            daily_plans=_make_daily_plans(week_start),
+        ))
+        db.commit()
+        result["meal_plan_created"] = plan_id
+    else:
+        result["meal_plan_skipped"] = plan_id
+
+    # --- Ricette ---
+    recipes_created = 0
+    recipes_skipped = 0
+    for recipe_data in SEED_RECIPES:
+        if db.query(Recipe).filter(Recipe.id == recipe_data["id"]).first():
+            recipes_skipped += 1
+            continue
+        db.add(Recipe(
+            id=recipe_data["id"],
+            name=recipe_data["name"],
+            description=recipe_data["description"],
+            is_composed_dish=recipe_data["is_composed_dish"],
+            content=recipe_data["content"],
+            steps=recipe_data["steps"],
+            total_time_minutes=recipe_data["total_time_minutes"],
+            difficulty=recipe_data["difficulty"],
+            tags=recipe_data["tags"],
+        ))
+        recipes_created += 1
+    db.commit()
+    result["recipes_created"] = recipes_created
+    result["recipes_skipped"] = recipes_skipped
+
+    return result
