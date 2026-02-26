@@ -13,6 +13,7 @@ from .database import (
     UserProfile, StructuredMealPlan, Recipe, CandidateRecipe,
     PantryItem, ConsumedEntry, RotationRule, SeasonalityItem, UnitConversion
 )
+from .llm_gateway import LLMGateway
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -21,11 +22,12 @@ class PlannerEngine:
     Core logic for filtering, dosing, and ranking recipes based on meal plans, profiles,
     pantry, seasonality, and consumption history.
     """
-    QUANTITY_TOLERANCE_PERCENT = 0.10 # +/- 10%
+    QUANTITY_TOLERANCE_PERCENT = 0.50 # +/- 50% (Temporarily increased for debugging)
     ANTI_REPETITION_DAYS = 7 # Defined as a class variable
 
-    def __init__(self, db: Session):
+    def __init__(self, db: Session, llm_gateway: Optional[LLMGateway] = None):
         self.db = db
+        self.llm_gateway = llm_gateway
 
     def _get_user_profile(self, profile_id: str) -> Optional[schemas.UserProfile]:
         db_profile = self.db.query(UserProfile).filter(UserProfile.id == profile_id).first()
@@ -136,7 +138,7 @@ class PlannerEngine:
         for rec_ing in recipe_ingredients:
             ing_name = rec_ing.name.lower()
             if ing_name in [item.lower() for item in profile_A.allergies + profile_A.excluded_foods] or \
-               ing_name in [item.lower() for item in profile_B.allergies + profile_B.excluded_foods]:
+               (profile_B and ing_name in [item.lower() for item in profile_B.allergies + profile_B.excluded_foods]):
                 _LOGGER.debug(f"Recipe {recipe.id} has unresolvable allergy/exclusion conflicts.")
                 return False, None, None
 
@@ -145,18 +147,19 @@ class PlannerEngine:
         planned_food_groups_B = {self._normalize_food_group(item.food_group): item.quantity for item in target_meal_plan_B.items if item.quantity > 0}
         _LOGGER.debug(f"Target grammages for profile B from meal plan: {planned_food_groups_B}")
         
-        recipe_food_groups_A = {self._normalize_food_group(rec_ing.food_group): rec_ing.quantities["persona_a"].grams_equiv for rec_ing in recipe_ingredients if rec_ing.quantities["persona_a"].grams_equiv is not None}
-        recipe_food_groups_B = {self._normalize_food_group(rec_ing.food_group): rec_ing.quantities["persona_b"].grams_equiv for rec_ing in recipe_ingredients if rec_ing.quantities["persona_b"].grams_equiv is not None}
+        recipe_food_groups_A = {self._normalize_food_group(rec_ing.food_group): rec_ing.quantities["persona_a"].grams_equiv for rec_ing in recipe_ingredients if "persona_a" in rec_ing.quantities and rec_ing.quantities["persona_a"].grams_equiv is not None}
+        recipe_food_groups_B = {self._normalize_food_group(rec_ing.food_group): rec_ing.quantities["persona_b"].grams_equiv for rec_ing in recipe_ingredients if "persona_b" in rec_ing.quantities and rec_ing.quantities["persona_b"].grams_equiv is not None}
 
         for fg, planned_qty in planned_food_groups_A.items():
             recipe_qty = recipe_food_groups_A.get(fg, 0)
             if not (planned_qty * (1 - self.QUANTITY_TOLERANCE_PERCENT) <= recipe_qty <= planned_qty * (1 + self.QUANTITY_TOLERANCE_PERCENT)):
                 return False, None, None
         
-        for fg, planned_qty in planned_food_groups_B.items():
-            recipe_qty = recipe_food_groups_B.get(fg, 0)
-            if not (planned_qty * (1 - self.QUANTITY_TOLERANCE_PERCENT) <= recipe_qty <= planned_qty * (1 + self.QUANTITY_TOLERANCE_PERCENT)):
-                return False, None, None
+        if profile_B:
+            for fg, planned_qty in planned_food_groups_B.items():
+                recipe_qty = recipe_food_groups_B.get(fg, 0)
+                if not (planned_qty * (1 - self.QUANTITY_TOLERANCE_PERCENT) <= recipe_qty <= planned_qty * (1 + self.QUANTITY_TOLERANCE_PERCENT)):
+                    return False, None, None
 
         all_consumed = consumed_entries_A + consumed_entries_B
         rotation_rules = self.db.query(RotationRule).filter(RotationRule.is_hard_constraint == True).all()
@@ -281,14 +284,42 @@ class PlannerEngine:
 
         return score
 
-    def generate_weekly_plan(self, profile_id_A: str, profile_id_B: str, start_date: date) -> List[schemas.DailyPlannedMeals]:
+    def generate_weekly_plan(self, profile_id_A: str, profile_id_B: Optional[str], start_date: date) -> List[schemas.DailyPlannedMeals]:
         
         weekly_plan_A_raw = self._get_active_meal_plan(profile_id_A, start_date)
-        weekly_plan_B_raw = self._get_active_meal_plan(profile_id_B, start_date)
-
-        if not weekly_plan_A_raw or not weekly_plan_B_raw:
-            _LOGGER.error(f"Could not find active meal plans for {profile_id_A} or {profile_id_B} on {start_date.isoformat()}.")
+        if not weekly_plan_A_raw:
+            _LOGGER.error(f"Could not find an active meal plan for the primary profile {profile_id_A} on {start_date.isoformat()}.")
             return []
+
+        weekly_plan_B_raw = None
+        if profile_id_B:
+            weekly_plan_B_raw = self._get_active_meal_plan(profile_id_B, start_date)
+
+        # If profile B was specified but no plan was found, create a dummy plan to allow generation to continue
+        if profile_id_B and not weekly_plan_B_raw:
+            _LOGGER.warning(f"No active plan found for profile '{profile_id_B}'. Proceeding with a single-profile plan.")
+            weekly_plan_B_raw = schemas.StructuredMealPlan(
+                id="dummy_plan",
+                profile_id=profile_id_B,
+                start_date=start_date.isoformat(),
+                rotation_rules=[],
+                allowed_cooking_methods=[],
+                daily_plans=[schemas.DailyPlannedMeals(
+                    date=(start_date + timedelta(days=i)).isoformat(),
+                    meals=[
+                        schemas.PlannedMeal(meal_type="pranzo", items=[]),
+                        schemas.PlannedMeal(meal_type="cena", items=[])
+                    ]
+                ) for i in range(7)]
+            )
+        # If profile B wasn't specified at all, create a similar dummy plan
+        elif not profile_id_B:
+             _LOGGER.warning("No profile B specified. Proceeding with single profile plan.")
+             weekly_plan_B_raw = weekly_plan_A_raw # Just mirror profile A for now
+
+        if not weekly_plan_B_raw:
+             _LOGGER.error(f"Could not find or create a plan for Profile B. Aborting.")
+             return []
 
         weekly_plan_A = schemas.StructuredMealPlan(
             **weekly_plan_A_raw.model_dump(exclude={"daily_plans"}),
@@ -307,8 +338,11 @@ class PlannerEngine:
             daily_plan_A = next((d for d in weekly_plan_A.daily_plans if date.fromisoformat(d.date) == current_date), None)
             daily_plan_B = next((d for d in weekly_plan_B.daily_plans if date.fromisoformat(d.date) == current_date), None)
 
-            if not daily_plan_A or not daily_plan_B:
+            if not daily_plan_A: # We must have plan A, B is optional
                 continue
+            if not daily_plan_B: # Create a dummy if it doesn't exist for this day
+                daily_plan_B = schemas.DailyPlannedMeals(date=current_date.isoformat(), meals=[])
+
 
             generated_day = schemas.DailyPlannedMeals(date=current_date.isoformat(), meals=[])
             
@@ -316,8 +350,10 @@ class PlannerEngine:
                 meal_plan_A = next((m for m in daily_plan_A.meals if m.meal_type == meal_type), None)
                 meal_plan_B = next((m for m in daily_plan_B.meals if m.meal_type == meal_type), None)
 
-                if not meal_plan_A or not meal_plan_B:
+                if not meal_plan_A: # We must have a meal for profile A to generate a suggestion
                     continue
+                if not meal_plan_B: # Create a dummy if it doesn't exist
+                    meal_plan_B = schemas.PlannedMeal(meal_type=meal_type, items=[])
 
                 best_recipes = self.suggest_recipes_for_meal(
                     meal_plan_A, meal_plan_B, profile_id_A, profile_id_B, current_date, {}
@@ -339,19 +375,99 @@ class PlannerEngine:
 
         return generated_plan
 
+    def _generate_llm_recipe_suggestion(
+        self,
+        meal_plan_A: schemas.PlannedMeal,
+        meal_plan_B: schemas.PlannedMeal,
+        profile_A: schemas.UserProfile,
+        profile_B: schemas.UserProfile,
+        pantry_items: List[schemas.PantryItem],
+        consumed_entries_A: List[schemas.ConsumedEntry],
+        consumed_entries_B: List[schemas.ConsumedEntry],
+    ) -> Optional[schemas.ChangeRecipeOption]:
+        """
+        Calls the LLM to generate a new recipe when no existing recipes match.
+        """
+        if not self.llm_gateway:
+            _LOGGER.warning("LLM Gateway not available, cannot generate a new recipe suggestion.")
+            return None
+
+        _LOGGER.info("No suitable recipes found in DB. Attempting to generate a new one with LLM.")
+
+        # Build constraints
+        constraints = {
+            "profiles": [
+                {"id": profile_A.id, "allergies": profile_A.allergies, "excluded_foods": profile_A.excluded_foods},
+                {"id": profile_B.id, "allergies": profile_B.allergies, "excluded_foods": profile_B.excluded_foods},
+            ],
+            "meal_plan": {
+                "meal_type": meal_plan_A.meal_type,
+                profile_A.id: [item.model_dump() for item in meal_plan_A.items],
+                profile_B.id: [item.model_dump() for item in meal_plan_B.items],
+            },
+            "pantry_items_expiring_soon": [p.name for p in pantry_items if p.expiration_date], # Simplified for prompt
+            "recently_used_ingredients": list({e.override_details.free_text_name for e in consumed_entries_A + consumed_entries_B if e.override_details and e.override_details.free_text_name}),
+        }
+
+        generated_recipe_data = self.llm_gateway.generate_recipe_from_constraints(constraints)
+
+        if not generated_recipe_data:
+            _LOGGER.error("LLM failed to generate a valid recipe from constraints.")
+            return None
+        
+        try:
+            # Validate and create a candidate recipe
+            recipe_create_schema = schemas.RecipeCreate(**generated_recipe_data)
+            
+            candidate_id = str(uuid.uuid4())
+            db_candidate = CandidateRecipe(
+                id=candidate_id,
+                status="draft_structured",
+                recipe_data=recipe_create_schema.model_dump()
+            )
+            self.db.add(db_candidate)
+            self.db.commit()
+            _LOGGER.info(f"Successfully saved LLM-generated recipe as CandidateRecipe ID: {candidate_id}")
+
+            # Create a ChangeRecipeOption to return to the user immediately
+            return schemas.ChangeRecipeOption(
+                option_id=str(uuid.uuid4()),
+                recipe_id=candidate_id, # Use candidate_id
+                name=f"[AI] {recipe_create_schema.name}",
+                total_time_minutes=recipe_create_schema.total_time_minutes,
+                difficulty=recipe_create_schema.difficulty,
+                cleanup_score=recipe_create_schema.tags.get("cleanup", ["normal"])[0] if recipe_create_schema.tags else "normal",
+                key_ingredients=[ing.name for ing in recipe_create_schema.content[:2] if not recipe_create_schema.is_composed_dish],
+                divergence_strategy="llm_generated",
+                divergence_details="This recipe was generated by AI to fit your plan."
+            )
+        except Exception as e:
+            _LOGGER.error(f"Error processing or saving LLM-generated recipe: {e}")
+            self.db.rollback()
+            return None
+
     def suggest_recipes_for_meal(self, meal_plan_A, meal_plan_B, profile_id_A, profile_id_B, current_date, request_params):
         
         profile_A = self._get_user_profile(profile_id_A)
         profile_B = self._get_user_profile(profile_id_B)
-        if not profile_A or not profile_B:
-            _LOGGER.error(f"User profiles not found for {profile_id_A} or {profile_id_B}.")
+        
+        # We can proceed even if profile_B is a dummy profile and not found in DB
+        if not profile_A:
+            _LOGGER.error(f"User profile not found for {profile_id_A}.")
             return None
+        if not profile_B:
+             _LOGGER.warning(f"User profile not found for {profile_id_B}, will use a dummy profile.")
+             profile_B = schemas.UserProfile(id=profile_id_B, name="Dummy")
+
 
         all_recipes = self._get_all_recipes()
         pantry_items = self._get_pantry_items()
         seasonality_data = self._get_seasonality_data()
         consumed_entries_A = self._get_consumed_entries(profile_id_A, current_date, self.ANTI_REPETITION_DAYS)
-        consumed_entries_B = self._get_consumed_entries(profile_id_B, current_date, self.ANTI_REPETITION_DAYS)
+        
+        consumed_entries_B = []
+        if profile_id_B:
+            consumed_entries_B = self._get_consumed_entries(profile_id_B, current_date, self.ANTI_REPETITION_DAYS)
 
         valid_recipes = []
         for recipe in all_recipes:
@@ -405,6 +521,14 @@ class PlannerEngine:
                 divergence_strategy=rec_info["divergence_strategy"] if rec_info["divergence_strategy"] else "none",
                 divergence_details=rec_info["divergence_details"]
             ))
+
+        # If no recipes were found, try to generate one with the LLM
+        if not candidate_options:
+            llm_suggestion = self._generate_llm_recipe_suggestion(
+                meal_plan_A, meal_plan_B, profile_A, profile_B, pantry_items, consumed_entries_A, consumed_entries_B
+            )
+            if llm_suggestion:
+                return [llm_suggestion]
 
         return candidate_options
 

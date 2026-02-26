@@ -14,3 +14,4 @@ __pycache__/
 venv/
 .venv/
 log_debug.txt
+piano_test.pdf

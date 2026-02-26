@@ -1,4 +1,5 @@
 import os
+import mimetypes
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
@@ -13,6 +14,9 @@ from .api import recipes as recipes_router
 from .api import _import as import_router
 from .api import planner as planner_router
 from .api import shopping_list as shopping_list_router
+
+# Fix for Windows MIME types
+mimetypes.add_type("application/javascript", ".js")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):

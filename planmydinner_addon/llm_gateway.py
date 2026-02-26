@@ -174,3 +174,175 @@ class LLMGateway:
             _LOGGER.error(f"Error during LLM call for recipe description generation: {e}")
             return None
 
+    def get_food_group_for_item(self, item_name: str) -> Optional[str]:
+        """
+        Classifies a given food item into a predefined food group using the LLM.
+        """
+        if not self._client:
+            _LOGGER.error("LLM client not initialized. Cannot classify food group.")
+            return None
+
+        food_groups = ['carboidrati', 'proteine', 'grassi', 'verdure', 'frutta', 'latticini', 'altro']
+        task_description = (
+            "You are an expert food classifier. Given the name of a food item, classify it into one of the "
+            f"following categories: {', '.join(food_groups)}. "
+            "Respond ONLY with the category name, nothing else."
+        )
+        messages = [
+            {"role": "system", "content": self._get_system_message(task_description)},
+            {"role": "user", "content": item_name}
+        ]
+
+        try:
+            if self.provider == "openai":
+                response = self._client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    temperature=0.1 # Low temperature for classification
+                )
+                category = response.choices[0].message.content.strip().lower()
+            elif self.provider == "ollama":
+                response = self._client.chat(
+                    model=self.model,
+                    messages=messages,
+                    temperature=0.1
+                )
+                category = response['message']['content'].strip().lower()
+            else:
+                _LOGGER.error(f"Unsupported LLM provider for food group classification: {self.provider}")
+                return None
+            
+            # Basic validation to ensure response is one of the expected groups
+            if category in food_groups:
+                _LOGGER.debug(f"LLM classified '{item_name}' as '{category}'.")
+                return category
+            else:
+                _LOGGER.warning(f"LLM returned an unexpected category '{category}' for item '{item_name}'.")
+                return None
+
+        except Exception as e:
+            _LOGGER.error(f"Error during LLM call for food group classification: {e}")
+            return None
+
+    def generate_recipe_from_constraints(self, constraints: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """
+        Generates a new, creative, and complete structured recipe based on a set of constraints.
+        """
+        if not self._client:
+            _LOGGER.error("LLM client not initialized. Cannot generate recipe from constraints.")
+            return None
+
+        # Build a detailed prompt from the constraints dictionary
+        prompt_lines = ["Please generate a single, creative, and delicious recipe in Italian that adheres to the following constraints."]
+        
+        profiles_info = constraints.get("profiles", [])
+        profile_ids = [p["id"] for p in profiles_info]
+        for p_info in profiles_info:
+            prompt_lines.append(f"\nFor user '{p_info['id']}':")
+            if p_info.get("allergies"):
+                prompt_lines.append(f"- Must NOT contain: {', '.join(p_info['allergies'])}")
+            if p_info.get("excluded_foods"):
+                prompt_lines.append(f"- User dislikes and excludes: {', '.join(p_info['excluded_foods'])}")
+        
+        meal_info = constraints.get("meal_plan", {})
+        prompt_lines.append(f"\nThe recipe should be for '{meal_info.get('meal_type', 'a meal')}' and must strictly match this composition per user:")
+        for p_info in profiles_info:
+            profile_id = p_info["id"]
+            
+            # Find the meal plan items relevant for this profile
+            # This logic assumes the parent passes a simplified list of targets
+            target_foods = meal_info.get(profile_id, [])
+            
+            food_targets = [f"{item['quantity']}{item['unit']} of {item['food_group']}" for item in target_foods]
+            if food_targets:
+                prompt_lines.append(f"- For user '{profile_id}', target: {', '.join(food_targets)}.")
+            else:
+                prompt_lines.append(f"- For user '{profile_id}', no specific targets, be creative but balanced.")
+
+        if constraints.get("recently_used_ingredients"):
+            prompt_lines.append(f"\nTo ensure variety, avoid using these recently used ingredients if possible: {', '.join(constraints['recently_used_ingredients'])}")
+        if constraints.get("pantry_items_expiring_soon"):
+            prompt_lines.append(f"Strongly prefer to incorporate these ingredients from the pantry, as they are expiring soon: {', '.join(constraints['pantry_items_expiring_soon'])}")
+        
+        prompt_lines.append("\nPlease provide a creative name, a brief description, simple steps, total time, and difficulty.")
+        user_prompt = " ".join(prompt_lines)
+
+        profile_ids = [p["id"] for p in profiles_info]
+
+        json_example_recipe = {
+            "name": "Esempio Ricetta",
+            "description": "Una ricetta di esempio per il test.",
+            "is_composed_dish": False,
+            "content": [
+                {
+                    "name": "Ingrediente 1",
+                    "food_group": "carboidrati",
+                    "quantities": {
+                        profile_ids[0]: {"qty": 100, "unit": "g", "grams_equiv": 100},
+                        profile_ids[1] if len(profile_ids) > 1 else "dummy_profile_B": {"qty": 120, "unit": "g", "grams_equiv": 120}
+                    }
+                },
+                {
+                    "name": "Ingrediente 2",
+                    "food_group": "verdure",
+                    "quantities": {
+                        profile_ids[0]: {"qty": 50, "unit": "g", "grams_equiv": 50},
+                        profile_ids[1] if len(profile_ids) > 1 else "dummy_profile_B": {"qty": 60, "unit": "g", "grams_equiv": 60}
+                    }
+                }
+            ],
+            "steps": ["Step 1", "Step 2"],
+            "total_time_minutes": 30,
+            "difficulty": "facile",
+            "tags": {"mood": ["test"], "cleanup": ["facile"]}
+        }
+
+        task_description = (
+            "You are a master chef who creates recipes based on strict dietary and pantry constraints. "
+            "Generate a complete recipe in structured JSON format that matches the `schemas.RecipeCreate` model. "
+            "The JSON must be perfect. "
+            "Here is an example of the desired JSON structure you MUST follow strictly:\n"
+            f"```json\n{json.dumps(json_example_recipe, indent=2)}\n```\n"
+            "Specifically, `total_time_minutes` MUST be an integer representing the total preparation and cooking time in minutes. "
+            "`difficulty` MUST be a lowercase string, chosen from ONLY these exact values: 'facile', 'media', 'difficile', 'sconosciuto'. "
+            "`steps` MUST be a JSON array of strings, where each string is a single step of the recipe. "
+            "For the `content` field, create a list of `RecipeIngredient` objects. "
+            "For each ingredient, specify the `name`, `food_group`, and `quantities`. "
+            "The `quantities` object must have a key for each profile ID "
+            f"({', '.join(profile_ids)}) with the exact `qty` and `unit` needed to meet their targets. Also calculate the `grams_equiv` for each. "
+            "Respond ONLY with the JSON object, nothing else. Do NOT include markdown outside of the JSON block."
+        )
+
+        messages = [
+            {"role": "system", "content": task_description},
+            {"role": "user", "content": user_prompt}
+        ]
+
+        _LOGGER.info(f"Generating new recipe with prompt: {user_prompt}")
+
+        try:
+            if self.provider == "openai":
+                response = self._client.chat.completions.create(model=self.model, messages=messages, temperature=self.temperature, response_format={"type": "json_object"})
+                json_output = response.choices[0].message.content
+            elif self.provider == "ollama":
+                response = self._client.chat(model=self.model, messages=messages, temperature=self.temperature)
+                json_output = response['message']['content']
+            else:
+                _LOGGER.error(f"Unsupported LLM provider for constrained generation: {self.provider}")
+                return None
+
+            try:
+                structured_data = json.loads(json_output)
+                _LOGGER.info("Successfully generated recipe from constraints.")
+                return structured_data
+            except json.JSONDecodeError as e:
+                _LOGGER.error(f"LLM response for constrained recipe was not valid JSON: {e}. Response: {json_output}")
+                return None
+            except Exception as e:
+                _LOGGER.error(f"Failed to validate LLM constrained recipe against schema: {e}. Data: {json_output}")
+                return None
+
+        except Exception as e:
+            _LOGGER.error(f"Error during LLM call for constrained recipe generation: {e}")
+            return None
+
