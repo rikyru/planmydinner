@@ -1,0 +1,27 @@
+services:
+  planmydinner:
+    build: ./planmydinner_addon
+    ports:
+      - "8000:8000"
+    volumes:
+      - planmydinner_data:/data
+    environment:
+      - DATA_DIR=/data
+      - LLM_PROVIDER=ollama
+      - LLM_BASE_URL=http://ollama:11434
+      - LLM_MODEL=llama3
+    depends_on:
+      - ollama
+    restart: unless-stopped
+
+  ollama:
+    image: ollama/ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    restart: unless-stopped
+
+volumes:
+  planmydinner_data:
+  ollama_data:

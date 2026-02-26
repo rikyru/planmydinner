@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="it">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Plan My Dinner Configuration</title>
+    <title>Plan My Dinner</title>
     <link rel="stylesheet" href="style.css">
     <link rel="stylesheet" href="dashboard.css">
     <script type="importmap">
@@ -17,46 +17,46 @@
 <body>
     <div id="app">
         <nav>
-            <a @click="page = 'dashboard'">Dashboard</a>
-            <a @click="page = 'pantry'">Pantry</a>
-            <a @click="page = 'recipes'">Recipes</a>
-            <a @click="page = 'import'">Import</a>
-            <a @click="page = 'profiles'">Profiles</a>
-            <a @click="page = 'planner'">Planner</a>
+            <a @click="page = 'today'" :class="{active: page === 'today'}">Oggi</a>
+            <a @click="page = 'dashboard'" :class="{active: page === 'dashboard'}">Settimana</a>
+            <a @click="page = 'import'" :class="{active: page === 'import'}">Importa</a>
+            <a @click="page = 'shopping'" :class="{active: page === 'shopping'}">Lista Spesa</a>
+            <a @click="page = 'pantry'" :class="{active: page === 'pantry'}">Dispensa</a>
+            <a @click="page = 'profiles'" :class="{active: page === 'profiles'}">Profili</a>
         </nav>
-        
+
         <main>
+            <today-view v-if="page === 'today'"></today-view>
             <dashboard v-if="page === 'dashboard'"></dashboard>
-            <pantry v-if="page === 'pantry'"></pantry>
-            <recipes v-if="page === 'recipes'"></recipes>
             <import-wizard v-if="page === 'import'"></import-wizard>
+            <shopping-list v-if="page === 'shopping'"></shopping-list>
+            <pantry v-if="page === 'pantry'"></pantry>
             <profiles v-if="page === 'profiles'"></profiles>
-            <planner v-if="page === 'planner'"></planner>
         </main>
     </div>
 
     <script type="module">
         import { createApp } from 'vue';
+        import TodayView from './today.js';
         import Dashboard from './dashboard.js';
-        import Pantry from './pantry.js';
-        import Recipes from './recipes.js';
         import ImportWizard from './import.js';
+        import ShoppingList from './shopping.js';
+        import Pantry from './pantry.js';
         import Profiles from './profiles.js';
-        import Planner from './planner.js';
 
         const app = {
             data() {
                 return {
-                    page: 'dashboard'
+                    page: 'today'
                 }
             },
             components: {
+                TodayView,
                 Dashboard,
-                Pantry,
-                Recipes,
                 'import-wizard': ImportWizard,
+                ShoppingList,
+                Pantry,
                 Profiles,
-                Planner,
             }
         };
 
@@ -64,4 +64,3 @@
     </script>
 </body>
 </html>
-

@@ -205,3 +205,15 @@ class ShoppingListItem(BaseModel):
 class AggregatedShoppingList(BaseModel):
     generated_at: date
     items_by_category: Dict[str, List[ShoppingListItem]]
+
+
+class GeneratedWeeklyPlan(BaseModel):
+    id: str
+    profile_id_A: str
+    profile_id_B: Optional[str] = None
+    week_start_date: str
+    generated_at: str
+    daily_plans: List[DailyPlannedMeals]
+
+    class Config:
+        from_attributes = True

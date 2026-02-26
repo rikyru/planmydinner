@@ -4,18 +4,37 @@ const ImportWizard = defineComponent({
     template: `
         <div>
             <h2>Import Wizard</h2>
+
+            <div class="tab-bar" v-if="!parsedData">
+                <button @click="activeTab = 'pdf'" :class="{active: activeTab === 'pdf'}">PDF</button>
+                <button @click="activeTab = 'text'" :class="{active: activeTab === 'text'}">Testo</button>
+            </div>
+
             <div v-if="!parsedData">
                 <select v-model="selectedProfile">
-                    <option :value="null" disabled>Select a profile</option>
+                    <option :value="null" disabled>Seleziona un profilo</option>
                     <option v-for="profile in profiles" :key="profile.id" :value="profile.id">
                         {{ profile.name }} ({{ profile.id }})
                     </option>
                 </select>
-                <input type="file" @change="onFileChange">
-                <button @click="upload" :disabled="!file || !selectedProfile">Upload</button>
+
+                <!-- PDF tab -->
+                <div v-if="activeTab === 'pdf'">
+                    <input type="file" @change="onFileChange" accept=".pdf">
+                    <button @click="uploadPdf" :disabled="!file || !selectedProfile">Carica PDF</button>
+                </div>
+
+                <!-- Text tab -->
+                <div v-if="activeTab === 'text'">
+                    <textarea v-model="textContent" rows="10" placeholder="Incolla qui il tuo piano settimanale in formato testo..."></textarea>
+                    <button @click="uploadText" :disabled="!textContent || !selectedProfile">Importa testo</button>
+                </div>
+
+                <div v-if="uploadError" class="error">{{ uploadError }}</div>
             </div>
+
             <div v-if="parsedData">
-                <h3>Review and Edit Meal Plan for Profile: {{ parsedData.profile_id }}</h3>
+                <h3>Rivedi e modifica il piano per: {{ parsedData.profile_id }}</h3>
                 <div v-for="day in parsedData.daily_plans" :key="day.date" class="daily-plan-section">
                     <h4>{{ day.date }}</h4>
                     <div v-for="meal in day.meals" :key="meal.meal_type" class="meal-section">
@@ -23,12 +42,12 @@ const ImportWizard = defineComponent({
                         <table>
                             <thead>
                                 <tr>
-                                    <th>Item</th>
-                                    <th>Quantity</th>
-                                    <th>Unit</th>
-                                    <th>Food Group</th>
-                                    <th>Estimated</th>
-                                    <th>Alternatives</th>
+                                    <th>Alimento</th>
+                                    <th>Quantità</th>
+                                    <th>Unità</th>
+                                    <th>Gruppo</th>
+                                    <th>Stimato</th>
+                                    <th>Alternative</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -41,24 +60,24 @@ const ImportWizard = defineComponent({
                                     <td><input v-model="item.alternatives" @change="updateAlternatives(item)" class="alternatives-input"></td>
                                 </tr>
                                 <tr v-if="!meal.items.length">
-                                    <td colspan="5">No items planned for this meal.</td>
+                                    <td colspan="6">Nessun alimento per questo pasto.</td>
                                 </tr>
                             </tbody>
                         </table>
                     </div>
                 </div>
-                
+
                 <div class="rules-section">
-                    <h4>Rotation Rules</h4>
+                    <h4>Regole di rotazione</h4>
                     <ul>
                         <li v-for="(rule, index) in parsedData.rotation_rules" :key="index">
-                            {{ rule.food_group_or_item }}: Max {{ rule.max_per_week || 'N/A' }} / Min {{ rule.min_per_week || 'N/A' }} per week (Hard: {{ rule.is_hard_constraint }})
+                            {{ rule.food_group_or_item }}: Max {{ rule.max_per_week || 'N/A' }} / Min {{ rule.min_per_week || 'N/A' }} a settimana (Hard: {{ rule.is_hard_constraint }})
                         </li>
                     </ul>
                 </div>
 
                 <div class="cooking-methods-section">
-                    <h4>Allowed Cooking Methods</h4>
+                    <h4>Metodi di cottura consentiti</h4>
                     <ul>
                         <li v-for="(method, index) in parsedData.allowed_cooking_methods" :key="index">
                             {{ method }}
@@ -66,17 +85,20 @@ const ImportWizard = defineComponent({
                     </ul>
                 </div>
 
-                <button @click="save">Save</button>
-                <button @click="cancel">Cancel</button>
+                <button @click="save">Salva</button>
+                <button @click="cancel" class="btn-secondary">Annulla</button>
             </div>
         </div>
     `,
     data() {
         return {
+            activeTab: 'pdf',
             file: null,
+            textContent: '',
             parsedData: null,
             profiles: [],
             selectedProfile: null,
+            uploadError: null,
         }
     },
     mounted() {
@@ -84,37 +106,48 @@ const ImportWizard = defineComponent({
     },
     methods: {
         fetchProfiles() {
-            fetch('/profiles')
+            fetch('/profiles/')
                 .then(response => response.json())
-                .then(data => {
-                    this.profiles = data;
-                });
+                .then(data => { this.profiles = data; });
         },
         onFileChange(e) {
             this.file = e.target.files[0];
         },
-        upload() {
+        uploadPdf() {
+            this.uploadError = null;
             const formData = new FormData();
             formData.append('pdf_file', this.file);
             formData.append('profile_id', this.selectedProfile);
 
-            fetch('/import/pdf', {
-                method: 'POST',
-                body: formData,
-            })
-            .then(response => response.json())
-            .then(data => {
-                this.parsedData = data;
-            });
+            fetch('/import/pdf', { method: 'POST', body: formData })
+                .then(response => {
+                    if (!response.ok) return response.json().then(e => { throw new Error(e.detail || 'Errore'); });
+                    return response.json();
+                })
+                .then(data => { this.parsedData = data; })
+                .catch(e => { this.uploadError = e.message; });
+        },
+        uploadText() {
+            this.uploadError = null;
+            const formData = new FormData();
+            formData.append('profile_id', this.selectedProfile);
+            formData.append('text_content', this.textContent);
+
+            fetch('/import/text', { method: 'POST', body: formData })
+                .then(response => {
+                    if (!response.ok) return response.json().then(e => { throw new Error(e.detail || 'Errore'); });
+                    return response.json();
+                })
+                .then(data => { this.parsedData = data; })
+                .catch(e => { this.uploadError = e.message; });
         },
         save() {
-            // Convert alternatives back to array of strings before saving
             if (this.parsedData && this.parsedData.daily_plans) {
                 this.parsedData.daily_plans.forEach(day => {
                     day.meals.forEach(meal => {
                         meal.items.forEach(item => {
                             if (typeof item.alternatives === 'string') {
-                                item.alternatives = item.alternatives.split(',').map(alt => alt.trim()).filter(alt => alt.length > 0);
+                                item.alternatives = item.alternatives.split(',').map(a => a.trim()).filter(a => a.length > 0);
                             }
                         });
                     });
@@ -125,19 +158,18 @@ const ImportWizard = defineComponent({
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(this.parsedData),
-            })
-            .then(() => {
-                this.cancel();
-            });
+            }).then(() => { this.cancel(); });
         },
         cancel() {
             this.parsedData = null;
             this.file = null;
+            this.textContent = '';
             this.selectedProfile = null;
+            this.uploadError = null;
         },
         updateAlternatives(item) {
             if (typeof item.alternatives === 'string') {
-                item.alternatives = item.alternatives.split(',').map(alt => alt.trim()).filter(alt => alt.length > 0);
+                item.alternatives = item.alternatives.split(',').map(a => a.trim()).filter(a => a.length > 0);
             }
         },
         initializeAlternatives() {

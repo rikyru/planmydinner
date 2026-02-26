@@ -13,5 +13,7 @@ __pycache__/
 .env
 venv/
 .venv/
+*.log
 log_debug.txt
 piano_test.pdf
+temp-vue-project/

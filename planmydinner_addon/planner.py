@@ -11,11 +11,18 @@ from sqlalchemy import func
 from . import schemas
 from .database import (
     UserProfile, StructuredMealPlan, Recipe, CandidateRecipe,
-    PantryItem, ConsumedEntry, RotationRule, SeasonalityItem, UnitConversion
+    PantryItem, ConsumedEntry, RotationRule, SeasonalityItem, UnitConversion,
+    GeneratedWeeklyPlan
 )
 from .llm_gateway import LLMGateway
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def get_week_start(d: date) -> date:
+    """Returns the Monday of the week containing d."""
+    return d - timedelta(days=d.weekday())
+
 
 class PlannerEngine:
     """
@@ -147,8 +154,8 @@ class PlannerEngine:
         planned_food_groups_B = {self._normalize_food_group(item.food_group): item.quantity for item in target_meal_plan_B.items if item.quantity > 0}
         _LOGGER.debug(f"Target grammages for profile B from meal plan: {planned_food_groups_B}")
         
-        recipe_food_groups_A = {self._normalize_food_group(rec_ing.food_group): rec_ing.quantities["persona_a"].grams_equiv for rec_ing in recipe_ingredients if "persona_a" in rec_ing.quantities and rec_ing.quantities["persona_a"].grams_equiv is not None}
-        recipe_food_groups_B = {self._normalize_food_group(rec_ing.food_group): rec_ing.quantities["persona_b"].grams_equiv for rec_ing in recipe_ingredients if "persona_b" in rec_ing.quantities and rec_ing.quantities["persona_b"].grams_equiv is not None}
+        recipe_food_groups_A = {self._normalize_food_group(rec_ing.food_group): rec_ing.quantities[profile_A.id].grams_equiv for rec_ing in recipe_ingredients if profile_A.id in rec_ing.quantities and rec_ing.quantities[profile_A.id].grams_equiv is not None}
+        recipe_food_groups_B = {self._normalize_food_group(rec_ing.food_group): rec_ing.quantities[profile_B.id].grams_equiv for rec_ing in recipe_ingredients if profile_B.id in rec_ing.quantities and rec_ing.quantities[profile_B.id].grams_equiv is not None}
 
         for fg, planned_qty in planned_food_groups_A.items():
             recipe_qty = recipe_food_groups_A.get(fg, 0)
@@ -540,11 +547,42 @@ class PlannerEngine:
         current_date: date,
         recipe_id: str
     ) -> bool:
-        _LOGGER.warning("apply_recipe_to_plan is a placeholder for MVP.")
+        import copy
+        week_start = get_week_start(current_date)
+        plan = self.db.query(GeneratedWeeklyPlan).filter(
+            GeneratedWeeklyPlan.profile_id_A == profile_id_A,
+            GeneratedWeeklyPlan.week_start_date == week_start.isoformat()
+        ).first()
+        if not plan:
+            _LOGGER.warning(f"No GeneratedWeeklyPlan found for {profile_id_A} week {week_start.isoformat()}")
+            return False
+        recipe = self.db.query(Recipe).filter(Recipe.id == recipe_id).first()
+        if not recipe:
+            _LOGGER.warning(f"Recipe {recipe_id} not found.")
+            return False
+        updated = copy.deepcopy(plan.daily_plans)
+        for day in updated:
+            if day["date"] == current_date.isoformat():
+                for meal in day["meals"]:
+                    if meal["meal_type"] == meal_type:
+                        meal["items"] = [{"item_name": recipe.name, "food_group": "recipe",
+                                          "quantity": 1, "unit": "recipe",
+                                          "is_estimated_unit": False, "alternatives": []}]
+        plan.daily_plans = updated
+        self.db.add(plan)
+        self.db.commit()
         return True
 
     def generate_shopping_list_for_week(self, profile_id_A: str, profile_id_B: str, start_date: date) -> schemas.AggregatedShoppingList:
-        weekly_plan = self.generate_weekly_plan(profile_id_A, profile_id_B, start_date)
+        week_start = get_week_start(start_date)
+        cached = self.db.query(GeneratedWeeklyPlan).filter(
+            GeneratedWeeklyPlan.profile_id_A == profile_id_A,
+            GeneratedWeeklyPlan.week_start_date == week_start.isoformat()
+        ).first()
+        if cached:
+            weekly_plan = [schemas.DailyPlannedMeals.model_validate(dp) for dp in cached.daily_plans]
+        else:
+            weekly_plan = self.generate_weekly_plan(profile_id_A, profile_id_B, start_date)
         pantry_items = self._get_pantry_items()
         
         required_items: Dict[str, Dict[str, Any]] = {}
@@ -563,8 +601,10 @@ class PlannerEngine:
                 recipe_ingredients = recipe.content.components if recipe.is_composed_dish else recipe.content
                 for ingredient in recipe_ingredients:
                     
-                    qty_A = ingredient.quantities.get("persona_a").grams_equiv or 0
-                    qty_B = ingredient.quantities.get("persona_b").grams_equiv or 0
+                    qty_data_A = ingredient.quantities.get(profile_id_A)
+                    qty_data_B = ingredient.quantities.get(profile_id_B)
+                    qty_A = qty_data_A.grams_equiv if qty_data_A else 0
+                    qty_B = qty_data_B.grams_equiv if qty_data_B else 0
                     total_qty = qty_A + qty_B
 
                     is_free_vegetable = total_qty == 0 and self._normalize_food_group(ingredient.food_group) == "verdura"

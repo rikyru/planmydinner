@@ -5,7 +5,9 @@ from typing import List, Dict, Any # Added for type hinting
 
 _LOGGER = logging.getLogger(__name__)
 
-DATABASE_URL = "sqlite:///./database.db"  # This will be updated to use the path from config
+import os
+_data_dir = os.getenv("DATA_DIR", ".")
+DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{_data_dir}/database.db")
 
 engine = create_engine(
     DATABASE_URL, connect_args={"check_same_thread": False}
@@ -105,6 +107,17 @@ class StructuredMealPlan(Base):
     rotation_rules = Column(JSON) # Stored as JSON copy of RotationRule objects, or IDs
     allowed_cooking_methods = Column(JSON)
     daily_plans = Column(JSON) # Stores DailyPlannedMeals objects as JSON
+
+
+class GeneratedWeeklyPlan(Base):
+    __tablename__ = "generated_weekly_plans"
+
+    id = Column(String, primary_key=True)
+    profile_id_A = Column(String, index=True)
+    profile_id_B = Column(String, nullable=True)
+    week_start_date = Column(String, index=True)  # ISO Monday della settimana
+    generated_at = Column(String)
+    daily_plans = Column(JSON)  # List[DailyPlannedMeals] serializzata
 
 
 def consume_ingredients_from_pantry(db: Session, ingredients_data: List[Dict[str, Any]]):

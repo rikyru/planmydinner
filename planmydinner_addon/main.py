@@ -3,6 +3,7 @@ import mimetypes
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import RedirectResponse
 from .database import create_db_and_tables # Relative import
 from .llm_gateway import LLMGateway # Import LLMGateway
 
@@ -14,6 +15,7 @@ from .api import recipes as recipes_router
 from .api import _import as import_router
 from .api import planner as planner_router
 from .api import shopping_list as shopping_list_router
+from .api import seed as seed_router
 
 # Fix for Windows MIME types
 mimetypes.add_type("application/javascript", ".js")
@@ -56,8 +58,9 @@ app.include_router(recipes_router.router)
 app.include_router(import_router.router)
 app.include_router(planner_router.router)
 app.include_router(shopping_list_router.router)
+app.include_router(seed_router.router)
+
 
 @app.get("/")
 async def root():
-    """Root endpoint to check if the API is running."""
-    return {"message": "Plan My Dinner Add-on is running!"}
+    return RedirectResponse(url="/ui")
