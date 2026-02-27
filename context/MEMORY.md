@@ -68,6 +68,17 @@ Non serve riscrivere: serve FINIRE e connettere correttamente.
 - dashboard.css: restyling completo con nuove classi
 ### Step 4: Frontend - Lista Spesa funzionale ✅ (già completa in Step 2/3)
 ### Step 5: Frontend - Change Recipe UI ✅ (fatto in dashboard.js + today.js già aveva il modal)
-### Step 6: Docker standalone verifica ⬜ ← PROSSIMO
-### Step 7: PDF Import fix ⬜
-### Step 8: Test & Polish UI ⬜
+### Step 6: Docker standalone verifica ✅
+- README.md: aggiunta sezione "Avvio rapido standalone" (3 comandi + tabella variabili)
+- docker-compose.standalone.yml e .env.example già pronti dalla sessione precedente
+
+### Step 7: PDF Import fix ✅
+- api/_import.py: /import/pdf ora estrae testo con pdfminer → passa all'LLM
+- Logica LLM estratta in _parse_text_with_llm() condivisa tra /pdf e /text
+- Fallback al parser regex se LLM non disponibile
+- Messaggio errore suggerisce tab Testo se PDF non estraibile
+
+### Step 8: Test & Polish UI ✅
+- import.js: riscritto con inject toast, loading state, async/await
+- Preview piano: tabella semplificata (4 colonne invece di 6), form più pulita
+- style.css: stili dedicati per import view, tab-bar, preview giornaliero

@@ -163,22 +163,30 @@ class PlannerEngine:
         
         recipe_food_groups_A: Dict[str, float] = {}
         recipe_food_groups_B: Dict[str, float] = {}
+        recipe_has_profile_A_quantities = False
+        recipe_has_profile_B_quantities = False
         for rec_ing in recipe_ingredients:
             fg = self._normalize_food_group(rec_ing.food_group)
             qty_a = rec_ing.quantities.get(profile_A.id)
             if qty_a and qty_a.grams_equiv is not None:
                 recipe_food_groups_A[fg] = recipe_food_groups_A.get(fg, 0) + qty_a.grams_equiv
+                recipe_has_profile_A_quantities = True
             if profile_B:
                 qty_b = rec_ing.quantities.get(profile_B.id)
                 if qty_b and qty_b.grams_equiv is not None:
                     recipe_food_groups_B[fg] = recipe_food_groups_B.get(fg, 0) + qty_b.grams_equiv
+                    recipe_has_profile_B_quantities = True
 
-        for fg, planned_qty in planned_food_groups_A.items():
-            recipe_qty = recipe_food_groups_A.get(fg, 0)
-            if not (planned_qty * (1 - self.QUANTITY_TOLERANCE_PERCENT) <= recipe_qty <= planned_qty * (1 + self.QUANTITY_TOLERANCE_PERCENT)):
-                return False, None, None
-        
-        if profile_B:
+        # Controlla grammage solo se la ricetta ha quantità per il profilo corrente.
+        # Se le quantità sono per profili diversi (es. ricette seed con persona_a/persona_b),
+        # il check viene saltato e la ricetta rimane candidata.
+        if recipe_has_profile_A_quantities:
+            for fg, planned_qty in planned_food_groups_A.items():
+                recipe_qty = recipe_food_groups_A.get(fg, 0)
+                if not (planned_qty * (1 - self.QUANTITY_TOLERANCE_PERCENT) <= recipe_qty <= planned_qty * (1 + self.QUANTITY_TOLERANCE_PERCENT)):
+                    return False, None, None
+
+        if profile_B and recipe_has_profile_B_quantities:
             for fg, planned_qty in planned_food_groups_B.items():
                 recipe_qty = recipe_food_groups_B.get(fg, 0)
                 if not (planned_qty * (1 - self.QUANTITY_TOLERANCE_PERCENT) <= recipe_qty <= planned_qty * (1 + self.QUANTITY_TOLERANCE_PERCENT)):
@@ -593,15 +601,23 @@ class PlannerEngine:
             _LOGGER.warning(f"No GeneratedWeeklyPlan found for {profile_id_A} week {week_start.isoformat()}")
             return False
         recipe = self.db.query(Recipe).filter(Recipe.id == recipe_id).first()
-        if not recipe:
-            _LOGGER.warning(f"Recipe {recipe_id} not found.")
-            return False
+        if recipe:
+            recipe_name = recipe.name
+        else:
+            # Ricerca in CandidateRecipe (ricette generate dall'LLM non ancora approvate)
+            candidate = self.db.query(CandidateRecipe).filter(CandidateRecipe.id == recipe_id).first()
+            if candidate:
+                recipe_name = candidate.recipe_data.get("name", "Ricetta AI") if isinstance(candidate.recipe_data, dict) else getattr(candidate.recipe_data, "name", "Ricetta AI")
+                _LOGGER.info(f"Recipe {recipe_id} found in CandidateRecipe: {recipe_name}")
+            else:
+                _LOGGER.warning(f"Recipe {recipe_id} not found in Recipe or CandidateRecipe.")
+                return False
         updated = copy.deepcopy(plan.daily_plans)
         for day in updated:
             if day["date"] == current_date.isoformat():
                 for meal in day["meals"]:
                     if meal["meal_type"] == meal_type:
-                        meal["items"] = [{"item_name": recipe.name, "food_group": "recipe",
+                        meal["items"] = [{"item_name": recipe_name, "food_group": "recipe",
                                           "quantity": 1, "unit": "recipe",
                                           "is_estimated_unit": False, "alternatives": []}]
         plan.daily_plans = updated

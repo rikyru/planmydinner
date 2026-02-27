@@ -1,3 +1,50 @@
+# Plan My Dinner
+
+Pianificatore di pasti settimanali con IA per due profili. Funziona **standalone** (browser + Docker) o integrato con Home Assistant.
+
+## Avvio rapido (standalone)
+
+```bash
+# 1. Configura il provider LLM
+cp .env.example .env
+# Modifica .env: scegli ollama o openai e inserisci URL/API key
+
+# 2. Avvia
+docker-compose -f docker-compose.standalone.yml up -d
+
+# 3. Apri il browser su http://localhost:8000
+```
+
+I dati sono persistiti nel volume Docker `planmydinner_data`.
+
+**Primo avvio — carica dati di esempio:**
+
+```bash
+curl -X POST http://localhost:8000/seed
+```
+
+Crea 2 profili (Marco e Sara), 12 ricette italiane e un piano alimentare di test.
+Dopo il seed vai su **Settimana → Genera piano** per vedere il pianificatore in azione.
+
+### Senza Docker (sviluppo locale)
+
+```bash
+pip install -r planmydinner_addon/requirements.txt
+uvicorn planmydinner_addon.main:app --reload
+# App disponibile su http://localhost:8000
+```
+
+### Configurazione LLM (`.env.example`)
+
+| Variabile | Descrizione |
+|-----------|-------------|
+| `LLM_PROVIDER` | `ollama` oppure `openai` |
+| `LLM_MODEL` | es. `llama3`, `gpt-4o-mini` |
+| `LLM_BASE_URL` | URL Ollama (es. `http://host.docker.internal:11434`) |
+| `LLM_API_KEY` | API key OpenAI (solo se `LLM_PROVIDER=openai`) |
+
+---
+
 # Plan My Dinner - Meal Planning System for Home Assistant
 
 This project is a comprehensive meal planning system for Home Assistant, designed to automate and simplify meal planning, recipe generation, and shopping list management. It consists of a Home Assistant custom integration and a powerful backend Docker Add-on.

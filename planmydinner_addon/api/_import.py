@@ -25,46 +25,53 @@ async def import_pdf_meal_plan(
     db: Session = Depends(get_db)
 ):
     """
-    Uploads and parses a PDF meal plan, then returns the structured data.
+    Uploads a PDF meal plan, extracts its text, and parses it via LLM.
+    Falls back to regex-based parsing if LLM is unavailable.
     """
     if not pdf_file.filename.lower().endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="Only PDF files are allowed.")
+        raise HTTPException(status_code=400, detail="Solo file PDF sono accettati.")
 
-    # Save the uploaded PDF temporarily in a cross-platform way
     temp_dir = tempfile.gettempdir()
     temp_pdf_path = os.path.join(temp_dir, f"{uuid.uuid4()}.pdf")
     try:
         with open(temp_pdf_path, "wb") as buffer:
             shutil.copyfileobj(pdf_file.file, buffer)
-        
-        llm_gateway = request.app.state.llm_gateway
-        parser = PDFParser(db, llm_gateway=llm_gateway)
-        structured_plan = parser.parse_pdf(temp_pdf_path, profile_id, template_name)
 
+        # Estrai testo dal PDF con pdfminer
+        from pdfminer.high_level import extract_text as pdf_extract_text
+        try:
+            text_content = pdf_extract_text(temp_pdf_path)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Impossibile leggere il PDF: {e}")
+
+        if not text_content or not text_content.strip():
+            raise HTTPException(status_code=400, detail="Il PDF non contiene testo estraibile. Prova a incollare il contenuto nella tab Testo.")
+
+        llm_gateway = request.app.state.llm_gateway
+
+        # Se LLM disponibile: usa la stessa logica di /import/text
+        if llm_gateway:
+            return await _parse_text_with_llm(text_content, profile_id, llm_gateway)
+
+        # Fallback: parser regex
+        parser = PDFParser(db, llm_gateway=None)
+        structured_plan = parser.parse_pdf(temp_pdf_path, profile_id, template_name)
         return structured_plan
+
     except PDFParsingError as e:
-        raise HTTPException(status_code=400, detail=f"PDF parsing error: {e}")
+        raise HTTPException(status_code=400, detail=f"Errore nel parsing PDF: {e}")
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal server error during PDF import: {e}")
+        raise HTTPException(status_code=500, detail=f"Errore interno durante l'import PDF: {e}")
     finally:
         if os.path.exists(temp_pdf_path):
             os.remove(temp_pdf_path)
 
-@router.post("/text", response_model=schemas.StructuredMealPlan)
-async def import_text_meal_plan(
-    request: Request,
-    profile_id: str = Form(...),
-    text_content: str = Form(...),
-    db: Session = Depends(get_db)
-):
-    """
-    Parses a free-text meal plan using the LLM and returns structured data.
-    """
-    llm_gateway = request.app.state.llm_gateway
-    if not llm_gateway:
-        raise HTTPException(status_code=503, detail="LLM non disponibile per import da testo")
+async def _parse_text_with_llm(text_content: str, profile_id: str, llm_gateway) -> schemas.StructuredMealPlan:
+    """Parsa un testo di piano alimentare usando l'LLM e restituisce un StructuredMealPlan."""
+    import json, re
 
-    # Build a minimal structured plan from the text using the LLM
     today = date.today()
     week_start = today - timedelta(days=today.weekday())
 
@@ -103,7 +110,6 @@ Testo del piano:
 
 Rispondi SOLO con il JSON, senza testo aggiuntivo."""
 
-    import json, re
     messages = [
         {"role": "system", "content": "Sei un assistente nutrizionale esperto. Rispondi SOLO con JSON valido, senza testo aggiuntivo."},
         {"role": "user", "content": prompt},
@@ -128,12 +134,28 @@ Rispondi SOLO con il JSON, senza testo aggiuntivo."""
             raise HTTPException(status_code=422, detail="LLM non ha restituito un JSON valido")
         parsed = json.loads(json_match.group())
         parsed.setdefault("id", str(uuid.uuid4()))
-        structured_plan = schemas.StructuredMealPlan(**parsed)
-        return structured_plan
+        return schemas.StructuredMealPlan(**parsed)
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Errore nell'elaborazione del testo: {e}")
+
+
+@router.post("/text", response_model=schemas.StructuredMealPlan)
+async def import_text_meal_plan(
+    request: Request,
+    profile_id: str = Form(...),
+    text_content: str = Form(...),
+    db: Session = Depends(get_db)
+):
+    """
+    Parses a free-text meal plan using the LLM and returns structured data.
+    """
+    llm_gateway = request.app.state.llm_gateway
+    if not llm_gateway:
+        raise HTTPException(status_code=503, detail="LLM non disponibile per import da testo")
+
+    return await _parse_text_with_llm(text_content, profile_id, llm_gateway)
 
 
 @router.post("/save", status_code=201)

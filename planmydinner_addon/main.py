@@ -75,3 +75,7 @@ app.include_router(seed_router.router)
 @app.get("/")
 async def root():
     return RedirectResponse(url="/ui")
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}

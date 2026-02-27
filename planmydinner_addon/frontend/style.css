@@ -1,56 +1,41 @@
-/* Basic styling for the Import Wizard table */
-table {
-    width: 100%;
-    border-collapse: collapse;
-    margin-bottom: 20px;
-}
+/* ---- Import View ---- */
+.import-view { max-width: 800px; }
 
-th, td {
-    border: 1px solid #ddd;
-    padding: 8px;
-    text-align: left;
-}
+.tab-bar { display: flex; gap: 4px; margin-bottom: 16px; }
+.tab-bar button { padding: 8px 18px; border-radius: 6px; font-size: 14px; background: #e9ecef; color: #495057; border: none; cursor: pointer; }
+.tab-bar button.active { background: #4263eb; color: #fff; font-weight: 600; }
 
-th {
-    background-color: #f2f2f2;
-}
+.import-form { display: flex; flex-direction: column; gap: 12px; }
+.import-form label { font-weight: 600; font-size: 13px; color: #495057; }
 
-.daily-plan-section {
-    margin-bottom: 30px;
-    border: 1px solid #eee;
-    padding: 15px;
-    border-radius: 8px;
-    background-color: #fdfdfd;
-}
+.tab-panel { display: flex; flex-direction: column; gap: 10px; margin-top: 4px; }
+.hint { font-size: 13px; color: #868e96; margin: 0; }
 
-.meal-section {
-    margin-bottom: 20px;
-    padding: 10px;
-    border: 1px solid #f0f0f0;
-    border-radius: 5px;
-    background-color: #fff;
-}
+textarea { padding: 10px; border: 1px solid #ced4da; border-radius: 6px; font-size: 13px; font-family: monospace; resize: vertical; }
+textarea:focus { outline: none; border-color: #4263eb; box-shadow: 0 0 0 2px rgba(66,99,235,.2); }
 
-.item-name-input, .quantity-input, .unit-input, .food-group-input {
-    width: 90%;
-    padding: 5px;
-    margin: 2px 0;
-    border: 1px solid #ccc;
-    border-radius: 4px;
-}
+/* ---- Preview piano ---- */
+.preview-header { margin-bottom: 16px; }
+.preview-header h3 { margin: 0 0 4px; }
 
-/* Highlight for estimated units */
-.estimated-unit {
-    border-color: orange;
-    background-color: #fff3e0; /* Light orange background */
-}
+.day-preview { border: 1px solid #dee2e6; border-radius: 8px; margin-bottom: 12px; overflow: hidden; }
+.day-preview-title { margin: 0; padding: 10px 14px; background: #f8f9fa; font-size: 14px; font-weight: 600; color: #343a40; border-bottom: 1px solid #dee2e6; }
+.meal-preview { padding: 12px 14px; border-bottom: 1px solid #f1f3f5; }
+.meal-preview:last-child { border-bottom: none; }
+.meal-preview h5 { margin: 0 0 8px; font-size: 13px; color: #495057; }
 
-.estimated-unit::placeholder {
-    color: orange;
-}
+.items-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.items-table th { background: #f1f3f5; padding: 6px 8px; text-align: left; font-weight: 600; color: #495057; border-bottom: 1px solid #dee2e6; }
+.items-table td { padding: 4px 4px; border-bottom: 1px solid #f1f3f5; }
+.items-table tr:last-child td { border-bottom: none; }
 
-/* Style for disabled checkbox */
-input[type="checkbox"][disabled] {
-    opacity: 0.6;
-    cursor: not-allowed;
-}
+.item-input  { width: 100%; min-width: 120px; }
+.qty-input   { width: 70px; }
+.unit-input  { width: 60px; }
+.group-input { width: 100px; }
+
+.rules-preview { background: #f8f9fa; border-radius: 8px; padding: 12px 16px; margin: 12px 0; }
+.rules-preview h4 { margin: 0 0 8px; font-size: 14px; }
+.rules-preview ul { margin: 0; padding-left: 18px; font-size: 13px; color: #495057; }
+
+.preview-actions { display: flex; gap: 10px; margin-top: 16px; padding-top: 16px; border-top: 1px solid #dee2e6; }
