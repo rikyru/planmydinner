@@ -346,3 +346,39 @@ class LLMGateway:
             _LOGGER.error(f"Error during LLM call for constrained recipe generation: {e}")
             return None
 
+    def generate_structured_meal(self, prompt: str) -> Optional[str]:
+        """
+        Chiama il LLM con un prompt nutrizionale e restituisce la stringa raw della risposta.
+        Tutta la logica di provider è incapsulata qui.
+        """
+        if not self._client:
+            _LOGGER.error("LLM client non inizializzato. Impossibile generare il pasto.")
+            return None
+
+        messages = [
+            {
+                "role": "system",
+                "content": "Sei un assistente nutrizionale esperto. Rispondi SOLO con JSON valido, senza testo aggiuntivo.",
+            },
+            {"role": "user", "content": prompt},
+        ]
+
+        try:
+            if self.provider == "openai":
+                response = self._client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    temperature=0.4,
+                    response_format={"type": "json_object"},
+                )
+                return response.choices[0].message.content
+            elif self.provider == "ollama":
+                response = self._client.chat(model=self.model, messages=messages)
+                return response["message"]["content"]
+            else:
+                _LOGGER.error(f"Provider LLM non supportato: {self.provider}")
+                return None
+        except Exception as e:
+            _LOGGER.error(f"Errore in generate_structured_meal: {e}")
+            return None
+

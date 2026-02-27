@@ -1,12 +1,20 @@
 import { defineComponent } from 'vue';
 
-
 const TodayView = defineComponent({
     name: 'TodayView',
     inject: ['toast'],
     template: `
         <div class="today-view">
             <h2>Oggi — {{ formattedDate }}</h2>
+
+            <!-- Adherence strip -->
+            <div v-if="adherence && adherence.planned_slots > 0" class="adherence-strip">
+                <span>Questa settimana: {{ adherence.in_plan_consumed }}/{{ adherence.planned_slots }} pasti</span>
+                <div class="adherence-bar-wrap">
+                    <div class="adherence-bar-fill" :style="{width: (adherence.adherence_score * 100) + '%'}"></div>
+                </div>
+                <span class="adherence-score">{{ Math.round(adherence.adherence_score * 100) }}%</span>
+            </div>
 
             <div v-if="loading" class="loading">Caricamento...</div>
             <div v-if="error" class="error">{{ error }}</div>
@@ -18,25 +26,126 @@ const TodayView = defineComponent({
                 </button>
             </div>
 
-            <div v-if="!loading && !error && !todayPlan && profiles.length < 2">
+            <div v-if="!loading && !error && profiles.length < 2">
                 <p>Crea almeno 2 profili nella sezione Profili per usare il pianificatore.</p>
             </div>
 
             <div v-if="todayPlan">
                 <div v-for="meal in todayPlan.meals" :key="meal.meal_type" class="meal-box">
-                    <h3>{{ meal.meal_type === 'pranzo' ? 'Pranzo' : 'Cena' }}</h3>
-                    <div v-if="meal.items && meal.items.length > 0" class="recipe-name">
-                        {{ meal.items[0].item_name }}
+                    <div class="meal-header">
+                        <h3>{{ meal.meal_type === 'pranzo' ? '🍽 Pranzo' : '🌙 Cena' }}</h3>
+                    </div>
+
+                    <div v-if="meal.items && meal.items.length > 0">
+                        <!-- Free meal display -->
+                        <div v-if="isFree(meal)" class="meal-free-badge">
+                            🎉 Pasto libero — {{ meal.items[0].item_name }}
+                        </div>
+
+                        <!-- Normal meal content -->
+                        <div v-else>
+                            <div class="recipe-name">{{ meal.items[0].item_name }}</div>
+
+                            <!-- Componenti inline: protein / carb / verdure -->
+                            <div v-if="recipeDetails[meal.meal_type]" class="meal-components">
+                                <div v-if="getProtein(meal.meal_type)" class="component component-protein">
+                                    <span class="component-icon">🥩</span>
+                                    <span class="component-label">Proteina</span>
+                                    <span class="component-name">{{ getProtein(meal.meal_type).name }}</span>
+                                    <span class="component-grams">{{ getGrams(meal.meal_type, getProtein(meal.meal_type)) }}g</span>
+                                </div>
+                                <div v-if="getCarb(meal.meal_type)" class="component component-carb">
+                                    <span class="component-icon">🌾</span>
+                                    <span class="component-label">Carbo</span>
+                                    <span class="component-name">{{ getCarb(meal.meal_type).name }}</span>
+                                    <span class="component-grams">{{ getGrams(meal.meal_type, getCarb(meal.meal_type)) }}g</span>
+                                </div>
+                                <div v-for="veg in getVegetables(meal.meal_type)" :key="veg.name" class="component component-veg">
+                                    <span class="component-icon">🥦</span>
+                                    <span class="component-label">Verdure</span>
+                                    <span class="component-name">{{ veg.name }}</span>
+                                    <span class="component-grams">{{ getGrams(meal.meal_type, veg) }}g</span>
+                                </div>
+                            </div>
+                            <div v-else-if="meal.items[0].recipe_id && !recipeDetails[meal.meal_type]" class="components-loading">
+                                Caricamento dettagli...
+                            </div>
+                            <div v-else-if="!meal.items[0].recipe_id" class="components-hint">
+                                Cambia ricetta per vedere i dettagli nutrizionali.
+                            </div>
+
+                            <!-- Pannello dettaglio espandibile -->
+                            <div v-if="expandedMeal === meal.meal_type && recipeDetails[meal.meal_type]" class="detail-panel">
+                                <h4>Ingredienti completi</h4>
+                                <table class="detail-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Ingrediente</th>
+                                            <th>Gruppo</th>
+                                            <th v-if="profileA">{{ profileA.name }}</th>
+                                            <th v-if="profileB">{{ profileB.name }}</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <tr v-for="ing in recipeDetails[meal.meal_type].content" :key="ing.name">
+                                            <td>{{ ing.name }}</td>
+                                            <td class="group-badge">{{ ing.food_group }}</td>
+                                            <td v-if="profileA">{{ formatQty(ing, profileA.id) }}</td>
+                                            <td v-if="profileB">{{ formatQty(ing, profileB.id) }}</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                                <div v-if="getCookingMethod(meal.meal_type)" class="detail-meta">
+                                    <span>Cottura: <strong>{{ getCookingMethod(meal.meal_type) }}</strong></span>
+                                </div>
+                                <div v-if="recipeDetails[meal.meal_type].description" class="detail-meta">
+                                    <span>Note: {{ recipeDetails[meal.meal_type].description }}</span>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                     <div v-else class="recipe-name empty">Nessuna ricetta assegnata</div>
+
+                    <!-- Meal actions -->
                     <div class="meal-actions">
-                        <button @click="openChangeModal(meal.meal_type)">Cambia</button>
-                        <button @click="markConsumed(meal.meal_type)" class="btn-consumed">Ho mangiato</button>
+                        <!-- Free meal: only show undo -->
+                        <template v-if="isFree(meal)">
+                            <button @click="cancelFreeMeal(meal.meal_type)" class="btn-undo-free">Annulla pasto libero</button>
+                        </template>
+
+                        <!-- Free meal input prompt -->
+                        <template v-else-if="showFreeMealPrompt === meal.meal_type">
+                            <input v-model="freeMealTitle"
+                                   placeholder="Cosa mangi? (es. Pizza)"
+                                   style="padding:5px 8px;border:1px solid #ced4da;border-radius:6px;font-size:13px;flex:1;"
+                                   @keyup.enter="submitFreeMeal(meal.meal_type)">
+                            <button @click="submitFreeMeal(meal.meal_type)" class="btn-free">OK</button>
+                            <button @click="showFreeMealPrompt=null" class="btn-secondary">Annulla</button>
+                        </template>
+
+                        <!-- Normal meal actions -->
+                        <template v-else>
+                            <button v-if="recipeDetails[meal.meal_type]"
+                                    @click="toggleDetail(meal.meal_type)"
+                                    class="btn-detail">
+                                {{ expandedMeal === meal.meal_type ? 'Chiudi' : 'Dettaglio' }}
+                            </button>
+                            <button @click="openChangeModal(meal.meal_type)">Cambia</button>
+                            <button v-if="meal.items?.[0]?.recipe_id"
+                                    @click="openComponentModal(meal.meal_type, meal.items[0].recipe_id, 'carb')"
+                                    class="btn-swap">↕ Carbo</button>
+                            <button v-if="meal.items?.[0]?.recipe_id"
+                                    @click="openComponentModal(meal.meal_type, meal.items[0].recipe_id, 'protein')"
+                                    class="btn-swap">↕ Proteina</button>
+                            <button @click="markConsumed(meal.meal_type)" class="btn-consumed">Ho mangiato</button>
+                            <button @click="openFreeMealPrompt(meal.meal_type)" class="btn-free">Pasto libero</button>
+                            <button @click="openCustomModal(meal.meal_type)" class="btn-secondary">Personalizzato</button>
+                        </template>
                     </div>
                 </div>
             </div>
 
-            <!-- Modal cambio ricetta -->
+            <!-- Modal cambio ricetta / componente -->
             <div v-if="showModal" class="modal-overlay" @click.self="closeModal">
                 <div class="modal">
                     <h3>Scegli una ricetta per {{ currentMealType === 'pranzo' ? 'pranzo' : 'cena' }}</h3>
@@ -46,9 +155,44 @@ const TodayView = defineComponent({
                          @click="applyRecipe(option.recipe_id)">
                         <strong>{{ option.name }}</strong>
                         <span>{{ option.total_time_minutes }} min · {{ option.difficulty }}</span>
-                        <span v-if="option.key_ingredients.length">🥗 {{ option.key_ingredients.join(', ') }}</span>
+                        <span v-if="option.key_ingredients && option.key_ingredients.length">
+                            {{ option.key_ingredients.join(', ') }}
+                        </span>
                     </div>
                     <button @click="closeModal" class="btn-secondary">Annulla</button>
+                </div>
+            </div>
+
+            <!-- Custom meal modal -->
+            <div v-if="showCustomModal" class="modal-overlay" @click.self="showCustomModal=false">
+                <div class="modal">
+                    <h3>Pasto personalizzato — {{ customMealType === 'pranzo' ? 'Pranzo' : 'Cena' }}</h3>
+                    <div class="custom-form">
+                        <label>Nome del pasto</label>
+                        <input v-model="customForm.title" placeholder="Es. Pollo arrostito con riso">
+                        <label>Proteina</label>
+                        <div class="custom-row">
+                            <input v-model="customForm.protein_name" placeholder="Es. pollo">
+                            <input v-model.number="customForm.protein_grams" type="number" placeholder="g">
+                        </div>
+                        <label>Carboidrato</label>
+                        <div class="custom-row">
+                            <input v-model="customForm.carb_name" placeholder="Es. riso">
+                            <input v-model.number="customForm.carb_grams" type="number" placeholder="g">
+                        </div>
+                        <label>Verdura (opzionale)</label>
+                        <input v-model="customForm.veg_name" placeholder="Es. zucchine">
+                        <label>Note (opzionale)</label>
+                        <input v-model="customForm.notes" placeholder="...">
+                    </div>
+                    <div style="display:flex;gap:10px;margin-top:16px;">
+                        <button @click="submitCustomMeal"
+                                class="btn-consumed"
+                                :disabled="!customForm.title || !customForm.protein_name || !customForm.carb_name">
+                            Applica
+                        </button>
+                        <button @click="showCustomModal=false" class="btn-secondary">Annulla</button>
+                    </div>
                 </div>
             </div>
         </div>
@@ -58,6 +202,8 @@ const TodayView = defineComponent({
             profiles: [],
             dailyPlans: [],
             todayPlan: null,
+            recipeDetails: {},   // keyed by meal_type ('pranzo'/'cena')
+            expandedMeal: null,  // meal_type currently expanded
             loading: false,
             error: null,
             generating: false,
@@ -67,6 +213,15 @@ const TodayView = defineComponent({
             loadingOptions: false,
             modalError: null,
             today: new Date().toISOString().slice(0, 10),
+            // Adherence
+            adherence: null,
+            // Free meal
+            showFreeMealPrompt: null,
+            freeMealTitle: '',
+            // Custom meal
+            showCustomModal: false,
+            customForm: { title: '', protein_name: '', protein_grams: 0, carb_name: '', carb_grams: 0, veg_name: '', notes: '' },
+            customMealType: null,
         };
     },
     computed: {
@@ -89,6 +244,7 @@ const TodayView = defineComponent({
                 this.profiles = await resp.json();
                 if (this.profiles.length >= 2) {
                     await this.loadWeeklyPlan();
+                    await this.loadAdherence();
                 }
             } catch (e) {
                 this.error = 'Errore nel caricamento dei profili: ' + e.message;
@@ -97,19 +253,49 @@ const TodayView = defineComponent({
             }
         },
         async loadWeeklyPlan() {
+            // Use plan-for-date to find any saved plan covering today (rolling, any start_date)
             const params = new URLSearchParams({
                 profile_id_A: this.profileA.id,
                 profile_id_B: this.profileB.id,
-                start_date: this.today,
+                target_date: this.today,
             });
-            const resp = await fetch('/planner/weekly-plan?' + params);
-            if (!resp.ok) {
+            const resp = await fetch('/planner/plan-for-date?' + params);
+            if (!resp.ok || resp.status === 204) {
                 this.dailyPlans = [];
                 this.todayPlan = null;
                 return;
             }
-            this.dailyPlans = await resp.json();
+            const result = await resp.json();
+            if (!result) {
+                this.dailyPlans = [];
+                this.todayPlan = null;
+                return;
+            }
+            this.dailyPlans = result.daily_plans || [];
             this.todayPlan = this.dailyPlans.find(d => d.date === this.today) || null;
+            this.recipeDetails = {};
+            await this.fetchRecipeDetails();
+        },
+        async fetchRecipeDetails() {
+            if (!this.todayPlan) return;
+            for (const meal of this.todayPlan.meals) {
+                const recipeId = meal.items?.[0]?.recipe_id;
+                if (!recipeId) continue;
+                try {
+                    const resp = await fetch(`/recipes/detail/${recipeId}`);
+                    if (resp.ok) {
+                        this.recipeDetails[meal.meal_type] = await resp.json();
+                    }
+                } catch (_) { /* non bloccare il caricamento principale */ }
+            }
+        },
+        async loadAdherence() {
+            if (!this.profileA) return;
+            try {
+                const params = new URLSearchParams({ profile_id_A: this.profileA.id });
+                const resp = await fetch('/planner/adherence?' + params);
+                if (resp.ok) this.adherence = await resp.json();
+            } catch (_) { /* non bloccare */ }
         },
         async generateWeek() {
             this.generating = true;
@@ -122,8 +308,12 @@ const TodayView = defineComponent({
                 });
                 const resp = await fetch('/planner/generate-week?' + params, { method: 'POST' });
                 if (!resp.ok) throw new Error(await resp.text());
-                this.dailyPlans = await resp.json();
-                this.todayPlan = this.dailyPlans.find(d => d.date === this.today) || null;
+                const allDays = await resp.json();
+                this.dailyPlans = allDays;
+                this.todayPlan = allDays.find(d => d.date === this.today) || null;
+                this.recipeDetails = {};
+                await this.fetchRecipeDetails();
+                await this.loadAdherence();
             } catch (e) {
                 this.error = 'Errore nella generazione del piano: ' + e.message;
             } finally {
@@ -166,24 +356,14 @@ const TodayView = defineComponent({
                 this.closeModal();
                 await this.loadWeeklyPlan();
             } catch (e) {
-                this.modalError = 'Errore nell\'applicazione della ricetta: ' + e.message;
+                this.modalError = "Errore nell'applicazione della ricetta: " + e.message;
             }
         },
         async markConsumed(mealType) {
             if (!this.profileA) return;
             try {
                 const meal = this.todayPlan?.meals.find(m => m.meal_type === mealType);
-                const recipeName = meal?.items?.[0]?.item_name || null;
-                // Cerca l'ID della ricetta per nome
-                let recipeId = null;
-                if (recipeName) {
-                    const recResp = await fetch('/recipes/');
-                    if (recResp.ok) {
-                        const recipes = await recResp.json();
-                        const found = recipes.find(r => r.name === recipeName);
-                        if (found) recipeId = found.id;
-                    }
-                }
+                const recipeId = meal?.items?.[0]?.recipe_id || null;
                 const body = {
                     profile_id: this.profileA.id,
                     date: this.today,
@@ -198,8 +378,36 @@ const TodayView = defineComponent({
                 });
                 if (!resp.ok) throw new Error('Errore nel salvataggio.');
                 this.toast.add('Pasto registrato!', 'success');
+                await this.loadAdherence();
             } catch (e) {
                 this.toast.add('Errore: ' + e.message, 'error');
+            }
+        },
+        toggleDetail(mealType) {
+            this.expandedMeal = this.expandedMeal === mealType ? null : mealType;
+        },
+        async openComponentModal(mealType, recipeId, component) {
+            this.currentMealType = mealType;
+            this.recipeOptions = [];
+            this.modalError = null;
+            this.loadingOptions = true;
+            this.showModal = true;
+            try {
+                const params = new URLSearchParams({
+                    profile_id_A: this.profileA.id,
+                    profile_id_B: this.profileB.id,
+                    meal_type: mealType,
+                    current_date: this.today,
+                    recipe_id: recipeId,
+                    component,
+                });
+                const resp = await fetch('/planner/change-component?' + params, { method: 'POST' });
+                if (!resp.ok) throw new Error(await resp.text());
+                this.recipeOptions = await resp.json();
+            } catch (e) {
+                this.modalError = 'Errore nel caricamento alternative: ' + e.message;
+            } finally {
+                this.loadingOptions = false;
             }
         },
         closeModal() {
@@ -207,6 +415,120 @@ const TodayView = defineComponent({
             this.currentMealType = null;
             this.recipeOptions = [];
             this.modalError = null;
+        },
+
+        // --- Free meal ---
+        isFree(meal) {
+            return meal.items?.[0]?.food_group === 'free_meal';
+        },
+        openFreeMealPrompt(mealType) {
+            this.showFreeMealPrompt = mealType;
+            this.freeMealTitle = '';
+        },
+        async submitFreeMeal(mealType) {
+            if (!this.freeMealTitle.trim()) return;
+            try {
+                const params = new URLSearchParams({
+                    profile_id_A: this.profileA.id,
+                    profile_id_B: this.profileB.id,
+                    meal_type: mealType,
+                    current_date: this.today,
+                });
+                const resp = await fetch('/planner/free-meal?' + params, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ title: this.freeMealTitle, notes: '' }),
+                });
+                if (!resp.ok) throw new Error(await resp.text());
+                this.showFreeMealPrompt = null;
+                this.freeMealTitle = '';
+                await this.loadWeeklyPlan();
+                await this.loadAdherence();
+                this.toast.add('Pasto libero impostato!', 'success');
+            } catch (e) {
+                this.toast.add('Errore: ' + e.message, 'error');
+            }
+        },
+        async cancelFreeMeal(mealType) {
+            try {
+                const params = new URLSearchParams({
+                    profile_id_A: this.profileA.id,
+                    profile_id_B: this.profileB.id,
+                    meal_type: mealType,
+                    current_date: this.today,
+                });
+                const resp = await fetch('/planner/free-meal?' + params, { method: 'DELETE' });
+                if (!resp.ok) throw new Error(await resp.text());
+                await this.loadWeeklyPlan();
+                await this.loadAdherence();
+                this.toast.add('Pasto libero annullato.', 'success');
+            } catch (e) {
+                this.toast.add('Errore: ' + e.message, 'error');
+            }
+        },
+
+        // --- Custom meal ---
+        openCustomModal(mealType) {
+            this.customMealType = mealType;
+            this.customForm = { title: '', protein_name: '', protein_grams: 0, carb_name: '', carb_grams: 0, veg_name: '', notes: '' };
+            this.showCustomModal = true;
+        },
+        async submitCustomMeal() {
+            if (!this.customForm.title || !this.customForm.protein_name || !this.customForm.carb_name) return;
+            try {
+                const params = new URLSearchParams({
+                    profile_id_A: this.profileA.id,
+                    profile_id_B: this.profileB.id,
+                    meal_type: this.customMealType,
+                    current_date: this.today,
+                });
+                const resp = await fetch('/planner/set-custom-meal?' + params, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(this.customForm),
+                });
+                if (!resp.ok) throw new Error(await resp.text());
+                this.showCustomModal = false;
+                await this.loadWeeklyPlan();
+                await this.loadAdherence();
+                this.toast.add('Pasto personalizzato applicato!', 'success');
+            } catch (e) {
+                this.toast.add('Errore: ' + e.message, 'error');
+            }
+        },
+
+        // --- Helper per i componenti del pasto ---
+        getProtein(mealType) {
+            const d = this.recipeDetails[mealType];
+            if (!d) return null;
+            return d.content.find(i => ['proteina', 'proteine', 'pollo', 'pesce', 'carne_rossa', 'legumi'].includes(i.food_group)) || null;
+        },
+        getCarb(mealType) {
+            const d = this.recipeDetails[mealType];
+            if (!d) return null;
+            return d.content.find(i => ['carboidrati', 'carboidrato'].includes(i.food_group)) || null;
+        },
+        getVegetables(mealType) {
+            const d = this.recipeDetails[mealType];
+            if (!d) return [];
+            return d.content.filter(i => i.food_group === 'verdure');
+        },
+        getGrams(mealType, ingredient) {
+            if (!ingredient || !this.profileA) return '?';
+            const qty = ingredient.quantities?.[this.profileA.id];
+            const g = qty?.grams_equiv ?? qty?.qty ?? null;
+            return g !== null ? Math.round(g) : '?';
+        },
+        formatQty(ingredient, profileId) {
+            const qty = ingredient.quantities?.[profileId];
+            if (!qty) return '—';
+            const g = qty.grams_equiv ?? qty.qty;
+            return `${Math.round(g)}${qty.unit !== 'g' ? ' ' + qty.unit : 'g'}`;
+        },
+        getCookingMethod(mealType) {
+            const d = this.recipeDetails[mealType];
+            if (!d) return null;
+            return d.tags?.cooking_methods?.[0] || null;
         },
     },
 });

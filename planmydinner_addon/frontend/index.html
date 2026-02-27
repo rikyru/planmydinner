@@ -70,7 +70,7 @@
 
         <main>
             <today-view v-if="page === 'today'"></today-view>
-            <dashboard v-if="page === 'dashboard'"></dashboard>
+            <week-view v-if="page === 'dashboard'"></week-view>
             <import-wizard v-if="page === 'import'"></import-wizard>
             <shopping-list v-if="page === 'shopping'"></shopping-list>
             <pantry v-if="page === 'pantry'"></pantry>
@@ -86,7 +86,7 @@
     <script type="module">
         import { createApp, reactive } from 'vue';
         import TodayView from './today.js';
-        import Dashboard from './dashboard.js';
+        import WeekView from './planner.js';
         import ImportWizard from './import.js';
         import ShoppingList from './shopping.js';
         import Pantry from './pantry.js';
@@ -107,7 +107,7 @@
             data() {
                 return { page: 'today', toasts: toastState.items };
             },
-            components: { TodayView, Dashboard, 'import-wizard': ImportWizard, ShoppingList, Pantry, Profiles },
+            components: { TodayView, WeekView, 'import-wizard': ImportWizard, ShoppingList, Pantry, Profiles },
         });
 
         app.provide('toast', { add: addToast });

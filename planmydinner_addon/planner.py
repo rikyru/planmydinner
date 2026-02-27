@@ -1,4 +1,5 @@
 import logging
+import os
 import uuid
 import json
 from datetime import date, timedelta
@@ -12,7 +13,7 @@ from . import schemas
 from .database import (
     UserProfile, StructuredMealPlan, Recipe, CandidateRecipe,
     PantryItem, ConsumedEntry, RotationRule, SeasonalityItem, UnitConversion,
-    GeneratedWeeklyPlan
+    GeneratedWeeklyPlan, PlanRules
 )
 from .llm_gateway import LLMGateway
 
@@ -61,6 +62,23 @@ class PlannerEngine:
 
         _LOGGER.debug(f"No active meal plan found for profile {profile_id}")
         return None
+
+    def _get_latest_meal_plan(self, profile_id: str) -> Optional[schemas.StructuredMealPlan]:
+        """Returns the most recently imported meal plan for a profile, regardless of specific dates.
+        Used so that future-date generation works by mapping day-of-week from the plan."""
+        db_plan = self.db.query(StructuredMealPlan).filter(
+            StructuredMealPlan.profile_id == profile_id,
+        ).order_by(StructuredMealPlan.start_date.desc()).first()
+        if db_plan:
+            return schemas.StructuredMealPlan.from_orm(db_plan)
+        return None
+
+    def _get_latest_plan_rules(self, profile_id: str) -> Optional[schemas.PlanRules]:
+        """Returns the most recently imported PlanRules for a profile, or None."""
+        db_rules = self.db.query(PlanRules).filter(
+            PlanRules.profile_id == profile_id
+        ).order_by(PlanRules.imported_at.desc()).first()
+        return schemas.PlanRules.from_orm(db_rules) if db_rules else None
 
     def _get_consumed_entries(self, profile_id: str, end_date: date, days_back: int) -> List[schemas.ConsumedEntry]:
         start_date = end_date - timedelta(days=days_back)
@@ -271,17 +289,19 @@ class PlannerEngine:
         seasonality_data: Dict[str, schemas.SeasonalityItem],
         current_date: date,
         consumed_entries_A: List[schemas.ConsumedEntry],
-        consumed_entries_B: List[schemas.ConsumedEntry]
+        consumed_entries_B: List[schemas.ConsumedEntry],
+        recent_protein_items: Optional[List[str]] = None,
     ) -> float:
         score = 0.0
 
         recipe_ingredients = recipe.content.components if recipe.is_composed_dish else recipe.content
 
+        # Step C: token-overlap pantry matching instead of exact name
         ingredients_in_pantry = 0
         for rec_ing in recipe_ingredients:
-            if any(pi.name.lower() == rec_ing.name.lower() for pi in pantry_items):
+            if self._pantry_matches(rec_ing.name, pantry_items):
                 ingredients_in_pantry += 1
-        
+
         if len(recipe_ingredients) > 0:
             pantry_score = ingredients_in_pantry / len(recipe_ingredients)
             score += pantry_score * 0.4
@@ -290,7 +310,7 @@ class PlannerEngine:
         max_bonus_days = 14
         for rec_ing in recipe_ingredients:
             for pi in pantry_items:
-                if pi.name.lower() == rec_ing.name.lower() and pi.expiration_date:
+                if self._pantry_matches(rec_ing.name, [pi]) and pi.expiration_date:
                     days_to_expire = (date.fromisoformat(pi.expiration_date) - current_date).days
                     if 0 < days_to_expire <= max_bonus_days:
                         expiration_bonus += ((max_bonus_days - days_to_expire) / max_bonus_days) * 0.5
@@ -330,21 +350,249 @@ class PlannerEngine:
                 repetition_penalty += 0.1
             if self._normalize_food_group(rec_ing.food_group) in recent_food_groups:
                 repetition_penalty += 0.05
-        
+
         score -= repetition_penalty
+
+        # Step B (Tier 2): 48h avoidance penalty for recently used protein items
+        if recent_protein_items:
+            item = self._get_main_protein_item_from_recipe(recipe)
+            if item and item in recent_protein_items[-2:]:
+                score -= 0.3
+
+        # Step E: boost manually-created recipes
+        recipe_tags = recipe.tags or {}
+        if "manual" in recipe_tags:
+            score += 0.5
 
         return score
 
+    def _rules_to_planned_meal(
+        self,
+        rules: schemas.PlanRules,
+        meal_type: str,
+        target_cat: Optional[str],
+    ) -> schemas.PlannedMeal:
+        """
+        Builds a PlannedMeal from PlanRules gram targets.
+        target_cat: protein category (carne_bianca, carne_rossa, pesce, legumi, uova) or None.
+        """
+        # Map protein category → food_group
+        _cat_to_fg = {
+            "carne_bianca": "pollo",
+            "carne_rossa":  "carne_rossa",
+            "pesce":        "pesce",
+            "legumi":       "legumi",
+            "uova":         "proteina",
+            "proteina":     "proteina",
+        }
+        carb_g = float((rules.carb_target or {}).get(meal_type, 80))
+        protein_g = float((rules.protein_target or {}).get(meal_type, 120))
+
+        protein_fg = _cat_to_fg.get(target_cat, "proteina") if target_cat else "proteina"
+
+        # Use first option from rules as item_name (helps with grammage matching if needed)
+        carb_options = (rules.carb_options or {}).get(meal_type, ["pasta"])
+        protein_options = (rules.protein_options or {}).get(meal_type, ["pollo"])
+        carb_name = carb_options[0] if carb_options else "pasta"
+        protein_name = protein_options[0] if protein_options else "pollo"
+
+        items = [
+            schemas.PlannedItem(
+                item_name=carb_name,
+                food_group="carboidrati",
+                quantity=carb_g,
+                unit="g",
+            ),
+            schemas.PlannedItem(
+                item_name=protein_name,
+                food_group=protein_fg,
+                quantity=protein_g,
+                unit="g",
+            ),
+        ]
+        return schemas.PlannedMeal(meal_type=meal_type, items=items)
+
+    @staticmethod
+    def _build_protein_sequence(frequency_targets: Dict[str, Any], n_slots: int = 14) -> List[Optional[str]]:
+        """
+        Greedy 'most needed' algorithm to fill n_slots with protein categories.
+        n_slots = 14 = 7 days × 2 meals (pranzo then cena).
+        Returns a list where each entry is a protein category str or None.
+        Deterministic: no randomness, sorted iteration.
+        """
+        # Build state per category
+        state: Dict[str, Dict[str, Any]] = {}
+        for cat, tgt in sorted(frequency_targets.items()):
+            state[cat] = {
+                "min": int(tgt.get("min", 0)),
+                "max": int(tgt.get("max", 7)),
+                "hard_max": tgt.get("hard_max"),
+                "count": 0,
+            }
+
+        sequence: List[Optional[str]] = []
+        n_days = n_slots // 2
+
+        for day in range(n_days):
+            day_cats: List[Optional[str]] = []
+            for meal_idx, meal_type in enumerate(["pranzo", "cena"]):
+                exclude_cat = day_cats[0] if (meal_idx == 1 and day_cats) else None
+
+                def _score(cat: str) -> tuple:
+                    s = state[cat]
+                    hard_max = s["hard_max"]
+                    effective_max = hard_max if hard_max is not None else s["max"]
+                    if s["count"] >= effective_max:
+                        return (-999, 0)  # exhausted
+                    remaining_slots = n_slots - len(sequence) - meal_idx
+                    # Priority: deficit from min first, then remaining room
+                    deficit = max(0, s["min"] - s["count"])
+                    room = effective_max - s["count"]
+                    return (deficit, room)
+
+                # Pick category with highest score, excluding same-day cat
+                candidates = [c for c in sorted(state.keys()) if c != exclude_cat]
+                best = max(candidates, key=_score, default=None)
+
+                # Check if best is still valid (not exhausted)
+                if best:
+                    s = state[best]
+                    hard_max = s["hard_max"]
+                    effective_max = hard_max if hard_max is not None else s["max"]
+                    if s["count"] >= effective_max:
+                        best = None
+
+                if best:
+                    state[best]["count"] += 1
+                day_cats.append(best)
+
+            sequence.extend(day_cats)
+
+        return sequence
+
+    def _generate_from_plan_rules(
+        self,
+        rules: schemas.PlanRules,
+        profile_id_A: str,
+        profile_id_B: Optional[str],
+        start_date: date,
+    ) -> List[schemas.DailyPlannedMeals]:
+        """
+        New generation path when PlanRules are available.
+        Builds protein sequence from frequency_targets, then suggests recipes slot-by-slot.
+        """
+        protein_sequence = self._build_protein_sequence(rules.frequency_targets)
+        _LOGGER.info(f"[PlanRules] protein_sequence={protein_sequence}")
+
+        # Build protein category weekly limits for the variety filter in suggest_recipes_for_meal
+        protein_cat_limits: Dict[str, int] = {}
+        for cat, tgt in rules.frequency_targets.items():
+            hard_max = tgt.get("hard_max")
+            effective_max = hard_max if hard_max is not None else tgt.get("max", 7)
+            protein_cat_limits[cat] = int(effective_max)
+        # Map carne_bianca → effectively "pollo" in the recipe cat system
+        protein_cat_limits.setdefault("carne_bianca", 3)
+
+        protein_cat_counts: Dict[str, int] = {}
+        protein_item_counts: Dict[str, int] = {}
+        recent_protein_items: List[str] = []
+        used_recipe_ids: set = set()
+        used_vegs: List[str] = []
+        day_slot = 0
+        generated_plan: List[schemas.DailyPlannedMeals] = []
+
+        for i in range(7):
+            current_date = start_date + timedelta(days=i)
+            generated_day = schemas.DailyPlannedMeals(date=current_date.isoformat(), meals=[])
+            pranzo_protein_category: Optional[str] = None
+
+            for meal_idx, meal_type in enumerate(["pranzo", "cena"]):
+                seq_idx = i * 2 + meal_idx
+                target_cat = protein_sequence[seq_idx] if seq_idx < len(protein_sequence) else None
+
+                meal_plan_A = self._rules_to_planned_meal(rules, meal_type, target_cat)
+                meal_plan_B = schemas.PlannedMeal(meal_type=meal_type, items=[])
+
+                excluded_protein = pranzo_protein_category if meal_type == "cena" else None
+
+                best_recipes = self.suggest_recipes_for_meal(
+                    meal_plan_A, meal_plan_B, profile_id_A, profile_id_B, current_date, {},
+                    excluded_protein_category=excluded_protein,
+                    excluded_recipe_ids=used_recipe_ids,
+                    protein_cat_counts=protein_cat_counts,
+                    protein_cat_limits=protein_cat_limits,
+                    target_protein_category=target_cat,
+                    protein_item_counts=protein_item_counts,
+                    recent_protein_items=recent_protein_items,
+                )
+
+                if best_recipes:
+                    best_recipe = best_recipes[0]
+                    ingredients, _ = self._get_recipe_content(best_recipe.recipe_id)
+                    content_raw = [
+                        {"name": ing.name, "food_group": ing.food_group}
+                        if not isinstance(ing, dict) else ing
+                        for ing in ingredients
+                    ]
+
+                    cooking = self._get_cooking_method(best_recipe.recipe_id)
+                    specific_veg = self._pick_vegetable(day_slot, cooking, used_vegs)
+                    used_vegs.append(specific_veg)
+                    day_slot += 1
+
+                    display_name = self._make_display_name(content_raw, specific_veg) if content_raw else best_recipe.name
+
+                    generated_day.meals.append(schemas.PlannedMeal(
+                        meal_type=meal_type,
+                        items=[schemas.PlannedItem(
+                            item_name=display_name,
+                            food_group="recipe",
+                            quantity=1,
+                            unit="recipe",
+                            recipe_id=best_recipe.recipe_id,
+                        )]
+                    ))
+
+                    used_recipe_ids.add(best_recipe.recipe_id)
+
+                    cat = self._get_main_protein_category(best_recipe.recipe_id)
+                    if cat:
+                        protein_cat_counts[cat] = protein_cat_counts.get(cat, 0) + 1
+
+                    # Step B: track protein item for monotony avoidance
+                    item = self._get_main_protein_item(best_recipe.recipe_id)
+                    if item:
+                        protein_item_counts[item] = protein_item_counts.get(item, 0) + 1
+                        recent_protein_items.append(item)
+                        if len(recent_protein_items) > 3:
+                            recent_protein_items.pop(0)
+
+                    if meal_type == "pranzo":
+                        pranzo_protein_category = cat
+
+            generated_plan.append(generated_day)
+
+        return generated_plan
+
     def generate_weekly_plan(self, profile_id_A: str, profile_id_B: Optional[str], start_date: date) -> List[schemas.DailyPlannedMeals]:
-        
-        weekly_plan_A_raw = self._get_active_meal_plan(profile_id_A, start_date)
+
+        # New path: if PlanRules exist, use rule-based generation (no fixed weekly schedule)
+        plan_rules = self._get_latest_plan_rules(profile_id_A)
+        if plan_rules:
+            _LOGGER.info(f"[generate_weekly_plan] Using PlanRules path for profile '{profile_id_A}'")
+            return self._generate_from_plan_rules(plan_rules, profile_id_A, profile_id_B, start_date)
+
+        # Legacy path: use StructuredMealPlan (day-of-week mapping)
+        # Use the most recent imported plan (any date), so future start_dates work fine.
+        # Day mapping is done by weekday (Mon→Mon, Tue→Tue, ...) instead of exact date.
+        weekly_plan_A_raw = self._get_latest_meal_plan(profile_id_A)
         if not weekly_plan_A_raw:
-            _LOGGER.error(f"Could not find an active meal plan for the primary profile {profile_id_A} on {start_date.isoformat()}.")
+            _LOGGER.error(f"Could not find any meal plan for the primary profile {profile_id_A}.")
             return []
 
         weekly_plan_B_raw = None
         if profile_id_B:
-            weekly_plan_B_raw = self._get_active_meal_plan(profile_id_B, start_date)
+            weekly_plan_B_raw = self._get_latest_meal_plan(profile_id_B)
 
         # If profile B was specified but no plan was found, create a dummy plan to allow generation to continue
         if profile_id_B and not weekly_plan_B_raw:
@@ -382,49 +630,602 @@ class PlannerEngine:
         )
 
 
+        # Protein category limits (from rotation rules + defaults) and weekly counts
+        protein_cat_limits = self._build_protein_limits(weekly_plan_A_raw.rotation_rules)
+        protein_cat_counts: Dict[str, int] = {}
+        protein_item_counts: Dict[str, int] = {}
+        recent_protein_items: List[str] = []
+        # Vegetable rotation across the week (no repeated veg in back-to-back slots)
+        used_vegs: List[str] = []
+        day_slot = 0
+
         generated_plan: List[schemas.DailyPlannedMeals] = []
+        used_recipe_ids: set = set()  # hard-exclude already-assigned recipes within this run
         for i in range(7):
             current_date = start_date + timedelta(days=i)
-            
-            daily_plan_A = next((d for d in weekly_plan_A.daily_plans if date.fromisoformat(d.date) == current_date), None)
-            daily_plan_B = next((d for d in weekly_plan_B.daily_plans if date.fromisoformat(d.date) == current_date), None)
 
-            if not daily_plan_A: # We must have plan A, B is optional
+            # Match by day-of-week so plans cover any rolling week, not just original dates
+            daily_plan_A = next((d for d in weekly_plan_A.daily_plans if date.fromisoformat(d.date).weekday() == current_date.weekday()), None)
+            daily_plan_B = next((d for d in weekly_plan_B.daily_plans if date.fromisoformat(d.date).weekday() == current_date.weekday()), None)
+
+            if not daily_plan_A:
                 continue
-            if not daily_plan_B: # Create a dummy if it doesn't exist for this day
+            if not daily_plan_B:
                 daily_plan_B = schemas.DailyPlannedMeals(date=current_date.isoformat(), meals=[])
 
-
             generated_day = schemas.DailyPlannedMeals(date=current_date.isoformat(), meals=[])
-            
+
+            # Track pranzo protein category to enforce no-same-protein at cena
+            pranzo_protein_category: Optional[str] = None
+
             for meal_type in ["pranzo", "cena"]:
                 meal_plan_A = next((m for m in daily_plan_A.meals if m.meal_type == meal_type), None)
                 meal_plan_B = next((m for m in daily_plan_B.meals if m.meal_type == meal_type), None)
 
-                if not meal_plan_A: # We must have a meal for profile A to generate a suggestion
+                if not meal_plan_A:
                     continue
-                if not meal_plan_B: # Create a dummy if it doesn't exist
+                if not meal_plan_B:
                     meal_plan_B = schemas.PlannedMeal(meal_type=meal_type, items=[])
 
+                # For cena, exclude the protein category already used at pranzo
+                excluded_protein = pranzo_protein_category if meal_type == "cena" else None
+
                 best_recipes = self.suggest_recipes_for_meal(
-                    meal_plan_A, meal_plan_B, profile_id_A, profile_id_B, current_date, {}
+                    meal_plan_A, meal_plan_B, profile_id_A, profile_id_B, current_date, {},
+                    excluded_protein_category=excluded_protein,
+                    excluded_recipe_ids=used_recipe_ids,
+                    protein_cat_counts=protein_cat_counts,
+                    protein_cat_limits=protein_cat_limits,
+                    protein_item_counts=protein_item_counts,
+                    recent_protein_items=recent_protein_items,
                 )
 
                 if best_recipes:
-                    best_recipe = best_recipes[0] # Take the first best recipe
+                    best_recipe = best_recipes[0]
+
+                    # Build display name from recipe content
+                    ingredients, _ = self._get_recipe_content(best_recipe.recipe_id)
+                    content_raw = [
+                        {"name": ing.name, "food_group": ing.food_group}
+                        if not isinstance(ing, dict) else ing
+                        for ing in ingredients
+                    ]
+
+                    # Pick a specific vegetable for this slot (rotation across week)
+                    cooking = self._get_cooking_method(best_recipe.recipe_id)
+                    specific_veg = self._pick_vegetable(day_slot, cooking, used_vegs)
+                    used_vegs.append(specific_veg)
+                    day_slot += 1
+
+                    display_name = self._make_display_name(content_raw, specific_veg) if content_raw else best_recipe.name
+
                     generated_day.meals.append(schemas.PlannedMeal(
                         meal_type=meal_type,
                         items=[schemas.PlannedItem(
-                            item_name=best_recipe.name,
-                            food_group="recipe", # Placeholder
+                            item_name=display_name,
+                            food_group="recipe",
                             quantity=1,
-                            unit="recipe"
+                            unit="recipe",
+                            recipe_id=best_recipe.recipe_id,
                         )]
                     ))
+
+                    # Track used recipes (hard-exclude from remaining slots)
+                    used_recipe_ids.add(best_recipe.recipe_id)
+
+                    # Track protein category for weekly variety
+                    cat = self._get_main_protein_category(best_recipe.recipe_id)
+                    if cat:
+                        protein_cat_counts[cat] = protein_cat_counts.get(cat, 0) + 1
+
+                    # Step B: track protein item for monotony avoidance
+                    item = self._get_main_protein_item(best_recipe.recipe_id)
+                    if item:
+                        protein_item_counts[item] = protein_item_counts.get(item, 0) + 1
+                        recent_protein_items.append(item)
+                        if len(recent_protein_items) > 3:
+                            recent_protein_items.pop(0)
+
+                    # Track protein for the same-day pranzo/cena constraint
+                    if meal_type == "pranzo":
+                        pranzo_protein_category = cat
 
             generated_plan.append(generated_day)
 
         return generated_plan
+
+    # Gruppi alimentari che contano come proteine
+    _PROTEIN_GROUPS = {"proteina", "pollo", "pesce", "carne_rossa", "legumi"}
+
+    # Mappa food_group → categoria proteica per il vincolo pranzo/cena
+    _PROTEIN_CATEGORY_MAP = {
+        "pollo":       "carne_bianca",
+        "carne_rossa": "carne_rossa",
+        "pesce":       "pesce",
+        "legumi":      "legumi",
+        "proteina":    "proteina",
+        "proteine":    "proteina",
+    }
+
+    # Catalogo verdure specifiche con metodi cottura compatibili
+    _VEG_CATALOG = [
+        {"name": "zucchine",      "methods": ["tegame", "forno", "vapore"]},
+        {"name": "spinaci",       "methods": ["tegame", "vapore"]},
+        {"name": "broccoli",      "methods": ["forno", "vapore", "tegame"]},
+        {"name": "carote",        "methods": ["forno", "vapore", "tegame"]},
+        {"name": "peperoni",      "methods": ["forno", "tegame"]},
+        {"name": "melanzane",     "methods": ["forno", "tegame"]},
+        {"name": "fagiolini",     "methods": ["vapore", "tegame"]},
+        {"name": "cavolfiore",    "methods": ["forno", "vapore"]},
+        {"name": "finocchi",      "methods": ["forno", "tegame"]},
+        {"name": "asparagi",      "methods": ["vapore", "forno"]},
+        {"name": "pomodori",      "methods": ["forno", "tegame"]},
+        {"name": "insalata mista","methods": []},  # compatibile con tutto
+        {"name": "bietole",       "methods": ["tegame", "vapore"]},
+        {"name": "piselli",       "methods": ["tegame", "vapore"]},
+    ]
+    # Nomi generici da sostituire con verdure specifiche
+    _VEG_GENERIC_NAMES = {"verdure", "verdura", "verdura mista", "verdure miste", "contorno"}
+
+    @staticmethod
+    def _make_display_name(content: list, specific_veg: Optional[str] = None) -> str:
+        """
+        Builds a human-readable meal name from ingredient content.
+        Format: "<Proteina> con <Carbo>" or "<Proteina> con <Carbo> e <Verdura>"
+        specific_veg overrides the generic "Verdure" label with the actual vegetable name.
+        Falls back to the first ingredient name if structure is unexpected.
+        """
+        protein_name = None
+        carb_name = None
+        has_veg = False
+
+        protein_groups = {"proteina", "proteine", "pollo", "pesce", "carne_rossa", "legumi"}
+        carb_groups = {"carboidrati", "carboidrato"}
+
+        for ing in content:
+            fg = (ing.get("food_group") if isinstance(ing, dict) else ing.food_group or "").lower()
+            name = (ing.get("name") if isinstance(ing, dict) else ing.name or "").title()
+            if not protein_name and fg in protein_groups:
+                protein_name = name
+            elif not carb_name and fg in carb_groups:
+                carb_name = name
+            elif fg == "verdure":
+                has_veg = True
+
+        if protein_name and carb_name:
+            base = f"{protein_name} con {carb_name}"
+            if specific_veg:
+                return f"{base} e {specific_veg.title()}"
+            if has_veg:
+                # Step D: never show generic "Verdure" — pick deterministic fallback from catalog
+                fallback = PlannerEngine._VEG_CATALOG[
+                    abs(hash(protein_name or "")) % len(PlannerEngine._VEG_CATALOG)
+                ]["name"]
+                return f"{base} e {fallback.title()}"
+            return base
+        if protein_name:
+            return protein_name
+        if carb_name:
+            return carb_name
+        # Last resort: first ingredient
+        if content:
+            first = content[0]
+            return (first.get("name") if isinstance(first, dict) else first.name or "Pasto").title()
+        return "Pasto"
+
+    def _get_main_protein_category(self, recipe_id: str) -> Optional[str]:
+        """Returns the protein category of the main protein ingredient in a recipe."""
+        ingredients, _ = self._get_recipe_content(recipe_id)
+        for ing in ingredients:
+            fg = (ing.get("food_group") if isinstance(ing, dict) else ing.food_group or "").lower()
+            cat = self._PROTEIN_CATEGORY_MAP.get(fg)
+            if cat:
+                return cat
+        return None
+
+    def _recipe_protein_cat(self, recipe: "schemas.Recipe") -> Optional[str]:
+        """Returns protein category from an already-loaded Recipe object (no DB query)."""
+        ingredients = recipe.content.components if recipe.is_composed_dish else recipe.content
+        for ing in ingredients:
+            fg = (ing.food_group or "").lower()
+            cat = self._PROTEIN_CATEGORY_MAP.get(fg)
+            if cat:
+                return cat
+        return None
+
+    def _get_main_protein_item(self, recipe_id: str) -> Optional[str]:
+        """Returns the name (lowercase) of the main protein ingredient, looked up by recipe_id."""
+        ingredients, _ = self._get_recipe_content(recipe_id)
+        for ing in ingredients:
+            fg = (ing.get("food_group") if isinstance(ing, dict) else ing.food_group or "").lower()
+            if fg in self._PROTEIN_GROUPS:
+                return (ing.get("name") if isinstance(ing, dict) else ing.name or "").lower()
+        return None
+
+    def _get_main_protein_item_from_recipe(self, recipe: "schemas.Recipe") -> Optional[str]:
+        """Returns the name (lowercase) of the main protein ingredient from an already-loaded Recipe."""
+        ingredients = recipe.content.components if recipe.is_composed_dish else recipe.content
+        for ing in ingredients:
+            fg = (ing.food_group or "").lower()
+            if fg in self._PROTEIN_GROUPS:
+                return (ing.name or "").lower()
+        return None
+
+    @staticmethod
+    def _pantry_matches(rec_name: str, pantry_items) -> bool:
+        """Token-overlap match: ingredient name matches pantry item if any word overlaps."""
+        tokens = set(rec_name.lower().split())
+        return any(tokens & set(pi.name.lower().split()) for pi in pantry_items)
+
+    def _get_cooking_method(self, recipe_id: str) -> str:
+        """Returns the primary cooking method of a recipe (e.g. 'tegame', 'forno')."""
+        db_recipe = self.db.query(Recipe).filter(Recipe.id == recipe_id).first()
+        if db_recipe:
+            methods = (db_recipe.tags or {}).get("cooking_methods", [])
+            return methods[0].lower() if methods else "tegame"
+        candidate = self.db.query(CandidateRecipe).filter(CandidateRecipe.id == recipe_id).first()
+        if candidate:
+            data = candidate.recipe_data if isinstance(candidate.recipe_data, dict) else candidate.recipe_data.model_dump()
+            methods = data.get("tags", {}).get("cooking_methods", [])
+            return methods[0].lower() if methods else "tegame"
+        return "tegame"
+
+    @staticmethod
+    def _pick_vegetable(day_slot: int, cooking_method: str, used_vegs: List[str]) -> str:
+        """Deterministically pick a specific vegetable, rotating and avoiding recent repeats.
+        Prefers vegetables compatible with the meal's cooking method."""
+        method = (cooking_method or "tegame").lower()
+        # Compatible = method in veg's list OR veg has no restriction (empty list)
+        compatible = [v for v in PlannerEngine._VEG_CATALOG
+                      if not v["methods"] or method in v["methods"]]
+        if not compatible:
+            compatible = PlannerEngine._VEG_CATALOG
+
+        # Avoid last 3 used vegetables
+        recent = set(used_vegs[-3:]) if used_vegs else set()
+        candidates = [v for v in compatible if v["name"] not in recent]
+        if not candidates:
+            candidates = compatible  # all recent → allow repeats
+
+        return candidates[day_slot % len(candidates)]["name"]
+
+    @staticmethod
+    def _build_protein_limits(rotation_rules) -> Dict[str, int]:
+        """Build protein category weekly max limits from plan rotation rules + hardcoded defaults.
+        Returns {category: max_per_week}."""
+        defaults: Dict[str, int] = {
+            "carne_bianca": 2,
+            "carne_rossa":  1,
+            "pesce":        3,
+            "legumi":       5,
+            "proteina":     4,
+        }
+        limits = dict(defaults)
+        _fg_to_cat = {
+            "pollo": "carne_bianca", "carne_bianca": "carne_bianca",
+            "carne_rossa": "carne_rossa",
+            "pesce": "pesce",
+            "legumi": "legumi",
+            "proteina": "proteina", "proteine": "proteina", "uova": "proteina",
+        }
+        for rule in (rotation_rules or []):
+            fg = (rule.food_group_or_item if hasattr(rule, "food_group_or_item")
+                  else rule.get("food_group_or_item", "")).lower()
+            cat = _fg_to_cat.get(fg)
+            max_pw = (rule.max_per_week if hasattr(rule, "max_per_week")
+                      else rule.get("max_per_week"))
+            if cat and max_pw is not None:
+                limits[cat] = max_pw
+        return limits
+
+    def _load_prompt_template(self) -> str:
+        """Carica il template del prompt da file, con fallback inline."""
+        prompt_path = os.path.join(os.path.dirname(__file__), "prompt.txt")
+        try:
+            with open(prompt_path, "r", encoding="utf-8") as f:
+                return f.read()
+        except Exception:
+            _LOGGER.warning(f"prompt.txt non trovato in {prompt_path}, uso fallback.")
+            return (
+                "Sei un assistente nutrizionale. Genera un pasto per {{meal_type}} "
+                "con {{carb_target}}g di carboidrati ({{carb_options}}) e "
+                "{{protein_target}}g di proteine ({{protein_options}}). "
+                "Restituisci SOLO JSON: "
+                '{"meal_name":"...","components":{"protein":{"name":"...","grams":0},'
+                '"carb":{"name":"...","grams":0},"vegetables":[]},'
+                '"cooking_method":"...","notes":"..."}'
+            )
+
+    # Nomi generici che non devono essere passati al LLM come opzioni concreti.
+    # Mappati a una lista di alimenti concreti di fallback.
+    _GENERIC_NAME_MAP: Dict[str, List[str]] = {
+        "carboidrati":  ["pasta", "riso", "pane comune"],
+        "carboidrato":  ["pasta", "riso", "pane comune"],
+        "proteine":     ["pollo", "pesce", "uova"],
+        "proteina":     ["pollo", "pesce", "uova"],
+        "legumi":       ["lenticchie", "ceci", "fagioli"],
+        "verdure":      ["verdura mista"],
+        "verdura":      ["verdura mista"],
+        "grassi":       ["olio d'oliva"],
+        "grasso":       ["olio d'oliva"],
+        "frutta":       ["mela", "banana"],
+        "pesce":        ["salmone", "tonno", "merluzzo"],  # "pesce" è semi-generico
+    }
+
+    def _resolve_concrete_options(self, items: list, role: str) -> List[str]:
+        """
+        Dato un elenco di PlannedItem, restituisce i nomi concreti degli alimenti.
+        Se item_name è vuoto o generico (uguale al food_group), usa il mapping di fallback.
+        """
+        result = []
+        for it in items:
+            name = (it.item_name or "").strip().lower()
+            fg   = (it.food_group or "").strip().lower()
+            if not name or name == fg or name in self._GENERIC_NAME_MAP:
+                fallback = self._GENERIC_NAME_MAP.get(name or fg, self._GENERIC_NAME_MAP.get(fg, []))
+                if fallback:
+                    _LOGGER.warning(
+                        f"[{role}] item_name '{it.item_name}' è generico per food_group '{it.food_group}'. "
+                        f"Uso fallback: {fallback}"
+                    )
+                    result.extend(fallback)
+                else:
+                    _LOGGER.warning(
+                        f"[{role}] item_name '{it.item_name}' generico e nessun fallback trovato. Ignorato."
+                    )
+            else:
+                result.append(it.item_name)
+        return result
+
+    def _build_llm_prompt(
+        self,
+        meal_plan_A: schemas.PlannedMeal,
+        meal_plan_B: schemas.PlannedMeal,
+        profile_A: schemas.UserProfile,
+    ) -> tuple:
+        """
+        Riempie il template del prompt con i dati reali del piano.
+        Ritorna: (prompt_str, carb_target, protein_target, carb_options_list, protein_options_list)
+        """
+        carb_items    = [it for it in meal_plan_A.items if "carbo" in it.food_group.lower()]
+        protein_items = [it for it in meal_plan_A.items
+                         if any(pg in it.food_group.lower() for pg in self._PROTEIN_GROUPS)]
+
+        carb_target    = int(sum(it.quantity for it in carb_items) or 80)
+        protein_target = int(sum(it.quantity for it in protein_items) or 120)
+
+        carb_options_list    = self._resolve_concrete_options(carb_items, "carb")
+        protein_options_list = self._resolve_concrete_options(protein_items, "protein")
+
+        # Fallback se ancora vuoti
+        if not carb_options_list:
+            carb_options_list = ["pasta", "riso", "pane comune"]
+        if not protein_options_list:
+            protein_options_list = ["pollo", "pesce", "uova"]
+
+        _LOGGER.info(
+            f"[build_llm_prompt] meal_type={meal_plan_A.meal_type} | "
+            f"carb_items={[it.item_name for it in carb_items]} carb_target={carb_target}g | "
+            f"protein_items={[it.item_name for it in protein_items]} protein_target={protein_target}g | "
+            f"carb_options={carb_options_list} protein_options={protein_options_list}"
+        )
+
+        exclusions = list(set((profile_A.allergies or []) + (profile_A.excluded_foods or [])))
+
+        template = self._load_prompt_template()
+        prompt = (
+            template
+            .replace("{{meal_type}}", meal_plan_A.meal_type)
+            .replace("{{carb_target}}", str(carb_target))
+            .replace("{{carb_options}}", ", ".join(carb_options_list))
+            .replace("{{protein_target}}", str(protein_target))
+            .replace("{{protein_options}}", ", ".join(protein_options_list))
+            .replace("{{base_recipe_json}}", "nessuna")
+        )
+
+        if exclusions:
+            prompt += f"\n\nINGREDIENTI VIETATI (allergie/esclusioni): {', '.join(exclusions)}. Non includerli MAI."
+
+        return prompt, carb_target, protein_target, carb_options_list, protein_options_list
+
+    def _parse_llm_recipe_response(
+        self,
+        raw: str,
+        profile_A: schemas.UserProfile,
+        profile_B: schemas.UserProfile,
+        meal_type: str,
+    ) -> Optional[dict]:
+        """
+        Converte il JSON del nuovo formato prompt in un dict compatibile con RecipeCreate.
+        Formato atteso: {meal_name, components:{protein, carb, vegetables}, cooking_method, notes}
+        """
+        json_match = re.search(r'\{.*\}', raw, re.DOTALL)
+        if not json_match:
+            _LOGGER.error(f"LLM non ha restituito JSON valido. Raw: {raw[:300]}")
+            return None
+
+        try:
+            result = json.loads(json_match.group())
+        except json.JSONDecodeError as e:
+            _LOGGER.error(f"JSON non parsabile: {e}. Raw: {raw[:300]}")
+            return None
+
+        components = result.get("components", {})
+        protein    = components.get("protein", {})
+        carb       = components.get("carb", {})
+        vegetables = components.get("vegetables", [])
+
+        def _make_ing(name: str, grams: float, food_group: str) -> dict:
+            grams = float(grams) if grams else 0.0
+            return {
+                "name": name,
+                "food_group": food_group,
+                "quantities": {
+                    profile_A.id: {"qty": grams, "unit": "g", "grams_equiv": grams},
+                    profile_B.id: {"qty": grams, "unit": "g", "grams_equiv": grams},
+                },
+            }
+
+        content = []
+        if protein.get("name") and protein.get("grams"):
+            content.append(_make_ing(protein["name"], protein["grams"], "proteina"))
+        if carb.get("name") and carb.get("grams"):
+            content.append(_make_ing(carb["name"], carb["grams"], "carboidrati"))
+        for veg in vegetables:
+            if veg.get("name") and veg.get("grams"):
+                content.append(_make_ing(veg["name"], veg["grams"], "verdure"))
+
+        cooking = result.get("cooking_method", "tegame")
+        return {
+            "name": result.get("meal_name", "Pasto AI"),
+            "description": result.get("notes", ""),
+            "is_composed_dish": False,
+            "content": content,
+            "steps": [],
+            "total_time_minutes": 30,
+            "difficulty": "facile",
+            "tags": {
+                "cooking_methods": [cooking],
+                "mood": ["normale"],
+                "cleanup": ["facile"],
+            },
+        }
+
+    def _enforce_fallbacks(
+        self,
+        recipe_data: dict,
+        carb_target: int,
+        protein_target: int,
+        carb_options: List[str],
+        protein_options: List[str],
+        profile_A: schemas.UserProfile,
+        profile_B: schemas.UserProfile,
+    ) -> dict:
+        """
+        Garantisce SEMPRE esattamente 1 carboidrato e 1 proteina con grammature target esatte.
+
+        Logica deterministica:
+        - Se l'ingrediente esiste: corregge le grammature al valore target (ignora quelle del LLM).
+        - Se ce ne sono più d'uno per gruppo: mantiene solo il primo, scarta gli altri.
+        - Se manca: aggiunge un fallback con grammatura target.
+
+        Il LLM decide nomi e metodo cottura. Il codice impone sempre le grammature del piano.
+        """
+        import copy
+        result = copy.deepcopy(recipe_data)
+        content = result["content"]
+        cooking = (result["tags"]["cooking_methods"] or ["tegame"])[0]
+
+        def _set_grams(ing: dict, grams: float):
+            """Sovrascrive le grammature per tutti i profili."""
+            for pid in ing["quantities"]:
+                ing["quantities"][pid] = {"qty": float(grams), "unit": "g", "grams_equiv": float(grams)}
+
+        def _make_fallback_ing(name: str, grams: int, food_group: str) -> dict:
+            return {
+                "name": name,
+                "food_group": food_group,
+                "quantities": {
+                    profile_A.id: {"qty": float(grams), "unit": "g", "grams_equiv": float(grams)},
+                    profile_B.id: {"qty": float(grams), "unit": "g", "grams_equiv": float(grams)},
+                },
+            }
+
+        carbs    = [i for i in content if i["food_group"] == "carboidrati"]
+        proteins = [i for i in content if i["food_group"] == "proteina"]
+        others   = [i for i in content if i["food_group"] not in ("carboidrati", "proteina")]
+
+        # --- CARBOIDRATI ---
+        if carbs:
+            if len(carbs) > 1:
+                _LOGGER.warning(
+                    f"[enforce] {len(carbs)} carboidrati trovati → mantenuto solo il primo: '{carbs[0]['name']}'"
+                )
+            chosen = carbs[0]
+            old_g = list(chosen["quantities"].values())[0].get("grams_equiv", 0) if chosen["quantities"] else 0
+            _set_grams(chosen, carb_target)
+            if abs(old_g - carb_target) > 0.5:
+                _LOGGER.warning(
+                    f"[enforce] Carbo '{chosen['name']}': LLM={old_g}g → corretto a {carb_target}g"
+                )
+            new_carbs = [chosen]
+        elif carb_target > 0:
+            if cooking == "forno" and "patate" in carb_options:
+                carb_name = "patate"
+            elif carb_options:
+                carb_name = carb_options[0]
+            else:
+                carb_name = "pane comune"
+            new_carbs = [_make_fallback_ing(carb_name, carb_target, "carboidrati")]
+            _LOGGER.warning(f"[enforce] Carboidrato mancante → aggiunto '{carb_name}' {carb_target}g")
+        else:
+            new_carbs = []
+
+        # --- PROTEINE ---
+        if proteins:
+            if len(proteins) > 1:
+                _LOGGER.warning(
+                    f"[enforce] {len(proteins)} proteine trovate → mantenuta solo la prima: '{proteins[0]['name']}'"
+                )
+            chosen = proteins[0]
+            old_g = list(chosen["quantities"].values())[0].get("grams_equiv", 0) if chosen["quantities"] else 0
+            _set_grams(chosen, protein_target)
+            if abs(old_g - protein_target) > 0.5:
+                _LOGGER.warning(
+                    f"[enforce] Proteina '{chosen['name']}': LLM={old_g}g → corretta a {protein_target}g"
+                )
+            new_proteins = [chosen]
+        elif protein_target > 0:
+            protein_name = protein_options[0] if protein_options else "pollo"
+            new_proteins = [_make_fallback_ing(protein_name, protein_target, "proteina")]
+            _LOGGER.warning(f"[enforce] Proteina mancante → aggiunta '{protein_name}' {protein_target}g")
+        else:
+            new_proteins = []
+
+        result["content"] = new_carbs + new_proteins + others
+        return result
+
+    def _validate_meal_targets(
+        self,
+        recipe_data: dict,
+        carb_target: int,
+        protein_target: int,
+        tolerance: float = 1.0,
+    ) -> bool:
+        """
+        Verifica che le grammature di carbo e proteina rispettino i target con tolleranza ±1g.
+        Usa il primo profilo trovato per leggere i grams_equiv.
+        """
+        content = recipe_data.get("content", [])
+        actual_carb    = 0.0
+        actual_protein = 0.0
+
+        for ing in content:
+            fg = ing.get("food_group", "")
+            # Leggi grams_equiv dal primo profilo disponibile
+            for qty in ing.get("quantities", {}).values():
+                grams = qty.get("grams_equiv", 0) or 0
+                if fg == "carboidrati":
+                    actual_carb += float(grams)
+                elif fg == "proteina":
+                    actual_protein += float(grams)
+                break  # un solo profilo è sufficiente per il totale
+
+        carb_ok    = abs(actual_carb - carb_target) <= tolerance
+        protein_ok = abs(actual_protein - protein_target) <= tolerance
+
+        if not carb_ok:
+            _LOGGER.error(
+                f"[validate] Carbo: attuale={actual_carb}g, target={carb_target}g "
+                f"(delta={abs(actual_carb - carb_target):.1f}g > ±{tolerance}g)"
+            )
+        if not protein_ok:
+            _LOGGER.error(
+                f"[validate] Proteina: attuale={actual_protein}g, target={protein_target}g "
+                f"(delta={abs(actual_protein - protein_target):.1f}g > ±{tolerance}g)"
+            )
+
+        return carb_ok and protein_ok
 
     def _generate_llm_recipe_suggestion(
         self,
@@ -437,67 +1238,90 @@ class PlannerEngine:
         consumed_entries_B: List[schemas.ConsumedEntry],
     ) -> Optional[schemas.ChangeRecipeOption]:
         """
-        Calls the LLM to generate a new recipe when no existing recipes match.
+        Flusso completo:
+        1. Costruzione prompt con target reali e opzioni concrete
+        2. Chiamata LLM via gateway
+        3. Parsing JSON → recipe_data
+        4. Enforcement fallback (carbo/proteina mancanti)
+        5. Validazione grammature (±1g)
+        6. Salvataggio CandidateRecipe solo se conforme
         """
         if not self.llm_gateway:
-            _LOGGER.warning("LLM Gateway not available, cannot generate a new recipe suggestion.")
+            _LOGGER.warning("LLM Gateway non disponibile, impossibile generare ricetta.")
             return None
 
-        _LOGGER.info("No suitable recipes found in DB. Attempting to generate a new one with LLM.")
+        _LOGGER.info("Nessuna ricetta DB idonea. Avvio generazione LLM...")
 
-        # Build constraints
-        constraints = {
-            "profiles": [
-                {"id": profile_A.id, "allergies": profile_A.allergies, "excluded_foods": profile_A.excluded_foods},
-                {"id": profile_B.id, "allergies": profile_B.allergies, "excluded_foods": profile_B.excluded_foods},
-            ],
-            "meal_plan": {
-                "meal_type": meal_plan_A.meal_type,
-                profile_A.id: [item.model_dump() for item in meal_plan_A.items],
-                profile_B.id: [item.model_dump() for item in meal_plan_B.items],
-            },
-            "pantry_items_expiring_soon": [p.name for p in pantry_items if p.expiration_date], # Simplified for prompt
-            "recently_used_ingredients": list({e.override_details.free_text_name for e in consumed_entries_A + consumed_entries_B if e.override_details and e.override_details.free_text_name}),
-        }
+        # 1. Prompt
+        prompt, carb_target, protein_target, carb_options, protein_options = (
+            self._build_llm_prompt(meal_plan_A, meal_plan_B, profile_A)
+        )
 
-        generated_recipe_data = self.llm_gateway.generate_recipe_from_constraints(constraints)
-
-        if not generated_recipe_data:
-            _LOGGER.error("LLM failed to generate a valid recipe from constraints.")
+        # 2. Chiamata LLM (via gateway, senza accedere a _client)
+        raw = self.llm_gateway.generate_structured_meal(prompt)
+        if not raw:
+            _LOGGER.error("LLM non ha restituito nulla.")
             return None
-        
+
+        # 3. Parsing
+        recipe_data = self._parse_llm_recipe_response(raw, profile_A, profile_B, meal_plan_A.meal_type)
+        if not recipe_data:
+            return None
+
+        # 4. Enforcement fallback lato codice
+        recipe_data = self._enforce_fallbacks(
+            recipe_data, carb_target, protein_target,
+            carb_options, protein_options, profile_A, profile_B,
+        )
+
+        # 5. Validazione grammature
+        if not self._validate_meal_targets(recipe_data, carb_target, protein_target):
+            _LOGGER.error(
+                f"[LLM] Ricetta '{recipe_data.get('name')}' scartata: grammature non conformi ai target."
+            )
+            return None
+
+        # 6. Salvataggio
         try:
-            # Validate and create a candidate recipe
-            recipe_create_schema = schemas.RecipeCreate(**generated_recipe_data)
-            
             candidate_id = str(uuid.uuid4())
             db_candidate = CandidateRecipe(
                 id=candidate_id,
                 status="draft_structured",
-                recipe_data=recipe_create_schema.model_dump()
+                recipe_data=recipe_data,
             )
             self.db.add(db_candidate)
             self.db.commit()
-            _LOGGER.info(f"Successfully saved LLM-generated recipe as CandidateRecipe ID: {candidate_id}")
+            _LOGGER.info(f"[LLM] CandidateRecipe salvata: {candidate_id} → '{recipe_data['name']}'")
 
-            # Create a ChangeRecipeOption to return to the user immediately
+            cooking = (recipe_data["tags"]["cooking_methods"] or ["tegame"])[0]
+            key_ingredients = [ing["name"] for ing in recipe_data["content"][:2]]
+            # Task 4: build deterministic display name
+            display_name = self._make_display_name(recipe_data["content"])
+
             return schemas.ChangeRecipeOption(
                 option_id=str(uuid.uuid4()),
-                recipe_id=candidate_id, # Use candidate_id
-                name=f"[AI] {recipe_create_schema.name}",
-                total_time_minutes=recipe_create_schema.total_time_minutes,
-                difficulty=recipe_create_schema.difficulty,
-                cleanup_score=recipe_create_schema.tags.get("cleanup", ["normal"])[0] if recipe_create_schema.tags else "normal",
-                key_ingredients=[ing.name for ing in recipe_create_schema.content[:2] if not recipe_create_schema.is_composed_dish],
+                recipe_id=candidate_id,
+                name=display_name,
+                total_time_minutes=recipe_data["total_time_minutes"],
+                difficulty=recipe_data["difficulty"],
+                cleanup_score="facile",
+                key_ingredients=key_ingredients,
                 divergence_strategy="llm_generated",
-                divergence_details="This recipe was generated by AI to fit your plan."
+                divergence_details=recipe_data.get("description", ""),
             )
         except Exception as e:
-            _LOGGER.error(f"Error processing or saving LLM-generated recipe: {e}")
+            _LOGGER.error(f"Errore nel salvataggio della ricetta AI: {e}")
             self.db.rollback()
             return None
 
-    def suggest_recipes_for_meal(self, meal_plan_A, meal_plan_B, profile_id_A, profile_id_B, current_date, request_params):
+    def suggest_recipes_for_meal(self, meal_plan_A, meal_plan_B, profile_id_A, profile_id_B, current_date, request_params,
+                                 excluded_protein_category: Optional[str] = None,
+                                 excluded_recipe_ids: Optional[set] = None,
+                                 protein_cat_counts: Optional[Dict[str, int]] = None,
+                                 protein_cat_limits: Optional[Dict[str, int]] = None,
+                                 target_protein_category: Optional[str] = None,
+                                 protein_item_counts: Optional[Dict[str, int]] = None,
+                                 recent_protein_items: Optional[List[str]] = None):
         
         profile_A = self._get_user_profile(profile_id_A)
         profile_B = self._get_user_profile(profile_id_B)
@@ -536,14 +1360,86 @@ class PlannerEngine:
                     "divergence_details": divergence_details
                 })
         _LOGGER.debug(f"Valid recipes after hard constraints: {[r['recipe'].name for r in valid_recipes]}")
-        
+
+        # Hard stop: protein category at weekly max (variety constraint)
+        if protein_cat_counts is not None and protein_cat_limits:
+            before = len(valid_recipes)
+            def _under_protein_limit(recipe: schemas.Recipe) -> bool:
+                cat = self._recipe_protein_cat(recipe)
+                return cat is None or protein_cat_counts.get(cat, 0) < protein_cat_limits.get(cat, 999)
+            valid_recipes = [r for r in valid_recipes if _under_protein_limit(r["recipe"])]
+            _LOGGER.info(
+                f"[protein-limits] Excluded {before - len(valid_recipes)} recipe(s) "
+                f"over weekly limit. Counts={protein_cat_counts}, Limits={protein_cat_limits}"
+            )
+
+        # Exclude recipes already used in this generation run (hard filter, avoids repeats)
+        if excluded_recipe_ids:
+            before = len(valid_recipes)
+            valid_recipes = [r for r in valid_recipes if r["recipe"].id not in excluded_recipe_ids]
+            _LOGGER.info(
+                f"[excluded-ids] Excluded {before - len(valid_recipes)} already-used recipe(s)"
+            )
+
+        # Task 5: exclude recipes whose main protein matches the same-day pranzo protein
+        if excluded_protein_category:
+            before = len(valid_recipes)
+            valid_recipes = [
+                r for r in valid_recipes
+                if self._PROTEIN_CATEGORY_MAP.get(
+                    self._normalize_food_group(
+                        next(
+                            (ing.food_group for ing in (
+                                r["recipe"].content.components if r["recipe"].is_composed_dish else r["recipe"].content
+                            ) if ing.food_group.lower() in self._PROTEIN_CATEGORY_MAP),
+                            ""
+                        )
+                    ), None
+                ) != excluded_protein_category
+            ]
+            _LOGGER.info(
+                f"[protein-constraint] Excluded {before - len(valid_recipes)} recipe(s) "
+                f"with protein category '{excluded_protein_category}'"
+            )
+
+        # Soft preference: if target_protein_category given, prefer matching recipes; fall back to all
+        if target_protein_category:
+            preferred = [r for r in valid_recipes if self._recipe_protein_cat(r["recipe"]) == target_protein_category]
+            if preferred:
+                _LOGGER.info(
+                    f"[target-protein] Narrowed {len(valid_recipes)} → {len(preferred)} "
+                    f"recipe(s) matching '{target_protein_category}'"
+                )
+                valid_recipes = preferred
+            else:
+                _LOGGER.info(
+                    f"[target-protein] No recipes match '{target_protein_category}', keeping all {len(valid_recipes)}"
+                )
+
+        # Step B Tier 1: max 2/week per specific protein item (soft filter, keeps variety)
+        if protein_item_counts:
+            over_limit = {k for k, v in protein_item_counts.items() if v >= 2}
+            preferred = [
+                r for r in valid_recipes
+                if (self._get_main_protein_item_from_recipe(r["recipe"]) or "") not in over_limit
+            ]
+            if preferred:
+                valid_recipes = preferred
+                _LOGGER.info(
+                    f"[protein-item-filter] Narrowed to {len(preferred)} recipe(s) "
+                    f"excluding items used ≥2 times: {over_limit}"
+                )
+
         filtered_recipes = []
         for recipe_info in valid_recipes:
             recipe = recipe_info["recipe"]
-            
+
             dosed_recipe = self._calculate_dosing(recipe, profile_A, profile_B)
-            score = self._score_soft_constraints(dosed_recipe, pantry_items, seasonality_data, current_date, consumed_entries_A, consumed_entries_B)
-                
+            score = self._score_soft_constraints(
+                dosed_recipe, pantry_items, seasonality_data, current_date,
+                consumed_entries_A, consumed_entries_B, recent_protein_items
+            )
+
             filtered_recipes.append({
                 "recipe": dosed_recipe,
                 "score": score,
@@ -561,10 +1457,14 @@ class PlannerEngine:
 
             cleanup_score = rec_info["recipe"].tags.get("cleanup", ["normal"])[0] if rec_info["recipe"].tags and "cleanup" in rec_info["recipe"].tags else "normal"
 
+            # Task 4: deterministic display name from content
+            content_raw = [{"name": i.name, "food_group": i.food_group} for i in recipe_content_list]
+            display_name = self._make_display_name(content_raw) if content_raw else rec_info["recipe"].name
+
             candidate_options.append(schemas.ChangeRecipeOption(
                 option_id=str(uuid.uuid4()),
                 recipe_id=rec_info["recipe"].id,
-                name=rec_info["recipe"].name,
+                name=display_name,
                 total_time_minutes=rec_info["recipe"].total_time_minutes,
                 difficulty=rec_info["recipe"].difficulty,
                 cleanup_score=cleanup_score,
@@ -583,6 +1483,123 @@ class PlannerEngine:
 
         return candidate_options
 
+    def get_component_alternatives(
+        self,
+        recipe_id: str,
+        component: str,  # 'carb' or 'protein'
+        meal_plan_A: schemas.PlannedMeal,
+        profile_A: schemas.UserProfile,
+        profile_B: schemas.UserProfile,
+    ) -> List[schemas.ChangeRecipeOption]:
+        """
+        Returns CandidateRecipe options where only the specified component (carb/protein)
+        is swapped from the current recipe. All grams are taken from the meal plan targets.
+        """
+        import copy
+
+        current_ingredients, _ = self._get_recipe_content(recipe_id)
+        if not current_ingredients:
+            return []
+
+        # Determine target grams and food_group for the component being changed
+        fg_map = {
+            "carb":    ["carboidrati", "carboidrato"],
+            "protein": ["proteina", "proteine", "pollo", "pesce", "carne_rossa", "legumi"],
+        }
+        target_fgs = fg_map.get(component, [])
+
+        # Convert any Pydantic RecipeIngredient objects to plain dicts for JSON serialization
+        def _ing_to_dict(ing) -> dict:
+            if isinstance(ing, dict):
+                return ing
+            d = ing.model_dump()
+            d["quantities"] = {
+                k: (v.model_dump() if hasattr(v, "model_dump") else v)
+                for k, v in d["quantities"].items()
+            }
+            return d
+
+        # Get current non-target ingredients (keep them as-is, as plain dicts)
+        kept_ingredients = [
+            _ing_to_dict(ing) for ing in current_ingredients
+            if (ing.get("food_group") if isinstance(ing, dict) else ing.food_group or "").lower() not in target_fgs
+        ]
+
+        # Get target grams from meal plan
+        target_qty = 0
+        for item in meal_plan_A.items:
+            if item.food_group.lower() in target_fgs:
+                target_qty = item.quantity
+                break
+
+        # Build list of alternative names from the meal plan items for that component
+        alternatives = [item.item_name for item in meal_plan_A.items if item.food_group.lower() in target_fgs and item.item_name]
+        # Add plan-agnostic options
+        if component == "carb":
+            alternatives += ["pasta", "riso", "pane comune", "patate", "couscous"]
+        else:
+            alternatives += ["pollo", "pesce", "uova", "legumi", "tofu"]
+
+        # Deduplicate, exclude current ingredient names
+        current_names = {(ing.get("name") if isinstance(ing, dict) else ing.name or "").lower() for ing in current_ingredients if (ing.get("food_group") if isinstance(ing, dict) else ing.food_group or "").lower() in target_fgs}
+        alternatives = list(dict.fromkeys(a for a in alternatives if a.lower() not in current_names))[:4]
+
+        if not alternatives:
+            return []
+
+        def _make_qty(grams: float) -> dict:
+            return {"qty": float(grams), "unit": "g", "grams_equiv": float(grams)}
+
+        options = []
+        for alt_name in alternatives:
+            food_group = "carboidrati" if component == "carb" else "proteina"
+            new_ing = {
+                "name": alt_name,
+                "food_group": food_group,
+                "quantities": {
+                    profile_A.id: _make_qty(target_qty),
+                    profile_B.id: _make_qty(target_qty),
+                },
+            }
+            new_content = list(kept_ingredients) + [new_ing]
+
+            # Build display name using the new content
+            display = self._make_display_name(new_content)
+
+            new_recipe_data = {
+                "name": display,
+                "description": f"Variante con {alt_name} al posto del {component}.",
+                "is_composed_dish": False,
+                "content": new_content,
+                "steps": [],
+                "total_time_minutes": 20,
+                "difficulty": "facile",
+                "tags": {"cooking_methods": ["tegame"], "mood": ["normale"], "cleanup": ["facile"]},
+            }
+
+            try:
+                candidate_id = str(uuid.uuid4())
+                db_candidate = CandidateRecipe(id=candidate_id, status="draft_structured", recipe_data=new_recipe_data)
+                self.db.add(db_candidate)
+                self.db.commit()
+
+                options.append(schemas.ChangeRecipeOption(
+                    option_id=str(uuid.uuid4()),
+                    recipe_id=candidate_id,
+                    name=display,
+                    total_time_minutes=20,
+                    difficulty="facile",
+                    cleanup_score="facile",
+                    key_ingredients=[alt_name],
+                    divergence_strategy=f"swap_{component}",
+                    divergence_details=f"Solo {component} cambiato: {alt_name} ({target_qty}g)",
+                ))
+            except Exception as e:
+                _LOGGER.error(f"Errore creazione CandidateRecipe per variante '{alt_name}': {e}")
+                self.db.rollback()
+
+        return options
+
     def apply_recipe_to_plan(
         self,
         profile_id_A: str,
@@ -592,11 +1609,16 @@ class PlannerEngine:
         recipe_id: str
     ) -> bool:
         import copy
-        week_start = get_week_start(current_date)
-        plan = self.db.query(GeneratedWeeklyPlan).filter(
+        # Find the plan whose 7-day window covers current_date (rolling, no Monday-snapping)
+        all_plans = self.db.query(GeneratedWeeklyPlan).filter(
             GeneratedWeeklyPlan.profile_id_A == profile_id_A,
-            GeneratedWeeklyPlan.week_start_date == week_start.isoformat()
-        ).first()
+        ).all()
+        plan = None
+        for p in all_plans:
+            plan_start = date.fromisoformat(p.week_start_date)
+            if plan_start <= current_date <= plan_start + timedelta(days=6):
+                plan = p
+                break
         if not plan:
             _LOGGER.warning(f"No GeneratedWeeklyPlan found for {profile_id_A} week {week_start.isoformat()}")
             return False
@@ -619,106 +1641,133 @@ class PlannerEngine:
                     if meal["meal_type"] == meal_type:
                         meal["items"] = [{"item_name": recipe_name, "food_group": "recipe",
                                           "quantity": 1, "unit": "recipe",
-                                          "is_estimated_unit": False, "alternatives": []}]
+                                          "is_estimated_unit": False, "alternatives": [],
+                                          "recipe_id": recipe_id}]
         plan.daily_plans = updated
         self.db.add(plan)
         self.db.commit()
         return True
 
+    def _get_recipe_content(self, recipe_id: str):
+        """Returns (ingredients_list, is_composed) from Recipe or CandidateRecipe by ID."""
+        db_recipe = self.db.query(Recipe).filter(Recipe.id == recipe_id).first()
+        if db_recipe:
+            rec = schemas.Recipe.from_orm(db_recipe)
+            if rec.is_composed_dish:
+                return rec.content.components, True
+            return rec.content, False
+
+        candidate = self.db.query(CandidateRecipe).filter(CandidateRecipe.id == recipe_id).first()
+        if candidate:
+            data = candidate.recipe_data if isinstance(candidate.recipe_data, dict) else candidate.recipe_data.model_dump()
+            content_raw = data.get("content", [])
+            ingredients = [schemas.RecipeIngredient(**i) if isinstance(i, dict) else i for i in content_raw]
+            return ingredients, False
+
+        return [], False
+
     def generate_shopping_list_for_week(self, profile_id_A: str, profile_id_B: str, start_date: date) -> schemas.AggregatedShoppingList:
-        week_start = get_week_start(start_date)
+        # Find plan by exact start_date (rolling, no Monday-snapping)
         cached = self.db.query(GeneratedWeeklyPlan).filter(
             GeneratedWeeklyPlan.profile_id_A == profile_id_A,
-            GeneratedWeeklyPlan.week_start_date == week_start.isoformat()
+            GeneratedWeeklyPlan.week_start_date == start_date.isoformat()
         ).first()
         if cached:
             weekly_plan = [schemas.DailyPlannedMeals.model_validate(dp) for dp in cached.daily_plans]
         else:
             weekly_plan = self.generate_weekly_plan(profile_id_A, profile_id_B, start_date)
         pantry_items = self._get_pantry_items()
-        
-        # Raccogli pasti mangiati fuori (override free-text) per escluderli dalla spesa
-        override_meals: set = set()  # set di (date_str, meal_type)
-        all_consumed_for_week = self._get_consumed_entries(profile_id_A, week_start + timedelta(days=6), 7)
+
+        # Raccogli pasti "mangiati fuori" (override free-text) per escluderli dalla spesa
+        override_meals: set = set()
+        end_date = start_date + timedelta(days=6)
+        all_consumed_for_week = self._get_consumed_entries(profile_id_A, end_date, 7)
         if profile_id_B:
-            all_consumed_for_week += self._get_consumed_entries(profile_id_B, week_start + timedelta(days=6), 7)
+            all_consumed_for_week += self._get_consumed_entries(profile_id_B, end_date, 7)
         for entry in all_consumed_for_week:
             if entry.type == "override" and entry.override_details and entry.override_details.free_text_name:
                 override_meals.add((entry.date, entry.meal_type))
 
+        # item_key → {name, qty_A, qty_B, unit, category, notes}
         required_items: Dict[str, Dict[str, Any]] = {}
 
         for day in weekly_plan:
             for meal in day.meals:
                 if not meal.items:
                     continue
-
-                # Salta i pasti tracciati come "mangiato fuori" (override free-text)
                 if (day.date, meal.meal_type) in override_meals:
-                    _LOGGER.debug(f"Skipping {meal.meal_type} on {day.date}: tracciato come override free-text")
                     continue
 
-                recipe_name = meal.items[0].item_name
-                recipe = next((r for r in self._get_all_recipes() if r.name == recipe_name), None)
-
-                if not recipe:
+                planned_item = meal.items[0]
+                recipe_id = planned_item.recipe_id
+                if not recipe_id:
                     continue
 
-                recipe_ingredients = recipe.content.components if recipe.is_composed_dish else recipe.content
-                for ingredient in recipe_ingredients:
-                    
+                ingredients, _ = self._get_recipe_content(recipe_id)
+
+                for ingredient in ingredients:
                     qty_data_A = ingredient.quantities.get(profile_id_A)
-                    qty_data_B = ingredient.quantities.get(profile_id_B)
-                    qty_A = qty_data_A.grams_equiv if qty_data_A else 0
-                    qty_B = qty_data_B.grams_equiv if qty_data_B else 0
+                    qty_data_B = ingredient.quantities.get(profile_id_B) if profile_id_B else None
+                    qty_A = float(qty_data_A.grams_equiv or qty_data_A.qty) if qty_data_A else 0.0
+                    qty_B = float(qty_data_B.grams_equiv or qty_data_B.qty) if qty_data_B else 0.0
                     total_qty = qty_A + qty_B
 
                     is_free_vegetable = total_qty == 0 and self._normalize_food_group(ingredient.food_group) == "verdura"
-                    
-                    shopping_qty = 200 if is_free_vegetable else total_qty
+                    shopping_qty = 200.0 if is_free_vegetable else total_qty
                     note = "Quantità stimata" if is_free_vegetable else None
 
                     if shopping_qty == 0:
                         continue
 
-                    if ingredient.name in required_items:
-                        required_items[ingredient.name]["quantity"] += shopping_qty
-                        if note and not required_items[ingredient.name].get("notes"):
-                             required_items[ingredient.name]["notes"] = note
+                    key = ingredient.name.lower()
+                    if key in required_items:
+                        required_items[key]["qty_A"] += qty_A
+                        required_items[key]["qty_B"] += qty_B
+                        required_items[key]["quantity"] += shopping_qty
+                        if note and not required_items[key].get("notes"):
+                            required_items[key]["notes"] = note
                     else:
-                        item_data = {
+                        required_items[key] = {
                             "name": ingredient.name,
+                            "qty_A": qty_A,
+                            "qty_B": qty_B,
                             "quantity": shopping_qty,
                             "unit": "g",
                             "category": self._normalize_food_group(ingredient.food_group),
+                            "notes": note,
                         }
-                        if note:
-                            item_data["notes"] = note
-                        required_items[ingredient.name] = item_data
         
         shopping_list_items: List[schemas.ShoppingListItem] = []
-        for item_name, item_data in required_items.items():
-            pantry_item = next((p for p in pantry_items if p.name.lower() == item_name.lower()), None)
-            
-            notes = item_data.pop("notes", None)
+        for key, item_data in required_items.items():
+            pantry_item = next((p for p in pantry_items if p.name.lower() == key), None)
+            notes = item_data.get("notes")
+            needed_qty = item_data["quantity"]
 
+            if pantry_item and pantry_item.quantity >= needed_qty:
+                continue  # fully covered by pantry
             if pantry_item:
-                if pantry_item.quantity < item_data["quantity"]:
-                    shopping_list_items.append(schemas.ShoppingListItem(
-                        name=item_data["name"],
-                        quantity=item_data["quantity"] - pantry_item.quantity,
-                        unit=item_data["unit"],
-                        category=item_data["category"],
-                        notes=notes
-                    ))
-            else:
-                shopping_list_items.append(schemas.ShoppingListItem(**item_data, notes=notes))
-        
+                needed_qty = needed_qty - pantry_item.quantity
+
+            # Embed per-profile quantities in notes for UI display
+            qty_A = round(item_data["qty_A"])
+            qty_B = round(item_data["qty_B"])
+            profile_note = f"A:{qty_A}g B:{qty_B}g" if qty_B > 0 else f"A:{qty_A}g"
+            combined_notes = f"{profile_note}" + (f" — {notes}" if notes else "")
+
+            shopping_list_items.append(schemas.ShoppingListItem(
+                name=item_data["name"],
+                quantity=round(needed_qty),
+                unit=item_data["unit"],
+                category=item_data["category"],
+                notes=combined_notes,
+            ))
+
         items_by_category: Dict[str, List[schemas.ShoppingListItem]] = {}
         for item in shopping_list_items:
-            if item.category not in items_by_category:
-                items_by_category[item.category] = []
-            items_by_category[item.category].append(item)
+            cat = item.category or "altro"
+            if cat not in items_by_category:
+                items_by_category[cat] = []
+            items_by_category[cat].append(item)
 
         return schemas.AggregatedShoppingList(
             generated_at=date.today().isoformat(),

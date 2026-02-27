@@ -108,6 +108,7 @@ class PlannedItem(BaseModel):
     is_estimated_unit: bool = False
     alternatives: List['PlannedItem'] = []
     shopping_list_quantity: Optional[float] = None
+    recipe_id: Optional[str] = None
 
 PlannedItem.model_rebuild()
 
@@ -214,6 +215,20 @@ class GeneratedWeeklyPlan(BaseModel):
     week_start_date: str
     generated_at: str
     daily_plans: List[DailyPlannedMeals]
+
+    class Config:
+        from_attributes = True
+
+
+class PlanRules(BaseModel):
+    id: str
+    profile_id: str
+    imported_at: str
+    carb_target: Dict[str, float]
+    protein_target: Dict[str, float]
+    carb_options: Dict[str, List[str]]
+    protein_options: Dict[str, List[str]]
+    frequency_targets: Dict[str, Dict[str, Any]]
 
     class Config:
         from_attributes = True

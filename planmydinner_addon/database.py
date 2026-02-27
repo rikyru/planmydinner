@@ -120,6 +120,19 @@ class GeneratedWeeklyPlan(Base):
     daily_plans = Column(JSON)  # List[DailyPlannedMeals] serializzata
 
 
+class PlanRules(Base):
+    __tablename__ = "plan_rules"
+
+    id = Column(String, primary_key=True)
+    profile_id = Column(String, index=True)
+    imported_at = Column(String)        # ISO date
+    carb_target = Column(JSON)          # {"pranzo": 80, "cena": 60}
+    protein_target = Column(JSON)       # {"pranzo": 150, "cena": 130}
+    carb_options = Column(JSON)         # {"pranzo": ["pasta","riso"], "cena": [...]}
+    protein_options = Column(JSON)      # {"pranzo": ["pollo","pesce"], "cena": [...]}
+    frequency_targets = Column(JSON)    # {"carne_bianca": {"min":2,"max":3,"hard_max":null}}
+
+
 def consume_ingredients_from_pantry(db: Session, ingredients_data: List[Dict[str, Any]]):
     """
     Deducts quantities of ingredients from the pantry.

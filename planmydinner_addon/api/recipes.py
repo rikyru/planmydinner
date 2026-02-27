@@ -42,6 +42,25 @@ def read_recipes(skip: int = 0, limit: int = 100, db: Session = Depends(get_db))
     recipes = db.query(Recipe).offset(skip).limit(limit).all()
     return recipes
 
+@router.get("/detail/{recipe_id}", response_model=schemas.Recipe)
+def get_recipe_detail(recipe_id: str, db: Session = Depends(get_db)):
+    """
+    Retrieve full recipe detail (content with quantities) from Recipe or CandidateRecipe.
+    Used by the UI to display meal components and ingredient doses.
+    """
+    db_recipe = db.query(Recipe).filter(Recipe.id == recipe_id).first()
+    if db_recipe:
+        return db_recipe  # schemas.Recipe has from_attributes=True
+
+    candidate = db.query(CandidateRecipe).filter(CandidateRecipe.id == recipe_id).first()
+    if candidate:
+        data = candidate.recipe_data if isinstance(candidate.recipe_data, dict) else candidate.recipe_data.model_dump()
+        # Inject the candidate's own id so schemas.Recipe validation passes
+        return {**data, "id": recipe_id}
+
+    raise HTTPException(status_code=404, detail=f"Recipe {recipe_id} not found")
+
+
 @router.get("/{recipe_id}", response_model=schemas.Recipe)
 def read_recipe(recipe_id: str, db: Session = Depends(get_db)):
     """
