@@ -20,7 +20,14 @@ class CustomMealBody(_BaseModel):
     carb_name: str
     carb_grams: float
     veg_name: Optional[str] = None
+    veg_grams: float = 100
     notes: Optional[str] = None
+
+
+class PlanRulesUpdate(_BaseModel):
+    carb_target: Optional[Dict[str, float]] = None
+    protein_target: Optional[Dict[str, float]] = None
+    frequency_targets: Optional[Dict[str, Any]] = None
 
 
 class FreeMealBody(_BaseModel):
@@ -203,6 +210,34 @@ def get_plan_rules(
     return {"rotation_rules": rules, "grammi_targets": grammi_targets, "plan_rules": plan_rules_data}
 
 
+@router.put("/rules/{profile_id}")
+def update_plan_rules(profile_id: str, body: PlanRulesUpdate, db: Session = Depends(get_db)):
+    """
+    Aggiorna (o crea) i vincoli del piano per un profilo:
+    carb_target, protein_target, frequency_targets.
+    """
+    from datetime import datetime
+    plan_rules = db.query(database.PlanRules).filter(
+        database.PlanRules.profile_id == profile_id
+    ).order_by(database.PlanRules.imported_at.desc()).first()
+    if not plan_rules:
+        plan_rules = database.PlanRules(
+            id=str(uuid.uuid4()),
+            profile_id=profile_id,
+            imported_at=datetime.now().isoformat(),
+        )
+    if body.carb_target is not None:
+        plan_rules.carb_target = body.carb_target
+    if body.protein_target is not None:
+        plan_rules.protein_target = body.protein_target
+    if body.frequency_targets is not None:
+        plan_rules.frequency_targets = body.frequency_targets
+    plan_rules.imported_at = datetime.now().isoformat()
+    db.add(plan_rules)
+    db.commit()
+    return {"status": "ok"}
+
+
 @router.post("/change-recipe", response_model=List[schemas.ChangeRecipeOption])
 def change_recipe(
     request: Request,
@@ -382,8 +417,8 @@ def set_custom_meal(
             "name": body.veg_name,
             "food_group": "verdure",
             "quantities": {
-                profile_A.id: _make_qty(100),
-                profile_B.id: _make_qty(100),
+                profile_A.id: _make_qty(body.veg_grams),
+                profile_B.id: _make_qty(body.veg_grams),
             },
         })
 

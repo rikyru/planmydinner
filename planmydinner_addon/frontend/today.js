@@ -181,7 +181,10 @@ const TodayView = defineComponent({
                             <input v-model.number="customForm.carb_grams" type="number" placeholder="g">
                         </div>
                         <label>Verdura (opzionale)</label>
-                        <input v-model="customForm.veg_name" placeholder="Es. zucchine">
+                        <div class="custom-row">
+                            <input v-model="customForm.veg_name" placeholder="Es. zucchine">
+                            <input v-model.number="customForm.veg_grams" type="number" min="0" step="10" placeholder="g" style="width:70px">
+                        </div>
                         <label>Note (opzionale)</label>
                         <input v-model="customForm.notes" placeholder="...">
                     </div>
@@ -220,7 +223,7 @@ const TodayView = defineComponent({
             freeMealTitle: '',
             // Custom meal
             showCustomModal: false,
-            customForm: { title: '', protein_name: '', protein_grams: 0, carb_name: '', carb_grams: 0, veg_name: '', notes: '' },
+            customForm: { title: '', protein_name: '', protein_grams: 0, carb_name: '', carb_grams: 0, veg_name: '', veg_grams: 100, notes: '' },
             customMealType: null,
         };
     },

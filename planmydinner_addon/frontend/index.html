@@ -66,6 +66,7 @@
             <a @click="page = 'shopping'" :class="{active: page === 'shopping'}">Lista Spesa</a>
             <a @click="page = 'pantry'" :class="{active: page === 'pantry'}">Dispensa</a>
             <a @click="page = 'profiles'" :class="{active: page === 'profiles'}">Profili</a>
+            <a @click="page = 'recipes'" :class="{active: page === 'recipes'}">Ricette</a>
         </nav>
 
         <main>
@@ -75,6 +76,7 @@
             <shopping-list v-if="page === 'shopping'"></shopping-list>
             <pantry v-if="page === 'pantry'"></pantry>
             <profiles v-if="page === 'profiles'"></profiles>
+            <recipes v-if="page === 'recipes'"></recipes>
         </main>
 
         <!-- Toast container -->
@@ -91,6 +93,7 @@
         import ShoppingList from './shopping.js';
         import Pantry from './pantry.js';
         import Profiles from './profiles.js';
+        import Recipes from './recipes.js';
 
         const toastState = reactive({ items: [] });
 
@@ -107,7 +110,7 @@
             data() {
                 return { page: 'today', toasts: toastState.items };
             },
-            components: { TodayView, WeekView, 'import-wizard': ImportWizard, ShoppingList, Pantry, Profiles },
+            components: { TodayView, WeekView, 'import-wizard': ImportWizard, ShoppingList, Pantry, Profiles, Recipes },
         });
 
         app.provide('toast', { add: addToast });

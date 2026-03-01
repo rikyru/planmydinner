@@ -1,10 +1,32 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from typing import List, Optional
+from typing import List, Optional, Any, Dict
 import uuid
 
+from pydantic import BaseModel as _BaseModel
 from .. import schemas
 from ..database import get_db, Recipe, CandidateRecipe
+
+
+class BulkIngredient(_BaseModel):
+    name: str
+    food_group: str
+    grams: float
+
+
+class BulkRecipeItem(_BaseModel):
+    name: str
+    time: int = 30
+    difficulty: str = "facile"
+    mood: str = "normale"
+    cooking: str = "tegame"
+    ingredients: List[BulkIngredient]
+
+
+class BulkImportResult(_BaseModel):
+    created: int
+    skipped: int
+    errors: List[str]
 
 router = APIRouter(
     prefix="/recipes",
@@ -27,20 +49,125 @@ def create_recipe(recipe: schemas.RecipeCreate, db: Session = Depends(get_db)):
     # Ensure the ID from the Pydantic model is used, or the generated one
     recipe_data = recipe.model_dump()
     recipe_data["id"] = recipe_id # Ensure the ID is set from our determined recipe_id
-    
+
+    # Tag ricette aggiunte manualmente: peso alto nel planner
+    if recipe_data.get("tags") is None:
+        recipe_data["tags"] = {}
+    recipe_data["tags"]["manual"] = ["true"]
+
     db_recipe = Recipe(**recipe_data)
     db.add(db_recipe)
     db.commit()
     db.refresh(db_recipe)
     return db_recipe
 
-@router.get("/", response_model=List[schemas.Recipe])
+@router.post("/bulk", response_model=BulkImportResult)
+def bulk_import_recipes(
+    items: List[BulkRecipeItem],
+    profile_a_id: str = "persona_a",
+    profile_b_id: str = "persona_b",
+    db: Session = Depends(get_db),
+):
+    """
+    Importa in blocco una lista di ricette nel formato semplificato.
+    Ogni ricetta viene taggata come 'manual' → peso alto nel planner.
+    Ricette con lo stesso nome vengono saltate.
+    """
+    created = 0
+    skipped = 0
+    errors: List[str] = []
+
+    _DIFFICULTY_MAP = {
+        "easy": "facile", "facile": "facile",
+        "medium": "media", "media": "media",
+        "hard": "difficile", "difficile": "difficile",
+    }
+
+    def _qty(g: float) -> dict:
+        return {"qty": float(g), "unit": "g", "grams_equiv": float(g)}
+
+    for item in items:
+        try:
+            # Controlla duplicati per nome
+            existing = db.query(Recipe).filter(Recipe.name == item.name).first()
+            if existing:
+                skipped += 1
+                continue
+
+            difficulty = _DIFFICULTY_MAP.get(item.difficulty.lower(), "sconosciuto")
+
+            content = [
+                {
+                    "name": ing.name,
+                    "food_group": ing.food_group,
+                    "quantities": {
+                        profile_a_id: _qty(ing.grams),
+                        profile_b_id: _qty(ing.grams),
+                    },
+                }
+                for ing in item.ingredients
+            ]
+            recipe_data = {
+                "id": str(uuid.uuid4()),
+                "name": item.name,
+                "description": "",
+                "is_composed_dish": False,
+                "content": content,
+                "steps": [],
+                "total_time_minutes": item.time,
+                "difficulty": difficulty,
+                "tags": {
+                    "manual": ["true"],
+                    "mood": [item.mood],
+                    "cooking_methods": [item.cooking],
+                    "cleanup": ["facile"],
+                },
+            }
+            db.add(Recipe(**recipe_data))
+            created += 1
+        except Exception as e:
+            errors.append(f"{item.name}: {e}")
+
+    db.commit()
+    return BulkImportResult(created=created, skipped=skipped, errors=errors)
+
+
+@router.get("/")
 def read_recipes(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
     """
-    Retrieve all recipes.
+    Retrieve all recipes, skipping any with invalid data.
     """
-    recipes = db.query(Recipe).offset(skip).limit(limit).all()
-    return recipes
+    db_recipes = db.query(Recipe).offset(skip).limit(limit).all()
+    result = []
+    for r in db_recipes:
+        try:
+            validated = schemas.Recipe.from_orm(r)
+            result.append(validated.model_dump())
+        except Exception:
+            # Ricetta con dati non conformi: restituisce raw per permettere la visualizzazione/modifica
+            result.append({
+                "id": r.id,
+                "name": r.name,
+                "description": r.description,
+                "is_composed_dish": r.is_composed_dish or False,
+                "content": r.content or [],
+                "steps": r.steps or [],
+                "total_time_minutes": r.total_time_minutes or 0,
+                "difficulty": r.difficulty or "sconosciuto",
+                "tags": r.tags or {},
+            })
+    return result
+
+@router.delete("/all")
+def delete_all_recipes(db: Session = Depends(get_db)):
+    """
+    Delete all recipes from the database.
+    """
+    count = db.query(Recipe).count()
+    db.query(Recipe).delete()
+    db.commit()
+    return {"deleted": count}
+
 
 @router.get("/detail/{recipe_id}", response_model=schemas.Recipe)
 def get_recipe_detail(recipe_id: str, db: Session = Depends(get_db)):

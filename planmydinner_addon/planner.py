@@ -2,6 +2,7 @@ import logging
 import os
 import uuid
 import json
+import random
 from datetime import date, timedelta
 from typing import List, Dict, Any, Optional
 import re
@@ -101,8 +102,20 @@ class PlannerEngine:
         db_recipes = self.db.query(Recipe).all()
         db_candidate_recipes = self.db.query(CandidateRecipe).filter(CandidateRecipe.status == "approved").all()
         
-        all_recipes = [schemas.Recipe.from_orm(rec) for rec in db_recipes]
-        all_recipes.extend([schemas.Recipe(**cand.recipe_data.model_dump(), id=cand.id) for cand in db_candidate_recipes])
+        all_recipes = []
+        for rec in db_recipes:
+            try:
+                all_recipes.append(schemas.Recipe.from_orm(rec))
+            except Exception as e:
+                _LOGGER.warning(f"Recipe {rec.id} non valida, saltata: {e}")
+        for cand in db_candidate_recipes:
+            data = cand.recipe_data if isinstance(cand.recipe_data, dict) else cand.recipe_data.model_dump()
+            try:
+                rec = schemas.Recipe(**data, id=cand.id)
+                rec._is_candidate = True
+                all_recipes.append(rec)
+            except Exception as e:
+                _LOGGER.warning(f"CandidateRecipe {cand.id} non valida, saltata: {e}")
         return all_recipes
 
     def _normalize_food_group(self, food_group: str) -> str:
@@ -291,6 +304,9 @@ class PlannerEngine:
         consumed_entries_A: List[schemas.ConsumedEntry],
         consumed_entries_B: List[schemas.ConsumedEntry],
         recent_protein_items: Optional[List[str]] = None,
+        protein_cat_counts: Optional[Dict[str, int]] = None,
+        protein_cat_limits: Optional[Dict[str, int]] = None,
+        day_slot: int = 0,
     ) -> float:
         score = 0.0
 
@@ -359,10 +375,29 @@ class PlannerEngine:
             if item and item in recent_protein_items[-2:]:
                 score -= 0.3
 
-        # Step E: boost manually-created recipes
+        # Rotation deficit boost: promuove attivamente categorie proteiche in deficit
+        # rispetto alla quota attesa a questo punto della settimana (14 slot totali)
+        if protein_cat_counts is not None and protein_cat_limits:
+            recipe_cat = self._recipe_protein_cat(recipe)
+            if recipe_cat and recipe_cat in protein_cat_limits:
+                max_for_week = protein_cat_limits[recipe_cat]
+                actual = protein_cat_counts.get(recipe_cat, 0)
+                expected_so_far = max_for_week * (day_slot / 14.0)
+                deficit = expected_so_far - actual
+                if deficit > 0:
+                    score += min(deficit * 0.2, 0.4)
+
+        # Boost ricette aggiunte manualmente dall'utente: vuol dire che gli piacciono
         recipe_tags = recipe.tags or {}
-        if "manual" in recipe_tags:
-            score += 0.5
+        if recipe_tags.get("manual"):
+            score += 1.5
+
+        # Boost CandidateRecipe approvate: l'utente le ha mangiate e apprezzate
+        if getattr(recipe, "_is_candidate", False):
+            score += 1.0
+
+        # Piccolo jitter casuale per rompere i pareggi e garantire varietà
+        score += random.uniform(-0.05, 0.05)
 
         return score
 
@@ -524,6 +559,7 @@ class PlannerEngine:
                     target_protein_category=target_cat,
                     protein_item_counts=protein_item_counts,
                     recent_protein_items=recent_protein_items,
+                    day_slot=day_slot,
                 )
 
                 if best_recipes:
@@ -678,6 +714,7 @@ class PlannerEngine:
                     protein_cat_limits=protein_cat_limits,
                     protein_item_counts=protein_item_counts,
                     recent_protein_items=recent_protein_items,
+                    day_slot=day_slot,
                 )
 
                 if best_recipes:
@@ -1321,7 +1358,8 @@ class PlannerEngine:
                                  protein_cat_limits: Optional[Dict[str, int]] = None,
                                  target_protein_category: Optional[str] = None,
                                  protein_item_counts: Optional[Dict[str, int]] = None,
-                                 recent_protein_items: Optional[List[str]] = None):
+                                 recent_protein_items: Optional[List[str]] = None,
+                                 day_slot: int = 0):
         
         profile_A = self._get_user_profile(profile_id_A)
         profile_B = self._get_user_profile(profile_id_B)
@@ -1437,7 +1475,10 @@ class PlannerEngine:
             dosed_recipe = self._calculate_dosing(recipe, profile_A, profile_B)
             score = self._score_soft_constraints(
                 dosed_recipe, pantry_items, seasonality_data, current_date,
-                consumed_entries_A, consumed_entries_B, recent_protein_items
+                consumed_entries_A, consumed_entries_B, recent_protein_items,
+                protein_cat_counts=protein_cat_counts,
+                protein_cat_limits=protein_cat_limits,
+                day_slot=day_slot,
             )
 
             filtered_recipes.append({
@@ -1631,6 +1672,12 @@ class PlannerEngine:
             if candidate:
                 recipe_name = candidate.recipe_data.get("name", "Ricetta AI") if isinstance(candidate.recipe_data, dict) else getattr(candidate.recipe_data, "name", "Ricetta AI")
                 _LOGGER.info(f"Recipe {recipe_id} found in CandidateRecipe: {recipe_name}")
+                # Incrementa usage_count e auto-promuove se soglia raggiunta
+                candidate.usage_count = (candidate.usage_count or 0) + 1
+                if candidate.usage_count >= 2 and candidate.status == "draft_structured":
+                    candidate.status = "approved"
+                    _LOGGER.info(f"CandidateRecipe {recipe_id} auto-promossa ad 'approved' (usage_count={candidate.usage_count})")
+                self.db.add(candidate)
             else:
                 _LOGGER.warning(f"Recipe {recipe_id} not found in Recipe or CandidateRecipe.")
                 return False
