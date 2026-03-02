@@ -224,11 +224,11 @@ class PlanRules(BaseModel):
     id: str
     profile_id: str
     imported_at: str
-    carb_target: Dict[str, float]
-    protein_target: Dict[str, float]
-    carb_options: Dict[str, List[str]]
-    protein_options: Dict[str, List[str]]
-    frequency_targets: Dict[str, Dict[str, Any]]
+    carb_target: Optional[Dict[str, float]] = None
+    protein_target: Optional[Dict[str, float]] = None
+    carb_options: Optional[Dict[str, List[str]]] = None
+    protein_options: Optional[Dict[str, List[str]]] = None
+    frequency_targets: Optional[Dict[str, Dict[str, Any]]] = None
 
     class Config:
         from_attributes = True

@@ -156,6 +156,46 @@ def get_plan_for_date(
     }
 
 
+@router.get("/debug-generate")
+def debug_generate(
+    request: Request,
+    profile_id_A: str,
+    profile_id_B: Optional[str] = None,
+    start_date: date = date.today(),
+    db: Session = Depends(get_db)
+):
+    """
+    Dry-run generation: returns the full selection trace for each slot (14 total).
+    Does NOT save anything to DB. Use this to diagnose why the same recipes are picked.
+
+    Each slot in the response includes:
+    - date, meal_type, target_protein_category
+    - n_total_recipes: total recipes in DB
+    - hard_constraint_pass / hard_constraint_fail: recipe names
+    - protein_limit_filtered, used_ids_filtered, protein_cat_excluded,
+      target_protein_narrowed, protein_item_filtered: names removed at each stage
+    - scored_recipes: [{name, id, score}] sorted descending
+    - n_final_candidates: how many were left after all filters
+    - selected_name / selected_id: the recipe that would be chosen
+    - protein_cat_counts_before: weekly protein counts at the time of this slot
+    """
+    planner = PlannerEngine(db, llm_gateway=request.app.state.llm_gateway)
+    trace = planner.debug_generate_weekly_plan(profile_id_A, profile_id_B, start_date)
+    filled = sum(1 for s in trace if s.get("selected_id"))
+    empty = sum(1 for s in trace if "selected_id" in s and not s["selected_id"])
+    return {
+        "summary": {
+            "total_slots": len(trace),
+            "filled": filled,
+            "empty": empty,
+            "profile_id_A": profile_id_A,
+            "profile_id_B": profile_id_B,
+            "start_date": start_date.isoformat(),
+        },
+        "slots": trace,
+    }
+
+
 @router.get("/rules")
 def get_plan_rules(
     profile_id_A: str,

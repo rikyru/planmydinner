@@ -1,7 +1,37 @@
 {
   "permissions": {
     "allow": [
-      "Bash(python:*)"
+      "Bash(python:*)",
+      "Bash(curl -s http://localhost:8000/planner/debug-generate?profile_id_A=persona_a)",
+      "Bash(curl -s http://localhost:8000/profiles/)",
+      "Bash(curl -s http://localhost:8000/docs)",
+      "Bash(tasklist)",
+      "Bash(netstat -ano)",
+      "Bash(curl -s http://localhost:8000/openapi.json)",
+      "Bash(taskkill /PID 2144 /F)",
+      "Bash(cmd //c \"taskkill /PID 2144 /F\")",
+      "Bash(pip install -r planmydinner_addon/requirements.txt -q)",
+      "Bash(curl -s \"http://localhost:8000/planner/debug-generate?profile_id_A=aa&profile_id_B=bb&start_date=2026-03-03\")",
+      "Bash(curl -s \"http://localhost:8000/planner/rules?profile_id_A=aa\")",
+      "Bash(curl -s -X POST \"http://localhost:8000/seed/recipes\")",
+      "Bash(curl -s \"http://localhost:8000/planner/debug-generate?profile_id_A=aa&profile_id_B=bb&start_date=2026-03-03\" -v)",
+      "Bash(cmd //c \"taskkill /F /IM python.exe\")",
+      "Bash(curl -s http://localhost:8000/health)",
+      "Bash(curl -s http://localhost:8000/)",
+      "Bash(curl -s -X POST http://localhost:8000/seed/recipes)",
+      "Bash(taskkill /F /IM python.exe /T)",
+      "Bash(cmd /c \"taskkill /F /IM python.exe\")",
+      "Bash(wmic process where \"name=''python.exe''\" get processid)",
+      "Bash(while read pid)",
+      "Bash(do echo \"Killing $pid\")",
+      "Bash(kill -9 $pid)",
+      "Bash(done)",
+      "Bash(curl -s http://localhost:8001/health)",
+      "Bash(curl -s \"http://localhost:8001/profiles\")",
+      "Bash(curl -v \"http://localhost:8001/profiles\")",
+      "Bash(curl -sL \"http://localhost:8001/profiles/\")",
+      "Bash(curl -sL \"http://localhost:8001/planner/rules?profile_id_A=aa\")",
+      "Bash(curl -sL \"http://localhost:8001/planner/debug-generate?profile_id_A=aa&profile_id_B=bb&start_date=2026-03-02\")"
     ]
   }
 }

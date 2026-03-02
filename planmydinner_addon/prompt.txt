@@ -40,6 +40,9 @@ Target proteine:
 - grammi: {{protein_target}}
 - opzioni consentite: {{protein_options}}
 
+{{target_protein_note}}
+{{user_pref_note}}
+{{avoid_note}}
 ---
 
 RICETTA BASE (se presente):
