@@ -10,7 +10,7 @@ from pydantic import BaseModel as _BaseModel
 from .. import schemas
 from .. import database
 from ..database import get_db, GeneratedWeeklyPlan
-from ..planner import PlannerEngine
+from ..planner import PlannerEngine, _LLM_CALL_LOG, _LLM_CALL_LOG_MAX
 
 
 class CustomMealBody(_BaseModel):
@@ -28,6 +28,8 @@ class PlanRulesUpdate(_BaseModel):
     carb_target: Optional[Dict[str, float]] = None
     protein_target: Optional[Dict[str, float]] = None
     frequency_targets: Optional[Dict[str, Any]] = None
+    veg_target: Optional[Dict[str, Any]] = None
+    free_meal_quota: Optional[int] = None
 
 
 class FreeMealBody(_BaseModel):
@@ -93,11 +95,12 @@ def generate_weekly_plan(
     profile_id_A: str,
     profile_id_B: str,
     current_date: date = date.today(),
+    fantasy_mode: bool = False,
     db: Session = Depends(get_db)
 ):
     """Force-generate a 7-day plan from current_date and save it."""
     planner = PlannerEngine(db, llm_gateway=request.app.state.llm_gateway)
-    weekly_plan = planner.generate_weekly_plan(profile_id_A, profile_id_B, current_date)
+    weekly_plan = planner.generate_weekly_plan(profile_id_A, profile_id_B, current_date, fantasy_mode=fantasy_mode)
     if not weekly_plan:
         raise HTTPException(status_code=404, detail="Could not generate a weekly plan.")
     _save_generated_plan(db, profile_id_A, profile_id_B, current_date, weekly_plan)
@@ -153,6 +156,22 @@ def get_plan_for_date(
         "start_date": plan.week_start_date,
         "profile_id_B": plan.profile_id_B,
         "daily_plans": [schemas.DailyPlannedMeals.model_validate(dp) for dp in plan.daily_plans],
+    }
+
+
+@router.get("/llm-log")
+def get_llm_log(last: int = 20):
+    """
+    Restituisce gli ultimi N chiamate LLM con prompt e risposta grezza.
+    Utile per verificare cosa viene chiesto all'AI e cosa risponde.
+    ?last=N  (default 20, max 50)
+    """
+    n = min(last, _LLM_CALL_LOG_MAX)
+    entries = _LLM_CALL_LOG[-n:] if _LLM_CALL_LOG else []
+    return {
+        "total_logged": len(_LLM_CALL_LOG),
+        "returned": len(entries),
+        "calls": list(reversed(entries)),  # most recent first
     }
 
 
@@ -219,6 +238,8 @@ def get_plan_rules(
             "carb_options": plan_rules_db.carb_options,
             "protein_options": plan_rules_db.protein_options,
             "frequency_targets": plan_rules_db.frequency_targets,
+            "veg_target": plan_rules_db.veg_target,
+            "free_meal_quota": plan_rules_db.free_meal_quota,
             "imported_at": plan_rules_db.imported_at,
         }
 
@@ -272,10 +293,20 @@ def update_plan_rules(profile_id: str, body: PlanRulesUpdate, db: Session = Depe
         plan_rules.protein_target = body.protein_target
     if body.frequency_targets is not None:
         plan_rules.frequency_targets = body.frequency_targets
+    if body.veg_target is not None:
+        plan_rules.veg_target = body.veg_target
+    if body.free_meal_quota is not None:
+        plan_rules.free_meal_quota = body.free_meal_quota
     plan_rules.imported_at = datetime.now().isoformat()
     db.add(plan_rules)
     db.commit()
     return {"status": "ok"}
+
+
+@router.get("/veg-portions")
+def get_veg_portions():
+    """Restituisce la tabella di equivalenze grammi/porzione per ogni verdura (valori di default)."""
+    return PlannerEngine._VEG_PORTION_GRAMS
 
 
 @router.post("/change-recipe", response_model=List[schemas.ChangeRecipeOption])
@@ -330,7 +361,8 @@ def change_recipe(
         meal_plan_B = schemas.PlannedMeal(meal_type=meal_type, items=[])
 
     options = planner.suggest_recipes_for_meal(
-        meal_plan_A, meal_plan_B, profile_id_A, profile_id_B, current_date, request_params
+        meal_plan_A, meal_plan_B, profile_id_A, profile_id_B, current_date, request_params,
+        target_count=5, use_llm_fill=True,
     )
     if not options:
         raise HTTPException(status_code=404, detail="No alternative recipes found.")
@@ -545,6 +577,62 @@ def cancel_free_meal(
     return {"message": "Free meal cancelled."}
 
 
+@router.post("/not-eaten")
+def set_not_eaten(
+    profile_id_A: str,
+    profile_id_B: str,
+    meal_type: str,
+    current_date: date,
+    db: Session = Depends(get_db)
+):
+    """Mark a past meal slot as not eaten (reduces adherence score)."""
+    plan = _find_plan_covering_date(db, profile_id_A, current_date)
+    if not plan:
+        raise HTTPException(status_code=404, detail="No plan covers this date.")
+    updated = copy.deepcopy(plan.daily_plans)
+    for day in updated:
+        if day["date"] == current_date.isoformat():
+            for meal in day.get("meals", []):
+                if meal["meal_type"] == meal_type:
+                    meal["items"] = [{
+                        "item_name": "Non mangiato",
+                        "food_group": "not_eaten",
+                        "quantity": 0,
+                        "unit": "",
+                        "is_estimated_unit": False,
+                        "alternatives": [],
+                        "recipe_id": None,
+                    }]
+    plan.daily_plans = updated
+    db.add(plan)
+    db.commit()
+    return {"message": "Meal marked as not eaten."}
+
+
+@router.delete("/not-eaten")
+def cancel_not_eaten(
+    profile_id_A: str,
+    profile_id_B: str,
+    meal_type: str,
+    current_date: date,
+    db: Session = Depends(get_db)
+):
+    """Cancel a not-eaten mark, restoring the slot to empty."""
+    plan = _find_plan_covering_date(db, profile_id_A, current_date)
+    if not plan:
+        raise HTTPException(status_code=404, detail="No plan covers this date.")
+    updated = copy.deepcopy(plan.daily_plans)
+    for day in updated:
+        if day["date"] == current_date.isoformat():
+            for meal in day.get("meals", []):
+                if meal["meal_type"] == meal_type:
+                    meal["items"] = []
+    plan.daily_plans = updated
+    db.add(plan)
+    db.commit()
+    return {"message": "Not-eaten mark cancelled."}
+
+
 @router.get("/adherence")
 def get_adherence(
     profile_id_A: str,
@@ -564,6 +652,7 @@ def get_adherence(
 
     planned_slots = 0
     free_meals = 0
+    not_eaten_slots = 0
     plans = db.query(GeneratedWeeklyPlan).filter(
         GeneratedWeeklyPlan.profile_id_A == profile_id_A
     ).all()
@@ -575,8 +664,12 @@ def get_adherence(
                 for meal in dp.get("meals", []):
                     planned_slots += 1
                     items = meal.get("items", [])
-                    if items and items[0].get("food_group") == "free_meal":
-                        free_meals += 1
+                    if items:
+                        fg = items[0].get("food_group")
+                        if fg == "free_meal":
+                            free_meals += 1
+                        elif fg == "not_eaten":
+                            not_eaten_slots += 1
 
     consumed_dates_meals: set = set()
 
@@ -591,24 +684,33 @@ def get_adherence(
     for e in explicit:
         consumed_dates_meals.add((e.date, e.meal_type))
 
-    # Past slots with a recipe_id → assume eaten (optimistic)
+    # Past slots with a recipe_id → assume eaten (optimistic), exclude free_meal and not_eaten
     for plan in plans:
         for dp in plan.daily_plans:
             d = date.fromisoformat(dp["date"])
             if start_date <= d < today:
                 for meal in dp.get("meals", []):
                     items = meal.get("items", [])
-                    if items and items[0].get("recipe_id") and items[0].get("food_group") != "free_meal":
+                    if items and items[0].get("recipe_id") and \
+                            items[0].get("food_group") not in ("free_meal", "not_eaten"):
                         consumed_dates_meals.add((dp["date"], meal["meal_type"]))
 
     in_plan_consumed = len(consumed_dates_meals)
     score = round(in_plan_consumed / planned_slots, 2) if planned_slots > 0 else 0.0
 
+    # Fetch free_meal_quota from PlanRules
+    plan_rules_db = db.query(database.PlanRules).filter(
+        database.PlanRules.profile_id == profile_id_A
+    ).order_by(database.PlanRules.imported_at.desc()).first()
+    free_meal_quota = plan_rules_db.free_meal_quota if plan_rules_db else None
+
     return {
         "planned_slots": planned_slots,
         "free_meals": free_meals,
+        "not_eaten_slots": not_eaten_slots,
         "in_plan_consumed": in_plan_consumed,
         "adherence_score": score,
         "start_date": start_date.isoformat(),
         "end_date": end_date.isoformat(),
+        "free_meal_quota": free_meal_quota,
     }

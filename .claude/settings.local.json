@@ -31,7 +31,11 @@
       "Bash(curl -v \"http://localhost:8001/profiles\")",
       "Bash(curl -sL \"http://localhost:8001/profiles/\")",
       "Bash(curl -sL \"http://localhost:8001/planner/rules?profile_id_A=aa\")",
-      "Bash(curl -sL \"http://localhost:8001/planner/debug-generate?profile_id_A=aa&profile_id_B=bb&start_date=2026-03-02\")"
+      "Bash(curl -sL \"http://localhost:8001/planner/debug-generate?profile_id_A=aa&profile_id_B=bb&start_date=2026-03-02\")",
+      "Bash(curl -s http://localhost:8002/health)",
+      "Bash(curl -sL -X POST \"http://localhost:8002/planner/generate-week\" -H \"Content-Type: application/json\" -d '{\"\"profile_id_A\"\":\"\"aa\"\",\"\"profile_id_B\"\":\"\"bb\"\",\"\"start_date\"\":\"\"2026-03-02\"\"}')",
+      "Bash(curl -sL -X POST \"http://localhost:8002/planner/generate-week\" -H \"Content-Type: application/json\" -d \"{\"\"profile_id_A\"\":\"\"aa\"\",\"\"profile_id_B\"\":\"\"bb\"\",\"\"start_date\"\":\"\"2026-03-02\"\"}\")",
+      "Bash(curl -sL -X POST \"http://localhost:8002/planner/generate-week?profile_id_A=aa&profile_id_B=bb&start_date=2026-03-02\")"
     ]
   }
 }

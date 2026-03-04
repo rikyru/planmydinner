@@ -229,6 +229,18 @@ class PlanRules(BaseModel):
     carb_options: Optional[Dict[str, List[str]]] = None
     protein_options: Optional[Dict[str, List[str]]] = None
     frequency_targets: Optional[Dict[str, Dict[str, Any]]] = None
+    veg_target: Optional[Dict[str, Any]] = None
+    free_meal_quota: Optional[int] = None
 
     class Config:
         from_attributes = True
+
+
+class AppSettings(BaseModel):
+    llm_provider: Optional[str] = None
+    llm_model: Optional[str] = None
+    llm_api_key: Optional[str] = None      # None on GET (masked), value on PUT
+    llm_base_url: Optional[str] = None
+    llm_temperature: Optional[float] = None
+    llm_custom_rules: Optional[str] = None
+    has_api_key: bool = False               # True if api_key is stored in DB

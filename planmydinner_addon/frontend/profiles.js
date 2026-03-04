@@ -96,6 +96,33 @@ const Profiles = defineComponent({
                             </table>
                         </div>
 
+                        <!-- Verdure: target e equivalenze -->
+                        <div v-if="rules.plan_rules && (rules.plan_rules.veg_target?.min_grams || rules.plan_rules.veg_target?.portion_grams)" class="rules-section">
+                            <h4>Target verdure</h4>
+                            <p style="margin:4px 0 8px">Minimo per pasto: <strong>{{ rules.plan_rules.veg_target.min_grams ?? 0 }}g</strong></p>
+                            <details style="margin-top:4px">
+                                <summary style="cursor:pointer;font-size:13px;color:#666;">Equivalenze (grammi per porzione)</summary>
+                                <table class="rules-table" style="margin-top:8px">
+                                    <thead><tr><th>Verdura</th><th>g / porzione</th></tr></thead>
+                                    <tbody>
+                                        <tr v-for="(defGrams, veg) in vegPortions" :key="veg">
+                                            <td>{{ veg }}</td>
+                                            <td>{{ rules.plan_rules.veg_target.portion_grams?.[veg] ?? defGrams }}</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </details>
+                        </div>
+
+                        <!-- Pasti liberi quota -->
+                        <div v-if="rules.plan_rules" class="rules-section">
+                            <h4>Pasti liberi</h4>
+                            <p style="margin:4px 0 0; font-size:14px;">
+                                Consentiti a settimana:
+                                <strong>{{ rules.plan_rules.free_meal_quota != null ? rules.plan_rules.free_meal_quota : 'Nessun limite' }}</strong>
+                            </p>
+                        </div>
+
                         <!-- Fallback: rotation_rules legacy -->
                         <div v-else-if="rules.rotation_rules && rules.rotation_rules.length" class="rules-section">
                             <h4>Frequenze settimanali</h4>
@@ -200,6 +227,36 @@ const Profiles = defineComponent({
                         </table>
                     </div>
 
+                    <div class="rules-section">
+                        <h4>Target verdure</h4>
+                        <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px;">
+                            <label style="font-size:14px;">Grammi minimi per pasto:</label>
+                            <input v-model.number="editedRules.veg_target.min_grams" type="number" min="0" step="10" style="width:80px">
+                            <span style="font-size:12px;color:#888;">0 = nessun vincolo</span>
+                        </div>
+                        <details>
+                            <summary style="cursor:pointer;font-size:13px;color:#666;">Personalizza equivalenze (grammi per porzione)</summary>
+                            <table class="rules-table" style="margin-top:8px">
+                                <thead><tr><th>Verdura</th><th>g / porzione</th></tr></thead>
+                                <tbody>
+                                    <tr v-for="(defGrams, veg) in vegPortions" :key="veg">
+                                        <td>{{ veg }}</td>
+                                        <td><input v-model.number="editedRules.veg_target.portion_grams[veg]" type="number" min="1" step="10" style="width:80px"></td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </details>
+                    </div>
+
+                    <div class="rules-section">
+                        <h4>Pasti liberi</h4>
+                        <div style="display:flex;align-items:center;gap:12px;">
+                            <label style="font-size:14px;">Consentiti a settimana:</label>
+                            <input v-model.number="editedRules.free_meal_quota" type="number" min="0" max="14" style="width:80px" placeholder="Nessun limite">
+                            <span style="font-size:12px;color:#888;">Vuoto = nessun limite</span>
+                        </div>
+                    </div>
+
                     <div style="display:flex;gap:10px;margin-top:16px;">
                         <button @click="saveRules" class="btn-primary" :disabled="savingRules">
                             {{ savingRules ? 'Salvataggio...' : '💾 Salva' }}
@@ -225,12 +282,16 @@ const Profiles = defineComponent({
                 carb_target: { pranzo: 80, cena: 60 },
                 protein_target: { pranzo: 150, cena: 120 },
                 frequency_targets: {},
+                veg_target: { min_grams: 0, portion_grams: {} },
+                free_meal_quota: null,
             },
             newFreqCategory: '',
+            vegPortions: {},
         };
     },
     mounted() {
         this.fetchProfiles();
+        this.loadVegPortions();
     },
     methods: {
         async fetchProfiles() {
@@ -281,6 +342,7 @@ const Profiles = defineComponent({
         },
         startEditRules() {
             const pr = this.rules?.plan_rules || {};
+            const vt = pr.veg_target || {};
             this.editedRules = {
                 carb_target: {
                     pranzo: pr.carb_target?.pranzo ?? 80,
@@ -291,6 +353,11 @@ const Profiles = defineComponent({
                     cena: pr.protein_target?.cena ?? 120,
                 },
                 frequency_targets: JSON.parse(JSON.stringify(pr.frequency_targets || {})),
+                veg_target: {
+                    min_grams: vt.min_grams ?? 0,
+                    portion_grams: { ...this.vegPortions, ...(vt.portion_grams || {}) },
+                },
+                free_meal_quota: pr.free_meal_quota ?? null,
             };
             this.newFreqCategory = '';
             this.editingRules = true;
@@ -332,6 +399,12 @@ const Profiles = defineComponent({
             const updated = { ...this.editedRules.frequency_targets };
             delete updated[cat];
             this.editedRules.frequency_targets = updated;
+        },
+        async loadVegPortions() {
+            try {
+                const resp = await fetch('/planner/veg-portions');
+                if (resp.ok) this.vegPortions = await resp.json();
+            } catch (e) {}
         },
     },
 });

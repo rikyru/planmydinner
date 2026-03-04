@@ -77,6 +77,7 @@ const Recipes = defineComponent({
                         <td>
                             <span class="recipe-name-cell">{{ r.name }}</span>
                             <span v-if="r.tags && r.tags.manual" class="badge-manual">⭐ Personale</span>
+                            <span v-if="r.tags && r.tags.imported" class="badge-imported">📥 Importata</span>
                         </td>
                         <td>{{ mainIngredientLabel(r) }}</td>
                         <td>{{ r.total_time_minutes ? r.total_time_minutes + ' min' : '—' }}</td>

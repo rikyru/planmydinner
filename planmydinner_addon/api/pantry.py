@@ -5,6 +5,7 @@ import uuid
 
 from .. import schemas
 from ..database import get_db, PantryItem
+from pydantic import BaseModel as _BaseModel
 
 router = APIRouter(
     prefix="/pantry",
@@ -69,3 +70,39 @@ def delete_pantry_item(item_id: str, db: Session = Depends(get_db)):
     db.delete(db_item)
     db.commit()
     return db_item
+
+
+@router.post("/items/bulk")
+def bulk_upsert_pantry_items(items: List[schemas.PantryItemCreate], db: Session = Depends(get_db)):
+    """
+    Aggiunge o aggiorna più ingredienti nella dispensa in una sola chiamata.
+    Cerca per nome (case-insensitive): se esiste aggiorna quantity/unit/category,
+    altrimenti crea un nuovo elemento.
+
+    Esempio body:
+    [
+      {"name": "pasta", "quantity": 500, "unit": "g"},
+      {"name": "pollo", "quantity": 300, "unit": "g", "category": "proteina"},
+      {"name": "riso", "quantity": 1, "unit": "kg"}
+    ]
+    """
+    created = 0
+    updated = 0
+    for item_data in items:
+        existing = db.query(PantryItem).filter(
+            PantryItem.name.ilike(item_data.name)
+        ).first()
+        if existing:
+            existing.quantity = item_data.quantity
+            existing.unit = item_data.unit
+            if item_data.category is not None:
+                existing.category = item_data.category
+            if item_data.expiration_date is not None:
+                existing.expiration_date = item_data.expiration_date
+            updated += 1
+        else:
+            db_item = PantryItem(**item_data.model_dump(), id=str(uuid.uuid4()))
+            db.add(db_item)
+            created += 1
+    db.commit()
+    return {"created": created, "updated": updated, "total": created + updated}

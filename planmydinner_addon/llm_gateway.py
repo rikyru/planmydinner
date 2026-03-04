@@ -22,7 +22,7 @@ class LLMGateway:
                  base_url: Optional[str] = None,
                  model: str = "llama3",
                  temperature: float = 0.7,
-                 timeout: int = 60):
+                 timeout: int = 180):
         self.provider = provider.lower()
         self.api_key = api_key if api_key else os.getenv(f"{provider.upper()}_API_KEY")
         self.base_url = base_url if base_url else os.getenv(f"{provider.upper()}_BASE_URL")
@@ -30,6 +30,7 @@ class LLMGateway:
         self.temperature = temperature
         self.timeout = timeout
         self._client = None
+        self.custom_rules: str = ""   # injected into planner prompt if set
         self._initialize_client()
 
     def _initialize_client(self):

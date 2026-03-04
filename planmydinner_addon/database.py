@@ -131,6 +131,20 @@ class PlanRules(Base):
     carb_options = Column(JSON)         # {"pranzo": ["pasta","riso"], "cena": [...]}
     protein_options = Column(JSON)      # {"pranzo": ["pollo","pesce"], "cena": [...]}
     frequency_targets = Column(JSON)    # {"carne_bianca": {"min":2,"max":3,"hard_max":null}}
+    veg_target = Column(JSON, nullable=True)  # {"min_grams": 150, "portion_grams": {"insalata mista": 80, ...}}
+    free_meal_quota = Column(Integer, nullable=True)  # max pasti liberi a settimana
+
+
+class AppSettings(Base):
+    __tablename__ = "app_settings"
+
+    id = Column(Integer, primary_key=True, default=1)
+    llm_provider    = Column(String, nullable=True)   # "openai" | "ollama"
+    llm_model       = Column(String, nullable=True)
+    llm_api_key     = Column(String, nullable=True)
+    llm_base_url    = Column(String, nullable=True)
+    llm_temperature = Column(Float, nullable=True)
+    llm_custom_rules = Column(Text, nullable=True)
 
 
 def consume_ingredients_from_pantry(db: Session, ingredients_data: List[Dict[str, Any]]):
@@ -169,6 +183,20 @@ def create_db_and_tables():
     This function should be called on application startup.
     """
     Base.metadata.create_all(bind=engine)
+    # Migrations: add columns that may be missing in pre-existing DBs
+    with engine.connect() as conn:
+        for table, col, col_type in [
+            ("plan_rules", "veg_target", "JSON"),
+            ("plan_rules", "free_meal_quota", "INTEGER"),
+        ]:
+            try:
+                conn.execute(__import__("sqlalchemy").text(
+                    f"ALTER TABLE {table} ADD COLUMN {col} {col_type}"
+                ))
+                conn.commit()
+                _LOGGER.info(f"Migration: added column {table}.{col}")
+            except Exception:
+                pass  # Column already exists
 
 # Dependency to get a DB session
 def get_db():

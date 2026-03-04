@@ -16,6 +16,15 @@ const TodayView = defineComponent({
                 <span class="adherence-score">{{ Math.round(adherence.adherence_score * 100) }}%</span>
             </div>
 
+            <!-- Free meal widget -->
+            <div v-if="adherence" class="free-meal-widget">
+                <span class="free-meal-count">
+                    🎉 Pasti liberi questa settimana: <strong>{{ adherence.free_meals || 0 }}</strong>
+                    <span v-if="adherence.free_meal_quota != null"> / {{ adherence.free_meal_quota }}</span>
+                </span>
+                <span v-if="freeMealMessage" class="free-meal-msg">{{ freeMealMessage }}</span>
+            </div>
+
             <div v-if="loading" class="loading">Caricamento...</div>
             <div v-if="error" class="error">{{ error }}</div>
 
@@ -137,6 +146,9 @@ const TodayView = defineComponent({
                             <button v-if="meal.items?.[0]?.recipe_id"
                                     @click="openComponentModal(meal.meal_type, meal.items[0].recipe_id, 'protein')"
                                     class="btn-swap">↕ Proteina</button>
+                            <button v-if="meal.items?.[0]?.recipe_id"
+                                    @click="openComponentModal(meal.meal_type, meal.items[0].recipe_id, 'veg')"
+                                    class="btn-swap">↕ Verdura</button>
                             <button @click="markConsumed(meal.meal_type)" class="btn-consumed">Ho mangiato</button>
                             <button @click="openFreeMealPrompt(meal.meal_type)" class="btn-free">Pasto libero</button>
                             <button @click="openCustomModal(meal.meal_type)" class="btn-secondary">Personalizzato</button>
@@ -234,6 +246,18 @@ const TodayView = defineComponent({
         },
         profileA() { return this.profiles[0] || null; },
         profileB() { return this.profiles[1] || null; },
+        freeMealMessage() {
+            if (!this.adherence) return '';
+            const used = this.adherence.free_meals || 0;
+            const quota = this.adherence.free_meal_quota;
+            if (quota == null) return used === 0 ? '🌟 Nessun pasto libero questa settimana!' : '';
+            const remaining = quota - used;
+            if (used === 0) return '🌟 Ottimo, nessun pasto libero!';
+            if (remaining > 1) return `💪 Hai ancora ${remaining} pasti liberi`;
+            if (remaining === 1) return '⚠️ Ultimo pasto libero disponibile';
+            if (remaining === 0) return '😊 Raggiunto il limite settimanale';
+            return `⚠️ Superato il limite di ${Math.abs(remaining)} pasti`;
+        },
     },
     mounted() {
         this.loadData();

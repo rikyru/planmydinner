@@ -4,7 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Plan My Dinner</title>
-    <link rel="stylesheet" href="style.css">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🍽️</text></svg>">
+    <link rel="stylesheet" href="style.css?v=12">
     <link rel="stylesheet" href="dashboard.css">
     <script type="importmap">
       {
@@ -21,7 +22,7 @@
         nav a { padding: 8px 14px; border-radius: 6px; cursor: pointer; font-size: 14px; color: #495057; user-select: none; }
         nav a:hover { background: #f1f3f5; }
         nav a.active { background: #4263eb; color: #fff; font-weight: 600; }
-        main { padding: 20px; max-width: 900px; margin: 0 auto; }
+        main { padding: 20px; }
 
         /* ---- Stati comuni ---- */
         .loading { padding: 24px; text-align: center; color: #868e96; font-style: italic; }
@@ -67,6 +68,7 @@
             <a @click="page = 'pantry'" :class="{active: page === 'pantry'}">Dispensa</a>
             <a @click="page = 'profiles'" :class="{active: page === 'profiles'}">Profili</a>
             <a @click="page = 'recipes'" :class="{active: page === 'recipes'}">Ricette</a>
+            <a @click="page = 'settings'" :class="{active: page === 'settings'}">Impostazioni</a>
         </nav>
 
         <main>
@@ -77,6 +79,7 @@
             <pantry v-if="page === 'pantry'"></pantry>
             <profiles v-if="page === 'profiles'"></profiles>
             <recipes v-if="page === 'recipes'"></recipes>
+            <settings-view v-if="page === 'settings'"></settings-view>
         </main>
 
         <!-- Toast container -->
@@ -87,13 +90,14 @@
 
     <script type="module">
         import { createApp, reactive } from 'vue';
-        import TodayView from './today.js';
-        import WeekView from './planner.js';
-        import ImportWizard from './import.js';
-        import ShoppingList from './shopping.js';
-        import Pantry from './pantry.js';
-        import Profiles from './profiles.js';
-        import Recipes from './recipes.js';
+        import TodayView from './today.js?v=4';
+        import WeekView from './planner.js?v=9';
+        import ImportWizard from './import.js?v=10';
+        import ShoppingList from './shopping.js?v=7';
+        import Pantry from './pantry.js?v=3';
+        import Profiles from './profiles.js?v=4';
+        import Recipes from './recipes.js?v=3';
+        import SettingsView from './settings.js?v=1';
 
         const toastState = reactive({ items: [] });
 
@@ -110,7 +114,7 @@
             data() {
                 return { page: 'today', toasts: toastState.items };
             },
-            components: { TodayView, WeekView, 'import-wizard': ImportWizard, ShoppingList, Pantry, Profiles, Recipes },
+            components: { TodayView, WeekView, 'import-wizard': ImportWizard, ShoppingList, Pantry, Profiles, Recipes, SettingsView },
         });
 
         app.provide('toast', { add: addToast });
