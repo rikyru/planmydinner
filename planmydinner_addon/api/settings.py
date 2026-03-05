@@ -75,3 +75,21 @@ def update_settings(body: schemas.AppSettings, request: Request, db: Session = D
         llm_custom_rules=row.llm_custom_rules,
         has_api_key=bool(row.llm_api_key),
     )
+
+
+@router.get("/llm-cache/stats")
+def get_cache_stats(request: Request):
+    gw = request.app.state.llm_gateway
+    if not gw:
+        return {"entries": 0}
+    return {"entries": len(gw._cache)}
+
+
+@router.delete("/llm-cache")
+def clear_llm_cache(request: Request):
+    gw = request.app.state.llm_gateway
+    if not gw:
+        return {"cleared": 0}
+    count = len(gw._cache)
+    gw.clear_cache()
+    return {"cleared": count}

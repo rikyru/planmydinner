@@ -1,11 +1,8 @@
 import logging
 import os
 import json
+import hashlib
 from typing import Optional, Dict, Any, List
-
-# Placeholder for actual LLM client imports (e.g., from openai, from ollama)
-# from openai import OpenAI
-# from ollama import Client as OllamaClient
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -31,7 +28,38 @@ class LLMGateway:
         self.timeout = timeout
         self._client = None
         self.custom_rules: str = ""   # injected into planner prompt if set
+        # --- Cache ---
+        self._cache: Dict[str, Any] = {}
+        _data_dir = os.getenv("DATA_DIR", ".")
+        self._cache_path = os.path.join(_data_dir, "llm_cache.json")
+        self._load_cache()
         self._initialize_client()
+
+    def _load_cache(self):
+        try:
+            if os.path.exists(self._cache_path):
+                with open(self._cache_path, "r", encoding="utf-8") as f:
+                    self._cache = json.load(f)
+                _LOGGER.info(f"LLM cache: {len(self._cache)} voci caricate da disco.")
+        except Exception as e:
+            _LOGGER.warning(f"Impossibile caricare la LLM cache: {e}")
+            self._cache = {}
+
+    def _save_cache(self):
+        try:
+            with open(self._cache_path, "w", encoding="utf-8") as f:
+                json.dump(self._cache, f, ensure_ascii=False)
+        except Exception as e:
+            _LOGGER.warning(f"Impossibile salvare la LLM cache: {e}")
+
+    def _cache_key(self, *parts: str) -> str:
+        payload = "|".join(str(p) for p in parts)
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    def clear_cache(self):
+        self._cache = {}
+        self._save_cache()
+        _LOGGER.info("LLM cache svuotata.")
 
     def _initialize_client(self):
         """Initializes the LLM client based on the configured provider."""
@@ -178,7 +206,13 @@ class LLMGateway:
     def get_food_group_for_item(self, item_name: str) -> Optional[str]:
         """
         Classifies a given food item into a predefined food group using the LLM.
+        Result cached permanently (il gruppo alimentare di un ingrediente non cambia).
         """
+        cache_key = f"food_group:{item_name.strip().lower()}"
+        if cache_key in self._cache:
+            _LOGGER.debug(f"LLM cache hit: food_group '{item_name}'")
+            return self._cache[cache_key]
+
         if not self._client:
             _LOGGER.error("LLM client not initialized. Cannot classify food group.")
             return None
@@ -199,7 +233,7 @@ class LLMGateway:
                 response = self._client.chat.completions.create(
                     model=self.model,
                     messages=messages,
-                    temperature=0.1 # Low temperature for classification
+                    temperature=0.1
                 )
                 category = response.choices[0].message.content.strip().lower()
             elif self.provider == "ollama":
@@ -212,10 +246,11 @@ class LLMGateway:
             else:
                 _LOGGER.error(f"Unsupported LLM provider for food group classification: {self.provider}")
                 return None
-            
-            # Basic validation to ensure response is one of the expected groups
+
             if category in food_groups:
                 _LOGGER.debug(f"LLM classified '{item_name}' as '{category}'.")
+                self._cache[cache_key] = category
+                self._save_cache()
                 return category
             else:
                 _LOGGER.warning(f"LLM returned an unexpected category '{category}' for item '{item_name}'.")
@@ -347,11 +382,17 @@ class LLMGateway:
             _LOGGER.error(f"Error during LLM call for constrained recipe generation: {e}")
             return None
 
-    def generate_structured_meal(self, prompt: str) -> Optional[str]:
+    def generate_structured_meal(self, prompt: str, use_cache: bool = True) -> Optional[str]:
         """
         Chiama il LLM con un prompt nutrizionale e restituisce la stringa raw della risposta.
         Tutta la logica di provider è incapsulata qui.
+        Il risultato viene cachato per prompt identici (use_cache=False per forzare una nuova chiamata).
         """
+        cache_key = self._cache_key("structured_meal", prompt)
+        if use_cache and cache_key in self._cache:
+            _LOGGER.info("LLM cache hit: generate_structured_meal")
+            return self._cache[cache_key]
+
         if not self._client:
             _LOGGER.error("LLM client non inizializzato. Impossibile generare il pasto.")
             return None
@@ -372,14 +413,62 @@ class LLMGateway:
                     temperature=0.4,
                     response_format={"type": "json_object"},
                 )
-                return response.choices[0].message.content
+                raw = response.choices[0].message.content
             elif self.provider == "ollama":
                 response = self._client.chat(model=self.model, messages=messages)
-                return response["message"]["content"]
+                raw = response["message"]["content"]
             else:
                 _LOGGER.error(f"Provider LLM non supportato: {self.provider}")
                 return None
+
+            if raw and use_cache:
+                self._cache[cache_key] = raw
+                self._save_cache()
+            return raw
         except Exception as e:
             _LOGGER.error(f"Errore in generate_structured_meal: {e}")
+            return None
+
+    def generate_meal_plan_json(self, prompt: str, use_cache: bool = True) -> Optional[str]:
+        """
+        Chiama il LLM per il parsing di un piano alimentare da testo (usato da import PDF/testo).
+        Cachato per prompt identici: se l'utente reimporta lo stesso PDF non paga di nuovo.
+        """
+        cache_key = self._cache_key("meal_plan", prompt)
+        if use_cache and cache_key in self._cache:
+            _LOGGER.info("LLM cache hit: generate_meal_plan_json")
+            return self._cache[cache_key]
+
+        if not self._client:
+            _LOGGER.error("LLM client non inizializzato.")
+            return None
+
+        messages = [
+            {"role": "system", "content": "Sei un assistente nutrizionale esperto. Rispondi SOLO con JSON valido, senza testo aggiuntivo."},
+            {"role": "user", "content": prompt},
+        ]
+
+        try:
+            if self.provider == "openai":
+                response = self._client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    temperature=0.3,
+                    response_format={"type": "json_object"},
+                )
+                raw = response.choices[0].message.content
+            elif self.provider == "ollama":
+                response = self._client.chat(model=self.model, messages=messages)
+                raw = response["message"]["content"]
+            else:
+                _LOGGER.error(f"Provider LLM non supportato: {self.provider}")
+                return None
+
+            if raw and use_cache:
+                self._cache[cache_key] = raw
+                self._save_cache()
+            return raw
+        except Exception as e:
+            _LOGGER.error(f"Errore in generate_meal_plan_json: {e}")
             return None
 

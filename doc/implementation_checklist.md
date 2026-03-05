@@ -150,6 +150,62 @@ This document tracks the step-by-step implementation and testing of the Meal Pla
 
 ## Phase 3: V2 - Auto-Learning & LLM
 
--   [X] LLM Gateway
--   [X] Auto-Learning Logic
+-   [X] LLM Gateway (OpenAI + Ollama)
+-   [X] Auto-Learning Logic (CandidateRecipe auto-promozione)
 -   [X] Candidate Recipe Management
+-   [X] LLM Caching (memoria + disco, `llm_cache.json`)
+-   [X] `generate_meal_plan_json` nel gateway (import usa gateway, non `_client` diretto)
+
+---
+
+## Phase 5: Post-MVP Features (Mar 2026)
+
+### 5.1: Catalogo Ricette e Bulk Import
+
+-   [X] **Task**: Aggiungi sezione Ricette nell'UI (tab dedicata).
+-   [X] **Task**: CRUD ricette da frontend con form allineato allo schema backend.
+-   [X] **Task**: `POST /recipes/bulk` — import da JSON semplificato (ChatGPT-friendly).
+    -   [X] Normalizzazione difficulty English→Italian (`_DIFFICULTY_MAP`).
+    -   [X] Auto-tag `manual=["true"]` per boost nel planner.
+-   [X] **Task**: `DELETE /recipes/all` — cancellazione massiva.
+-   [X] **Task**: Robustezza a ricette invalide in DB (`GET /recipes/` e `_get_all_recipes()` con try/except).
+-   [X] **Fix**: `tags.manual` deve essere `["true"]` (lista), non `True` (bool).
+-   [X] **Fix**: `difficulty` pattern `^(facile|media|difficile|sconosciuto)` — no inglese.
+
+### 5.2: Vincoli Piano Editabili
+
+-   [X] **Task**: `veg_grams` nel form custom meal (frontend + backend `CustomMealBody`).
+-   [X] **Task**: `PUT /planner/rules/{profile_id}` — aggiornamento granulare PlanRules.
+-   [X] **Task**: Edit mode vincoli in schermata Profili (carb/protein targets, frequency_targets CRUD).
+
+### 5.3: Planner Improvements
+
+-   [X] **Fix**: Piano settimanale monotono — aggiunto `random.uniform(-0.05, 0.05)` al scoring.
+-   [X] **Fix**: `day_slot` non veniva passato a `suggest_recipes_for_meal` in `_generate_from_plan_rules`.
+-   [X] **Task**: Boost ricette manuali +1.5, CandidateRecipe approvate +1.0, rotation deficit boost.
+-   [X] **Task**: Ricette seed portate da 12 a 28 (variate, realistiche).
+-   [X] **Task**: `apply_recipe_to_plan` — incrementa `usage_count`, auto-promuove dopo 2 usi.
+
+### 5.4: LLM Caching
+
+-   [X] **Task**: Cache in memoria + persistenza su `DATA_DIR/llm_cache.json`.
+-   [X] **Task**: Cache su `get_food_group_for_item` (chiave: item_name, permanente).
+-   [X] **Task**: Cache su `generate_structured_meal` (chiave: SHA256 del prompt).
+-   [X] **Task**: Nuovo metodo `generate_meal_plan_json` per import, cachato.
+-   [X] **Task**: `GET /settings/llm-cache/stats` e `DELETE /settings/llm-cache`.
+-   [X] **Task**: Sezione cache in schermata Impostazioni (stats + clear button).
+
+### 5.5: Impostazioni LLM
+
+-   [X] **Task**: Tab Impostazioni con provider/modello/chiave API/temperatura.
+-   [X] **Task**: Regole custom LLM (iniettate nei prompt planner).
+-   [X] **Task**: Reinizializzazione live del gateway al salvataggio.
+
+---
+
+## Phase 6: Home Assistant Integration (TODO)
+
+-   [ ] **Task**: Sensori HA essenziali (`mealplan_today`, `shopping_count`).
+-   [ ] **Task**: Lovelace card minimale (today view).
+-   [ ] **Task**: HACS packaging.
+-   [ ] **Test**: Integrazione con HA reale.

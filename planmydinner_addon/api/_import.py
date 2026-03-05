@@ -222,24 +222,10 @@ async def _parse_text_with_llm(text_content: str, profile_id: str, llm_gateway) 
 
     prompt = _build_import_prompt(text_content, profile_id)
 
-    messages = [
-        {"role": "system", "content": "Sei un assistente nutrizionale esperto. Rispondi SOLO con JSON valido, senza testo aggiuntivo."},
-        {"role": "user", "content": prompt},
-    ]
     try:
-        if llm_gateway.provider == "openai":
-            response = llm_gateway._client.chat.completions.create(
-                model=llm_gateway.model,
-                messages=messages,
-                temperature=0.3,
-                response_format={"type": "json_object"},
-            )
-            raw = response.choices[0].message.content
-        elif llm_gateway.provider == "ollama":
-            response = llm_gateway._client.chat(model=llm_gateway.model, messages=messages)
-            raw = response["message"]["content"]
-        else:
-            raise HTTPException(status_code=503, detail="Provider LLM non supportato")
+        raw = llm_gateway.generate_meal_plan_json(prompt)
+        if not raw:
+            raise HTTPException(status_code=503, detail="LLM non ha restituito una risposta")
 
         json_match = re.search(r'\{.*\}', raw, re.DOTALL)
         if not json_match:
@@ -311,22 +297,9 @@ async def debug_pdf_import(
             result["llm_error"] = "LLM non configurato"
             return result
 
-        messages = [
-            {"role": "system", "content": "Sei un assistente nutrizionale esperto. Rispondi SOLO con JSON valido, senza testo aggiuntivo."},
-            {"role": "user", "content": prompt},
-        ]
         try:
-            if llm_gateway.provider == "openai":
-                response = llm_gateway._client.chat.completions.create(
-                    model=llm_gateway.model,
-                    messages=messages,
-                    temperature=0.3,
-                    response_format={"type": "json_object"},
-                )
-                result["llm_raw_response"] = response.choices[0].message.content
-            elif llm_gateway.provider == "ollama":
-                response = llm_gateway._client.chat(model=llm_gateway.model, messages=messages)
-                result["llm_raw_response"] = response["message"]["content"]
+            # use_cache=False nel debug: vogliamo sempre risposta fresca
+            result["llm_raw_response"] = llm_gateway.generate_meal_plan_json(prompt, use_cache=False)
         except Exception as e:
             result["llm_error"] = str(e)
 

@@ -60,6 +60,29 @@ const SettingsView = defineComponent({
                 </div>
             </div>
 
+            <!-- ── Sezione 1b: Cache LLM ── -->
+            <div class="settings-section">
+                <h3 class="settings-section__title">⚡ Cache LLM</h3>
+                <div class="settings-section__body">
+                    <p class="settings-hint">
+                        Le risposte LLM identiche vengono riutilizzate senza fare nuove chiamate API.
+                        Utile soprattutto per la classificazione ingredienti durante l'import PDF.
+                    </p>
+                    <div style="display:flex;align-items:center;gap:16px;">
+                        <span style="font-size:14px;">
+                            Voci in cache: <strong>{{ cacheEntries !== null ? cacheEntries : '—' }}</strong>
+                        </span>
+                        <button class="btn-secondary" @click="loadCacheStats" style="font-size:13px;padding:6px 10px;">
+                            🔄 Aggiorna
+                        </button>
+                        <button class="btn-danger" @click="clearCache" :disabled="clearingCache || cacheEntries === 0"
+                                style="font-size:13px;padding:6px 10px;">
+                            {{ clearingCache ? 'Svuotando...' : '🗑️ Svuota cache' }}
+                        </button>
+                    </div>
+                </div>
+            </div>
+
             <!-- ── Sezione 2: Regole personalizzate LLM ── -->
             <div class="settings-section">
                 <h3 class="settings-section__title">📝 Regole personalizzate per la generazione</h3>
@@ -93,10 +116,13 @@ const SettingsView = defineComponent({
             hasApiKey: false,
             savingConfig: false,
             savingRules: false,
+            cacheEntries: null,
+            clearingCache: false,
         };
     },
     mounted() {
         this.loadSettings();
+        this.loadCacheStats();
     },
     methods: {
         async loadSettings() {
@@ -142,6 +168,27 @@ const SettingsView = defineComponent({
                 this.toast.add('Errore: ' + e.message, 'error');
             } finally {
                 this.savingConfig = false;
+            }
+        },
+        async loadCacheStats() {
+            try {
+                const resp = await fetch('/settings/llm-cache/stats');
+                if (resp.ok) this.cacheEntries = (await resp.json()).entries;
+            } catch {}
+        },
+        async clearCache() {
+            if (!confirm('Svuotare la cache LLM? Le prossime chiamate verranno rifatte da zero.')) return;
+            this.clearingCache = true;
+            try {
+                const resp = await fetch('/settings/llm-cache', { method: 'DELETE' });
+                if (!resp.ok) throw new Error('Errore');
+                const data = await resp.json();
+                this.cacheEntries = 0;
+                this.toast.add(`Cache svuotata (${data.cleared} voci rimosse)`, 'success');
+            } catch (e) {
+                this.toast.add('Errore: ' + e.message, 'error');
+            } finally {
+                this.clearingCache = false;
             }
         },
         async saveRules() {
