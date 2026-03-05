@@ -342,21 +342,34 @@ const ImportWizard = defineComponent({
                     .filter(r => !r.include)
                     .map(r => r.name);
 
-                // Build plan_rules_override from editable fields
-                const toArray = str => (str || '').split(',').map(s => s.trim()).filter(Boolean);
+                // Build plan_rules_override from editable fields.
+                // If original plan_rules had rich objects {name,quantity,...}, rebuild them;
+                // otherwise fall back to simple name strings.
+                const pr = this.parsedPlanRules || {};
+                const buildOptions = (editedStr, originalOpts) => {
+                    const names = (editedStr || '').split(',').map(s => s.trim()).filter(Boolean);
+                    if (!names.length) return null;
+                    const origMap = {};
+                    for (const o of (originalOpts || [])) {
+                        const n = (typeof o === 'object' && o !== null) ? o.name : o;
+                        origMap[n] = o;
+                    }
+                    return names.map(n => origMap[n] || n);
+                };
                 const carbOptions = {};
                 const proteinOptions = {};
                 for (const mt of ['pranzo', 'cena']) {
-                    const carbStr = this.editableOptions.carb[mt];
-                    if (carbStr && carbStr.trim()) carbOptions[mt] = toArray(carbStr);
-                    const protStr = this.editableOptions.protein[mt];
-                    if (protStr && protStr.trim()) proteinOptions[mt] = toArray(protStr);
+                    const c = buildOptions(this.editableOptions.carb[mt], (pr.carb_options || {})[mt]);
+                    if (c) carbOptions[mt] = c;
+                    const p = buildOptions(this.editableOptions.protein[mt], (pr.protein_options || {})[mt]);
+                    if (p) proteinOptions[mt] = p;
                 }
                 const plan_rules_override = {
                     carb_target: this.editableTargets.carb,
                     protein_target: this.editableTargets.protein,
                     carb_options: Object.keys(carbOptions).length ? carbOptions : null,
                     protein_options: Object.keys(proteinOptions).length ? proteinOptions : null,
+                    meal_slots: pr.meal_slots || null,
                     free_meal_quota: this.editableFreeMealQuota ?? null,
                 };
 
@@ -408,8 +421,9 @@ const ImportWizard = defineComponent({
                     carb: { ...(pr.carb_target || {}) },
                     protein: { ...(pr.protein_target || {}) },
                 };
-                // Options: convert arrays to comma-separated strings
-                const toStr = (opts, mt) => ((opts || {})[mt] || []).join(', ');
+                // Options: convert arrays to comma-separated strings (handles both str and {name,...} formats)
+                const optName = o => (typeof o === 'object' && o !== null) ? o.name : o;
+                const toStr = (opts, mt) => ((opts || {})[mt] || []).map(optName).join(', ');
                 this.editableOptions = {
                     carb: {
                         pranzo: toStr(pr.carb_options, 'pranzo'),

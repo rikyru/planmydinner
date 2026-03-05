@@ -75,35 +75,78 @@ def _build_import_prompt(text_content: str, profile_id: str) -> str:
     """Costruisce il prompt da inviare all'LLM per l'import del piano alimentare."""
     today = date.today()
     week_start = today - timedelta(days=today.weekday())
-    return f"""CLASSIFICAZIONE DEL DOCUMENTO (OBBLIGATORIA)
+    return f"""Sei un parser deterministico di piani alimentari da testo estratto da PDF (pdfminer).
+Devi restituire SOLO un JSON valido conforme allo schema richiesto.
 
-Prima di generare il JSON, analizza il testo e determina il tipo di documento.
+CONTESTO
+- Il testo proviene da pdfminer: potrebbe avere a capo irregolari, parole spezzate, colonne "Alternative" appiattite.
+- Obiettivo: estrarre le regole (plan_rules) DIRETTAMENTE dal documento e generare daily_plans coerenti.
 
-1) Se nel testo compaiono intestazioni di giorni della settimana (es. LUNEDÌ, MARTEDÌ, MERCOLEDÌ, GIOVEDÌ, VENERDÌ, SABATO, DOMENICA) e i pasti sono raggruppati per ciascun giorno, allora il documento è di tipo "calendar".
+TASK 1 — Classificazione documento
+- "calendar": contiene giorni specifici (Lunedì/Martedì o date) con pasti già assegnati.
+- "template": contiene solo regole/grammature/opzioni senza giorni specifici.
 
-2) Se NON compaiono giorni della settimana e il documento contiene solo sezioni generiche (COLAZIONE, PRANZO, CENA) con liste di alternative e grammature, allora il documento è di tipo "template".
+TASK 2 — Estrazione plan_rules (OBBLIGATORIA, estrai SEMPRE direttamente dal testo)
 
-COMPORTAMENTO IN BASE AL TIPO:
+a) carb_options e protein_options per PRANZO e CENA:
+   - Includi TUTTE le opzioni elencate nel documento con quantità proprie.
+   - Formato: [{{"name": "pasta", "quantity": 70, "unit": "g", "portion_text": null}}]
+   - portion_text: se trovi "2 Fette 80g", metti portion_text="2 Fette" e quantity=80.
+   - NON limitare alle sole opzioni usate nei daily_plans generati.
+   - NON inventare opzioni non menzionate nel documento.
+   - Se cena non ha opzioni proprie, ometti la chiave "cena".
 
-=== SE document_type = "calendar" ===
+b) carb_target / protein_target: grammi target espliciti del documento per pranzo/cena. null se non specificato.
 
-- NON generare una settimana artificiale.
-- Usa ESATTAMENTE i pasti presenti sotto ciascun giorno.
-- Ogni giorno nel JSON deve corrispondere a un giorno reale trovato nel documento.
+c) frequency_targets: frequenze settimanali per categoria proteica (min/max a settimana).
+   Chiavi: carne_bianca, carne_rossa, pesce, legumi, uova, formaggio.
+
+d) free_meal_quota: numero di pasti/giorni liberi a settimana. null se non menzionato.
+
+e) meal_slots: struttura completa della giornata tipo del documento.
+   Sezioni: colazione, spuntino_mattina, pranzo, merenda, cena, idratazione (solo quelle presenti).
+   Formato item: {{"name": string, "quantity": number|null, "unit": "g"|"ml"|"L"|null, "portion_text": string|null, "alternatives": [...]}}
+
+f) rotation_rules: vincoli strutturati per categoria proteica (es. max carne rossa 1/sett).
+
+REGOLE CRITICHE DI PARSING (NON VIOLABILI)
+
+1) ALTERNATIVE BINDING:
+   Quando compare "Alternative:" (anche su riga separata), le righe successive con alimento+quantità
+   sono alternative dell'item BASE immediatamente precedente.
+   Lo stop avviene solo quando trovi una nuova sezione (COLAZIONE/PRANZO/CENA/MERENDA/CENA/ecc.)
+   oppure un nuovo item base di pari livello.
+
+2) ALTERNATIVE CON QUANTITÀ:
+   Ogni alternativa deve essere {{"name": "...", "quantity": N, "unit": "g"}} — NON stringa semplice.
+
+3) RIGHE SPEZZATE:
+   Se il nome dell'alimento è spezzato su più righe (es. "Prosciutto cotto" poi "sgrassato 100 g"),
+   concatena le parti finché non trovi "numero + unità".
+
+4) PORZIONE TESTUALE:
+   "1 Tazzina 30 g" → quantity=30, unit="g", portion_text="1 Tazzina"
+   "3 Fette e 1/2 100 g" → quantity=100, unit="g", portion_text="3 Fette e 1/2"
+
+5) UNITÀ: usa solo "g", "ml", "L".
+
+6) DETERMINISMO: mantieni l'ordine in cui le opzioni compaiono nel documento.
+
+TASK 3 — Generazione daily_plans
+
+SE document_type = "calendar":
+- Usa ESATTAMENTE i pasti indicati per ciascun giorno.
 - Mappa il primo giorno trovato a {week_start.isoformat()} e i successivi ai giorni seguenti.
-- Se il documento contiene meno di 7 giorni, replica la struttura dell'ultimo giorno disponibile per i giorni mancanti.
-- Le alternative devono essere inserite nel campo "alternatives" degli item, NON trasformate in pasti separati.
-- NON inventare alimenti. NON cambiare le grammature.
+- Le alternative vanno in alternatives[], NON come pasti separati.
+- NON inventare alimenti, NON cambiare le grammature.
 
-=== SE document_type = "template" ===
-
-- Genera una settimana di 7 giorni partendo da {week_start.isoformat()}.
-- Usa le regole di rotazione e le grammature target del documento.
-- Compila sempre pranzo e cena per ogni giorno.
-- Rispetta le frequenze settimanali come vincoli hard.
+SE document_type = "template":
+- Genera 7 giorni partendo da {week_start.isoformat()}.
+- Scegli 1 carb_option + 1 protein_option per pranzo e cena rispettando frequency_targets.
+- Rispetta: carne_rossa max 1/sett, carne_bianca 2-3/sett, legumi 3-5/sett, uova 2-4/sett, formaggio max 2/sett.
 - Non lasciare mai meals.items vuoto.
 
-Il JSON deve seguire questo schema esatto:
+SCHEMA OUTPUT ESATTO:
 {{
   "profile_id": "{profile_id}",
   "start_date": "{week_start.isoformat()}",
@@ -112,24 +155,37 @@ Il JSON deve seguire questo schema esatto:
   ],
   "allowed_cooking_methods": [],
   "plan_rules": {{
-    "carb_target": {{"pranzo": 80, "cena": 60}},
-    "protein_target": {{"pranzo": 150, "cena": 130}},
+    "carb_target": {{"pranzo": 80, "cena": null}},
+    "protein_target": {{"pranzo": 150, "cena": null}},
     "carb_options": {{
-      "pranzo": ["pasta", "riso", "farro", "couscous", "orzo"],
-      "cena": ["pane", "patate", "polenta"]
+      "pranzo": [{{"name": "pasta", "quantity": 70, "unit": "g", "portion_text": null}}],
+      "cena": [{{"name": "pane", "quantity": 80, "unit": "g", "portion_text": "2 Fette"}}]
     }},
     "protein_options": {{
-      "pranzo": ["pollo", "tacchino", "salmone", "tonno", "uova", "legumi"],
-      "cena": ["carne_bianca", "pesce", "uova"]
+      "pranzo": [{{"name": "pollo", "quantity": 120, "unit": "g", "portion_text": null}}],
+      "cena": [{{"name": "salmone", "quantity": 120, "unit": "g", "portion_text": null}}]
     }},
     "frequency_targets": {{
       "carne_bianca": {{"min": 2, "max": 3}},
       "carne_rossa": {{"min": 0, "max": 1}},
       "pesce": {{"min": 2, "max": 3}},
       "legumi": {{"min": 2, "max": 4}},
-      "uova": {{"min": 1, "max": 3}}
+      "uova": {{"min": 1, "max": 3}},
+      "formaggio": {{"min": 0, "max": 2}}
     }},
-    "free_meal_quota": null
+    "free_meal_quota": null,
+    "meal_slots": {{
+      "colazione": {{ "notes": null, "items": [{{"name": "pane", "quantity": 50, "unit": "g", "portion_text": "2 Fette", "alternatives": []}}] }},
+      "spuntino_mattina": {{ "notes": null, "items": [] }},
+      "pranzo": {{ "notes": null, "items": [] }},
+      "merenda": {{ "notes": null, "items": [] }},
+      "cena": {{ "notes": null, "items": [] }},
+      "idratazione": {{ "notes": null, "items": [] }}
+    }},
+    "rotation_rules": [
+      {{"group": "carne_rossa", "max_per_week": 1}},
+      {{"group": "carne_bianca", "min_per_week": 2, "max_per_week": 3}}
+    ]
   }},
   "daily_plans": [
     {{
@@ -138,7 +194,7 @@ Il JSON deve seguire questo schema esatto:
         {{
           "meal_type": "pranzo",
           "items": [
-            {{"item_name": "Nome alimento", "food_group": "gruppo", "quantity": 100, "unit": "g", "is_estimated_unit": false, "alternatives": []}}
+            {{"item_name": "Nome alimento", "food_group": "carboidrati", "quantity": 80, "unit": "g", "is_estimated_unit": false, "alternatives": []}}
           ]
         }},
         {{
@@ -150,26 +206,8 @@ Il JSON deve seguire questo schema esatto:
   ]
 }}
 
-I food_group validi sono: carboidrati, verdure, frutta, proteina, legumi, pesce, pollo, carne_rossa, grassi, altro.
-
-IMPORTANTE sulle rotation_rules: estrai TUTTE le frequenze settimanali menzionate nel documento.
-Usa food_group_or_item: pollo, carne_rossa, pesce, legumi, uova, carne_bianca.
-Esempio: {{"food_group_or_item":"carne_rossa","max_per_week":1,"min_per_week":0,"is_hard_constraint":true}}
-Se non ci sono frequenze esplicite, lascia rotation_rules come lista vuota [].
-
-IMPORTANTE sulle quantità: usa le grammature TARGET esatte del documento, senza inventare variazioni.
-
-ISTRUZIONI PER IL CAMPO plan_rules (FONDAMENTALE):
-Estrai DIRETTAMENTE dal documento le regole del piano, NON derivarle dai daily_plans generati:
-- carb_target: grammi di carboidrati target per pasto (pranzo/cena). null se non specificato.
-- protein_target: grammi di proteine target per pasto (pranzo/cena). null se non specificato.
-- carb_options: LISTA COMPLETA di tutti i carboidrati permessi dal documento (non solo quelli usati nei 7 giorni generati).
-  Includi tutte le opzioni elencate nelle sezioni PRANZO/CENA del documento originale.
-- protein_options: LISTA COMPLETA di tutte le fonti proteiche permesse.
-  Usa nomi in minuscolo: pollo, tacchino, salmone, tonno, branzino, spigola, orata, gamberi, uova, legumi, carne_rossa, vitello, maiale, tofu.
-- frequency_targets: frequenze settimanali per categoria proteica (min/max a settimana).
-- free_meal_quota: numero massimo di pasti liberi a settimana. null se non menzionato.
-NON inventare opzioni non menzionate nel documento. Se cena non ha opzioni specifiche, ometti la chiave "cena" da carb_options/protein_options.
+I food_group validi per daily_plans: carboidrati, verdure, frutta, proteina, legumi, pesce, pollo, carne_rossa, grassi, altro.
+Le grammature nei daily_plans devono corrispondere alle quantità delle opzioni scelte.
 
 Testo del piano:
 {text_content}
@@ -501,6 +539,7 @@ def _plan_rules_from_override(plan: schemas.StructuredMealPlan, override: Dict[s
         protein_options=override.get("protein_options"),
         frequency_targets=freq or None,
         free_meal_quota=override.get("free_meal_quota"),
+        meal_slots=override.get("meal_slots"),
     )
 
 

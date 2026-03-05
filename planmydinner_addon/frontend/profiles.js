@@ -70,6 +70,42 @@ const Profiles = defineComponent({
                             </table>
                         </div>
 
+                        <!-- PlanRules: opzioni carboidrati e proteine -->
+                        <div v-if="rules.plan_rules && (rules.plan_rules.carb_options || rules.plan_rules.protein_options)" class="rules-section">
+                            <h4>Opzioni consentite</h4>
+                            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+                                <div v-if="rules.plan_rules.carb_options">
+                                    <h5 style="margin:0 0 6px;font-size:13px;color:#495057">Carboidrati</h5>
+                                    <div v-for="mt in ['pranzo','cena']" :key="mt" style="margin-bottom:6px">
+                                        <span style="font-size:12px;color:#868e96;text-transform:capitalize">{{ mt }}: </span>
+                                        <span style="font-size:13px">{{ formatOptions(rules.plan_rules.carb_options[mt]) || '—' }}</span>
+                                    </div>
+                                </div>
+                                <div v-if="rules.plan_rules.protein_options">
+                                    <h5 style="margin:0 0 6px;font-size:13px;color:#495057">Proteine</h5>
+                                    <div v-for="mt in ['pranzo','cena']" :key="mt" style="margin-bottom:6px">
+                                        <span style="font-size:12px;color:#868e96;text-transform:capitalize">{{ mt }}: </span>
+                                        <span style="font-size:13px">{{ formatOptions(rules.plan_rules.protein_options[mt]) || '—' }}</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- PlanRules: meal_slots (struttura giornaliera tipo) -->
+                        <div v-if="rules.plan_rules && rules.plan_rules.meal_slots" class="rules-section">
+                            <h4>Struttura giornaliera tipo</h4>
+                            <div v-for="(slot, slotKey) in rules.plan_rules.meal_slots" :key="slotKey" style="margin-bottom:8px">
+                                <div style="font-size:13px;font-weight:500;text-transform:capitalize;color:#495057">{{ slotKey.replace('_', ' ') }}</div>
+                                <div v-if="slot.notes" style="font-size:12px;color:#868e96;margin:2px 0">{{ slot.notes }}</div>
+                                <div v-for="(item, idx) in (slot.items || [])" :key="idx" style="font-size:13px;margin-left:12px;color:#212529">
+                                    <span>{{ item.portion_text ? item.portion_text + ' ' : '' }}{{ item.name }}{{ item.quantity ? ' ' + item.quantity + (item.unit || 'g') : '' }}</span>
+                                    <span v-if="item.alternatives && item.alternatives.length" style="color:#868e96;font-size:12px">
+                                        (alt: {{ item.alternatives.map(a => a.name + (a.quantity ? ' ' + a.quantity + (a.unit||'g') : '')).join(', ') }})
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
+
                         <!-- PlanRules: frequenze settimanali -->
                         <div v-if="rules.plan_rules && rules.plan_rules.frequency_targets" class="rules-section">
                             <h4>Frequenze settimanali</h4>
@@ -193,6 +229,28 @@ const Profiles = defineComponent({
                     </div>
 
                     <div class="rules-section">
+                        <h4>Opzioni consentite <span style="font-size:12px;font-weight:400;color:#868e96">(separati da virgola)</span></h4>
+                        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+                            <div>
+                                <h5 style="margin:0 0 8px;font-size:13px">Carboidrati</h5>
+                                <div v-for="mt in ['pranzo','cena']" :key="'carb-'+mt" style="margin-bottom:8px">
+                                    <label style="font-size:12px;color:#868e96;display:block;margin-bottom:3px;text-transform:capitalize">{{ mt }}</label>
+                                    <input type="text" v-model="editedRules.carb_options[mt]"
+                                           class="criteri-input" style="width:100%" placeholder="pasta, riso, farro...">
+                                </div>
+                            </div>
+                            <div>
+                                <h5 style="margin:0 0 8px;font-size:13px">Proteine</h5>
+                                <div v-for="mt in ['pranzo','cena']" :key="'prot-'+mt" style="margin-bottom:8px">
+                                    <label style="font-size:12px;color:#868e96;display:block;margin-bottom:3px;text-transform:capitalize">{{ mt }}</label>
+                                    <input type="text" v-model="editedRules.protein_options[mt]"
+                                           class="criteri-input" style="width:100%" placeholder="pollo, salmone, uova...">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="rules-section">
                         <h4>Frequenze settimanali</h4>
                         <table class="rules-table">
                             <thead>
@@ -281,6 +339,8 @@ const Profiles = defineComponent({
             editedRules: {
                 carb_target: { pranzo: 80, cena: 60 },
                 protein_target: { pranzo: 150, cena: 120 },
+                carb_options: { pranzo: '', cena: '' },
+                protein_options: { pranzo: '', cena: '' },
                 frequency_targets: {},
                 veg_target: { min_grams: 0, portion_grams: {} },
                 free_meal_quota: null,
@@ -343,6 +403,8 @@ const Profiles = defineComponent({
         startEditRules() {
             const pr = this.rules?.plan_rules || {};
             const vt = pr.veg_target || {};
+            const optName = o => (typeof o === 'object' && o !== null) ? o.name : o;
+            const toStr = (opts, mt) => ((opts || {})[mt] || []).map(optName).join(', ');
             this.editedRules = {
                 carb_target: {
                     pranzo: pr.carb_target?.pranzo ?? 80,
@@ -351,6 +413,14 @@ const Profiles = defineComponent({
                 protein_target: {
                     pranzo: pr.protein_target?.pranzo ?? 150,
                     cena: pr.protein_target?.cena ?? 120,
+                },
+                carb_options: {
+                    pranzo: toStr(pr.carb_options, 'pranzo'),
+                    cena: toStr(pr.carb_options, 'cena'),
+                },
+                protein_options: {
+                    pranzo: toStr(pr.protein_options, 'pranzo'),
+                    cena: toStr(pr.protein_options, 'cena'),
                 },
                 frequency_targets: JSON.parse(JSON.stringify(pr.frequency_targets || {})),
                 veg_target: {
@@ -369,10 +439,23 @@ const Profiles = defineComponent({
         async saveRules() {
             this.savingRules = true;
             try {
+                // Convert comma-separated option strings back to arrays
+                const toArray = str => (str || '').split(',').map(s => s.trim()).filter(Boolean);
+                const payload = {
+                    ...this.editedRules,
+                    carb_options: {
+                        pranzo: toArray(this.editedRules.carb_options.pranzo),
+                        cena: toArray(this.editedRules.carb_options.cena),
+                    },
+                    protein_options: {
+                        pranzo: toArray(this.editedRules.protein_options.pranzo),
+                        cena: toArray(this.editedRules.protein_options.cena),
+                    },
+                };
                 const resp = await fetch(`/planner/rules/${this.selectedProfile.id}`, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(this.editedRules),
+                    body: JSON.stringify(payload),
                 });
                 if (!resp.ok) throw new Error(await resp.text());
                 this.editingRules = false;
@@ -405,6 +488,15 @@ const Profiles = defineComponent({
                 const resp = await fetch('/planner/veg-portions');
                 if (resp.ok) this.vegPortions = await resp.json();
             } catch (e) {}
+        },
+        formatOptions(opts) {
+            if (!opts || !opts.length) return '';
+            return opts.map(o => {
+                if (typeof o === 'object' && o !== null) {
+                    return o.quantity ? `${o.name} (${o.quantity}${o.unit || 'g'})` : o.name;
+                }
+                return o;
+            }).join(', ');
         },
     },
 });

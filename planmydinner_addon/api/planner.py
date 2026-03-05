@@ -27,6 +27,8 @@ class CustomMealBody(_BaseModel):
 class PlanRulesUpdate(_BaseModel):
     carb_target: Optional[Dict[str, float]] = None
     protein_target: Optional[Dict[str, float]] = None
+    carb_options: Optional[Dict[str, List[str]]] = None
+    protein_options: Optional[Dict[str, List[str]]] = None
     frequency_targets: Optional[Dict[str, Any]] = None
     veg_target: Optional[Dict[str, Any]] = None
     free_meal_quota: Optional[int] = None
@@ -291,6 +293,10 @@ def update_plan_rules(profile_id: str, body: PlanRulesUpdate, db: Session = Depe
         plan_rules.carb_target = body.carb_target
     if body.protein_target is not None:
         plan_rules.protein_target = body.protein_target
+    if body.carb_options is not None:
+        plan_rules.carb_options = body.carb_options
+    if body.protein_options is not None:
+        plan_rules.protein_options = body.protein_options
     if body.frequency_targets is not None:
         plan_rules.frequency_targets = body.frequency_targets
     if body.veg_target is not None:
@@ -321,44 +327,49 @@ def change_recipe(
     max_time_minutes: int = 120,
     db: Session = Depends(get_db)
 ):
-    """Suggest up to 3 alternative complete recipes for a meal."""
+    """Suggest up to 5 alternative recipes for a meal, with LLM creative option first."""
     request_params = {"mood": mood, "cleanup": cleanup, "max_time_minutes": max_time_minutes}
     planner = PlannerEngine(db, llm_gateway=request.app.state.llm_gateway)
 
-    weekly_plan_A = planner._get_latest_meal_plan(profile_id_A)
-    if not weekly_plan_A:
-        raise HTTPException(status_code=404, detail=f"No meal plan for '{profile_id_A}'.")
-
-    weekly_plan_B = planner._get_latest_meal_plan(profile_id_B)
-    if not weekly_plan_B:
-        weekly_plan_B = schemas.StructuredMealPlan(
-            id="dummy_plan_B", profile_id=profile_id_B,
-            start_date=current_date.isoformat(), rotation_rules=[], allowed_cooking_methods=[],
-            daily_plans=[schemas.DailyPlannedMeals(
-                date=(current_date + timedelta(days=i)).isoformat(),
-                meals=[
-                    schemas.PlannedMeal(meal_type="pranzo", items=[]),
-                    schemas.PlannedMeal(meal_type="cena", items=[]),
-                ]
-            ) for i in range(7)]
-        )
-
-    # Match by weekday so this works for any rolling date, not just plan's original dates
-    daily_plan_A = next((d for d in weekly_plan_A.daily_plans if date.fromisoformat(d.date).weekday() == current_date.weekday()), None)
-    daily_plan_B = next((d for d in weekly_plan_B.daily_plans if date.fromisoformat(d.date).weekday() == current_date.weekday()), None)
-
-    if not daily_plan_A:
-        raise HTTPException(status_code=404, detail="No daily plan for the specified date.")
-    if not daily_plan_B:
-        daily_plan_B = schemas.DailyPlannedMeals(date=current_date.isoformat(), meals=[])
-
-    meal_plan_A = next((m for m in daily_plan_A.meals if m.meal_type == meal_type), None)
-    meal_plan_B = next((m for m in daily_plan_B.meals if m.meal_type == meal_type), None)
-
-    if not meal_plan_A:
-        raise HTTPException(status_code=404, detail=f"No '{meal_type}' plan for the specified date.")
-    if not meal_plan_B:
+    # Build meal_plan_A from PlanRules if available (richer LLM prompt), else fall back to StructuredMealPlan
+    plan_rules = planner._get_latest_plan_rules(profile_id_A)
+    if plan_rules:
+        meal_plan_A = planner._rules_to_planned_meal(plan_rules, meal_type, target_cat=None)
         meal_plan_B = schemas.PlannedMeal(meal_type=meal_type, items=[])
+    else:
+        weekly_plan_A = planner._get_latest_meal_plan(profile_id_A)
+        if not weekly_plan_A:
+            raise HTTPException(status_code=404, detail=f"No meal plan for '{profile_id_A}'.")
+
+        weekly_plan_B = planner._get_latest_meal_plan(profile_id_B)
+        if not weekly_plan_B:
+            weekly_plan_B = schemas.StructuredMealPlan(
+                id="dummy_plan_B", profile_id=profile_id_B,
+                start_date=current_date.isoformat(), rotation_rules=[], allowed_cooking_methods=[],
+                daily_plans=[schemas.DailyPlannedMeals(
+                    date=(current_date + timedelta(days=i)).isoformat(),
+                    meals=[
+                        schemas.PlannedMeal(meal_type="pranzo", items=[]),
+                        schemas.PlannedMeal(meal_type="cena", items=[]),
+                    ]
+                ) for i in range(7)]
+            )
+
+        daily_plan_A = next((d for d in weekly_plan_A.daily_plans if date.fromisoformat(d.date).weekday() == current_date.weekday()), None)
+        daily_plan_B = next((d for d in weekly_plan_B.daily_plans if date.fromisoformat(d.date).weekday() == current_date.weekday()), None)
+
+        if not daily_plan_A:
+            raise HTTPException(status_code=404, detail="No daily plan for the specified date.")
+        if not daily_plan_B:
+            daily_plan_B = schemas.DailyPlannedMeals(date=current_date.isoformat(), meals=[])
+
+        meal_plan_A = next((m for m in daily_plan_A.meals if m.meal_type == meal_type), None)
+        meal_plan_B = next((m for m in daily_plan_B.meals if m.meal_type == meal_type), None)
+
+        if not meal_plan_A:
+            raise HTTPException(status_code=404, detail=f"No '{meal_type}' plan for the specified date.")
+        if not meal_plan_B:
+            meal_plan_B = schemas.PlannedMeal(meal_type=meal_type, items=[])
 
     options = planner.suggest_recipes_for_meal(
         meal_plan_A, meal_plan_B, profile_id_A, profile_id_B, current_date, request_params,

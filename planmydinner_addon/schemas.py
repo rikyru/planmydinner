@@ -226,11 +226,12 @@ class PlanRules(BaseModel):
     imported_at: str
     carb_target: Optional[Dict[str, float]] = None
     protein_target: Optional[Dict[str, float]] = None
-    carb_options: Optional[Dict[str, List[str]]] = None
-    protein_options: Optional[Dict[str, List[str]]] = None
+    carb_options: Optional[Dict[str, Any]] = None   # List[str] (legacy) or List[{name,quantity,unit,portion_text}]
+    protein_options: Optional[Dict[str, Any]] = None # same
     frequency_targets: Optional[Dict[str, Dict[str, Any]]] = None
     veg_target: Optional[Dict[str, Any]] = None
     free_meal_quota: Optional[int] = None
+    meal_slots: Optional[Dict[str, Any]] = None      # colazione, spuntino_mattina, pranzo, merenda, cena, idratazione
 
     class Config:
         from_attributes = True

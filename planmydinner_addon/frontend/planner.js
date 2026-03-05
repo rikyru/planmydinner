@@ -28,6 +28,10 @@ const WeekView = defineComponent({
                                 title="Usa LLM per inventare ricette creative ad ogni slot">
                             {{ generating ? 'Generando...' : '✨ ExtraFantasy' }}
                         </button>
+                        <button @click.stop="openDebugModal" class="btn-secondary sidebar-btn"
+                                title="Log LLM e trace generazione piano">
+                            🐛 Debug
+                        </button>
                     </template>
                 </div>
 
@@ -121,12 +125,15 @@ const WeekView = defineComponent({
 
                     <!-- Vista ricetta -->
                     <div v-if="mealRecipeDetail">
-                        <div style="display:flex; align-items:center; gap:10px; margin-bottom:12px;">
+                        <div style="display:flex; align-items:center; gap:10px; margin-bottom:8px;">
                             <button @click="mealRecipeDetail = null" class="btn-secondary">← Nascondi</button>
                             <span style="font-size:13px; color:#555;">
                                 {{ mealRecipeDetail.total_time_minutes }} min · {{ mealRecipeDetail.difficulty }}
                             </span>
                         </div>
+                        <p style="font-weight:600; font-size:15px; margin:0 0 6px; color:#212529;">
+                            {{ mealRecipeDetail.name }}
+                        </p>
                         <p v-if="mealRecipeDetail.description" style="font-size:13px; color:#495057; margin:0 0 12px;">
                             {{ mealRecipeDetail.description }}
                         </p>
@@ -297,6 +304,129 @@ const WeekView = defineComponent({
                 </div>
             </div>
 
+            <!-- ── Modal debug ────────────────────────────────────────── -->
+            <div v-if="showDebugModal" class="modal-overlay" @click.self="closeDebugModal">
+                <div class="modal" style="max-width:860px; width:98vw; max-height:90vh; overflow-y:auto;">
+                    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">
+                        <h3 style="margin:0;">🐛 Debug generazione piano</h3>
+                        <button @click="closeDebugModal" class="btn-secondary" style="padding:4px 10px;">✕</button>
+                    </div>
+
+                    <!-- Tabs -->
+                    <div style="display:flex; gap:6px; margin-bottom:14px; border-bottom:2px solid #dee2e6; padding-bottom:6px;">
+                        <button @click="debugTab='trace'"
+                                :style="debugTab==='trace' ? 'font-weight:700;border-bottom:2px solid #339af0;color:#1971c2;' : 'color:#495057;'"
+                                style="background:none;border:none;cursor:pointer;font-size:14px;padding:4px 8px;">
+                            🗓️ Trace generazione
+                        </button>
+                        <button @click="debugTab='llm'"
+                                :style="debugTab==='llm' ? 'font-weight:700;border-bottom:2px solid #339af0;color:#1971c2;' : 'color:#495057;'"
+                                style="background:none;border:none;cursor:pointer;font-size:14px;padding:4px 8px;">
+                            🤖 Log LLM
+                        </button>
+                    </div>
+
+                    <div v-if="debugLoading" class="loading">Caricamento dati debug...</div>
+
+                    <!-- Tab: Trace generazione -->
+                    <div v-else-if="debugTab==='trace'">
+                        <p v-if="!debugTrace.length" class="hint">Nessun dato. Genera prima un piano.</p>
+                        <div v-for="(slot, idx) in debugTrace" :key="idx"
+                             style="border:1px solid #dee2e6; border-radius:6px; margin-bottom:8px; overflow:hidden;">
+                            <!-- Header riga -->
+                            <div @click="debugExpandTrace = debugExpandTrace===idx ? null : idx"
+                                 style="display:flex; align-items:center; gap:10px; padding:8px 12px; cursor:pointer; background:#f8f9fa; user-select:none;">
+                                <span style="font-size:12px; color:#868e96; min-width:110px;">
+                                    {{ formatDateLabel(slot.date) }} · {{ slot.meal_type }}
+                                </span>
+                                <span style="flex:1; font-weight:500; font-size:13px;" :style="slot.selected_name ? '' : 'color:#e03131;'">
+                                    {{ slot.selected_name || slot.error || '— vuoto —' }}
+                                </span>
+                                <span style="font-size:11px; color:#868e96;">
+                                    {{ slot.n_total_recipes }} ricette → {{ slot.n_final_candidates }} candidate
+                                </span>
+                                <span v-if="slot.target_protein_category"
+                                      style="font-size:11px; background:#e7f5ff; color:#1971c2; border-radius:4px; padding:2px 6px;">
+                                    {{ slot.target_protein_category }}
+                                </span>
+                                <span style="color:#adb5bd; font-size:12px;">{{ debugExpandTrace===idx ? '▲' : '▼' }}</span>
+                            </div>
+                            <!-- Dettaglio espanso -->
+                            <div v-if="debugExpandTrace===idx" style="padding:10px 14px; font-size:12px; line-height:1.6;">
+                                <div v-if="slot.protein_limit_filtered?.length" style="color:#e03131; margin-bottom:4px;">
+                                    ❌ Protein limit: {{ slot.protein_limit_filtered.join(', ') }}
+                                </div>
+                                <div v-if="slot.used_ids_filtered?.length" style="color:#e67700; margin-bottom:4px;">
+                                    🔁 ID già usati: {{ slot.used_ids_filtered.join(', ') }}
+                                </div>
+                                <div v-if="slot.protein_item_filtered?.length" style="color:#e67700; margin-bottom:4px;">
+                                    🔁 Proteina monotona: {{ slot.protein_item_filtered.join(', ') }}
+                                </div>
+                                <div v-if="slot.protein_cat_excluded?.length" style="color:#862e9c; margin-bottom:4px;">
+                                    🚫 Cat. esclusa (pranzo/cena): {{ slot.protein_cat_excluded.join(', ') }}
+                                </div>
+                                <div v-if="slot.target_protein_narrowed?.length" style="color:#1971c2; margin-bottom:4px;">
+                                    🎯 Non-target rimossi: {{ slot.target_protein_narrowed.join(', ') }}
+                                </div>
+                                <div v-if="slot.scored_recipes?.length" style="margin-top:8px;">
+                                    <strong>Top candidate (score):</strong>
+                                    <div v-for="r in slot.scored_recipes.slice(0,5)" :key="r.id"
+                                         style="display:flex; justify-content:space-between; padding:2px 0; border-bottom:1px solid #f1f3f5;">
+                                        <span :style="r.name===slot.selected_name ? 'font-weight:700;color:#2f9e44;' : ''">
+                                            {{ r.name === slot.selected_name ? '✓ ' : '' }}{{ r.name }}
+                                        </span>
+                                        <span style="color:#868e96; min-width:50px; text-align:right;">{{ r.score }}</span>
+                                    </div>
+                                </div>
+                                <div v-if="slot.hard_constraint_fail?.length" style="margin-top:8px; color:#868e96;">
+                                    Hard-fail: {{ slot.hard_constraint_fail.slice(0,5).join(', ') }}
+                                    <span v-if="slot.hard_constraint_fail.length>5"> +{{ slot.hard_constraint_fail.length-5 }} altri</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Tab: Log LLM -->
+                    <div v-else-if="debugTab==='llm'">
+                        <p v-if="!debugLlmLog.length" class="hint">Nessuna chiamata LLM registrata.</p>
+                        <div v-for="(call, idx) in debugLlmLog" :key="idx"
+                             style="border:1px solid #dee2e6; border-radius:6px; margin-bottom:8px; overflow:hidden;">
+                            <!-- Header -->
+                            <div @click="debugExpandLlm = debugExpandLlm===idx ? null : idx"
+                                 style="display:flex; align-items:center; gap:10px; padding:8px 12px; cursor:pointer; background:#f8f9fa; user-select:none;">
+                                <span style="font-size:11px; color:#868e96; min-width:80px;">{{ call.timestamp?.slice(11,19) }}</span>
+                                <span :style="{
+                                    'font-size':'11px','border-radius':'4px','padding':'2px 6px','font-weight':'600',
+                                    'background': call.status==='ok' ? '#ebfbee' : call.status==='pending' ? '#f8f9fa' : '#fff5f5',
+                                    'color':       call.status==='ok' ? '#2f9e44' : call.status==='pending' ? '#868e96' : '#c92a2a',
+                                }">{{ call.status }}</span>
+                                <span style="font-size:12px; color:#555; min-width:60px;">{{ call.meal_type }}</span>
+                                <span style="flex:1; font-size:13px; font-weight:500;">
+                                    {{ call.parsed_name || '(no parse)' }}
+                                </span>
+                                <span style="font-size:11px; color:#868e96;">
+                                    P:{{ call.protein_target_g }}g C:{{ call.carb_target_g }}g
+                                    <span v-if="call.target_protein_category"> · {{ call.target_protein_category }}</span>
+                                </span>
+                                <span style="color:#adb5bd; font-size:12px;">{{ debugExpandLlm===idx ? '▲' : '▼' }}</span>
+                            </div>
+                            <!-- Dettaglio -->
+                            <div v-if="debugExpandLlm===idx" style="padding:10px 14px;">
+                                <div style="margin-bottom:10px;">
+                                    <strong style="font-size:12px;">Prompt inviato:</strong>
+                                    <pre style="font-size:11px; background:#f1f3f5; padding:8px; border-radius:4px; overflow-x:auto; white-space:pre-wrap; max-height:200px; overflow-y:auto; margin:4px 0 0;">{{ call.prompt }}</pre>
+                                </div>
+                                <div>
+                                    <strong style="font-size:12px;">Risposta LLM:</strong>
+                                    <pre style="font-size:11px; background:#f1f3f5; padding:8px; border-radius:4px; overflow-x:auto; white-space:pre-wrap; max-height:200px; overflow-y:auto; margin:4px 0 0;">{{ call.raw_response || '(vuota)' }}</pre>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                </div>
+            </div>
+
             <!-- ── Modal cambio ricetta (↺) ──────────────────────────── -->
             <div v-if="showModal" class="modal-overlay" @click.self="closeModal">
                 <div class="modal">
@@ -368,6 +498,14 @@ const WeekView = defineComponent({
             // Vista ricetta
             mealRecipeDetail: null,
             loadingRecipe: false,
+            // Debug modal
+            showDebugModal: false,
+            debugTab: 'trace',
+            debugLoading: false,
+            debugTrace: [],
+            debugLlmLog: [],
+            debugExpandTrace: null,
+            debugExpandLlm: null,
         };
     },
     computed: {
@@ -499,8 +637,14 @@ const WeekView = defineComponent({
                 });
                 const applyResp = await fetch('/planner/apply-recipe-option?' + applyParams, { method: 'POST' });
                 if (!applyResp.ok) throw new Error(await applyResp.text());
-                if (fromModal) this.closeMealModal();
                 await this.loadWeekPlan();
+                // Auto-apri il modal con il dettaglio della ricetta appena generata
+                const day = this.weekPlan.find(d => d.date === dateStr);
+                const updatedMeal = day?.meals?.find(m => m.meal_type === mealType);
+                if (updatedMeal) {
+                    this.openMealModal(dateStr, updatedMeal);
+                    await this.loadRecipeDetail();
+                }
                 this.toast.add('✨ Ricetta ExtraFantasy applicata!', 'success');
             } catch (e) {
                 if (fromModal) this.mealModalError = 'Errore: ' + e.message;
@@ -765,6 +909,39 @@ const WeekView = defineComponent({
             } catch (e) {
                 this.mealModalError = 'Errore: ' + e.message;
             }
+        },
+
+        // ── Debug ────────────────────────────────────────────────────────
+        async openDebugModal() {
+            this.showDebugModal = true;
+            this.debugLoading = true;
+            this.debugTrace = [];
+            this.debugLlmLog = [];
+            this.debugExpandTrace = null;
+            this.debugExpandLlm = null;
+            try {
+                const params = new URLSearchParams({
+                    profile_id_A: this.profileA.id,
+                    profile_id_B: this.profileB?.id || '',
+                    start_date: this.startDate,
+                });
+                const [traceResp, logResp] = await Promise.all([
+                    fetch('/planner/debug-generate?' + params),
+                    fetch('/planner/llm-log?last=50'),
+                ]);
+                if (traceResp.ok) this.debugTrace = await traceResp.json();
+                if (logResp.ok) {
+                    const logData = await logResp.json();
+                    this.debugLlmLog = logData.calls || [];
+                }
+            } catch (e) {
+                // silenzioso
+            } finally {
+                this.debugLoading = false;
+            }
+        },
+        closeDebugModal() {
+            this.showDebugModal = false;
         },
 
         // ── Ricetta dettaglio ─────────────────────────────────────────────

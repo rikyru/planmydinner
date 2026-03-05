@@ -434,11 +434,14 @@ class PlannerEngine:
 
         protein_fg = _cat_to_fg.get(target_cat, "proteina") if target_cat else "proteina"
 
-        # Use first option from rules as item_name (helps with grammage matching if needed)
+        # Use first option from rules as item_name (handles both str and {name,quantity,...} formats)
+        def _opt_name(opt):
+            return opt["name"] if isinstance(opt, dict) else opt
+
         carb_options = (rules.carb_options or {}).get(meal_type, ["pasta"])
         protein_options = (rules.protein_options or {}).get(meal_type, ["pollo"])
-        carb_name = carb_options[0] if carb_options else "pasta"
-        protein_name = protein_options[0] if protein_options else "pollo"
+        carb_name = _opt_name(carb_options[0]) if carb_options else "pasta"
+        protein_name = _opt_name(protein_options[0]) if protein_options else "pollo"
 
         items = [
             schemas.PlannedItem(
@@ -514,6 +517,142 @@ class PlannerEngine:
 
         return sequence
 
+    def _pre_generate_catalog(
+        self,
+        rules: schemas.PlanRules,
+        profile_id_A: str,
+        profile_id_B: str,
+    ) -> None:
+        """
+        Pre-generates approved catalog recipes from PlanRules when the Recipe catalog is empty.
+        Iterates over every protein_option × top-3 carb_options from the imported PDF,
+        calls the LLM once per combo, and saves each result as status='approved' so that
+        _get_all_recipes() can pick them up immediately for the weekly plan generation.
+        """
+        if not self.llm_gateway:
+            _LOGGER.warning("[pre-generate] No LLM gateway — skipping catalog pre-generation")
+            return
+
+        profile_A = self._get_user_profile(profile_id_A)
+        profile_B = self._get_user_profile(profile_id_B)
+        if not profile_A:
+            _LOGGER.error(f"[pre-generate] Profile {profile_id_A} not found")
+            return
+        if not profile_B:
+            profile_B = schemas.UserProfile(id=profile_id_B, name="Dummy")
+
+        # Maps protein ingredient keywords to food_group so category limits work correctly.
+        # Keywords sorted by length (longest first) to avoid "pollo" matching "prosciutto crudo di pollo".
+        _FG_KEYWORDS = [
+            ("vitellone", "carne_rossa"), ("manzo", "carne_rossa"), ("bovino", "carne_rossa"),
+            ("maiale", "carne_rossa"), ("agnello", "carne_rossa"), ("cinghiale", "carne_rossa"),
+            ("petto di pollo", "pollo"), ("sovracoscio", "pollo"), ("tacchino", "pollo"),
+            ("prosciutto cotto", "pollo"), ("prosciutto crudo", "pollo"), ("pollo", "pollo"),
+            ("salmone", "pesce"), ("tonno", "pesce"), ("merluzzo", "pesce"),
+            ("orata", "pesce"), ("spigola", "pesce"), ("pesce", "pesce"),
+            ("ceci", "legumi"), ("fagioli", "legumi"), ("lenticchie", "legumi"),
+            ("piselli", "legumi"), ("fave", "legumi"), ("soia", "legumi"),
+            ("uova", "proteina"), ("uovo", "proteina"),
+        ]
+
+        def _name_to_food_group(name: str) -> str:
+            n = name.lower()
+            for kw, fg in _FG_KEYWORDS:
+                if kw in n:
+                    return fg
+            return "proteina"
+
+        def _opt_name(opt) -> str:
+            return opt["name"] if isinstance(opt, dict) else str(opt)
+
+        def _opt_grams(opt) -> float:
+            if isinstance(opt, dict):
+                return float(opt.get("quantity") or 0)
+            return 0.0
+
+        protein_opts = (
+            (rules.protein_options or {}).get("pranzo")
+            or (rules.protein_options or {}).get("cena")
+            or []
+        )
+        carb_opts = (
+            (rules.carb_options or {}).get("pranzo")
+            or (rules.carb_options or {}).get("cena")
+            or []
+        )
+
+        if not protein_opts or not carb_opts:
+            _LOGGER.warning("[pre-generate] PlanRules has no protein_options or carb_options — cannot pre-generate")
+            return
+
+        default_protein_g = float((rules.protein_target or {}).get("pranzo", 120))
+        default_carb_g = float((rules.carb_target or {}).get("pranzo", 80))
+
+        # Each protein × top-3 carbs, max 20 total LLM calls
+        MAX_RECIPES = 20
+        combos = []
+        for popt in protein_opts[:10]:
+            p_name = _opt_name(popt)
+            p_grams = _opt_grams(popt) or default_protein_g
+            for copt in carb_opts[:3]:
+                c_name = _opt_name(copt)
+                c_grams = _opt_grams(copt) or default_carb_g
+                combos.append((p_name, p_grams, c_name, c_grams))
+        combos = combos[:MAX_RECIPES]
+
+        _LOGGER.info(f"[pre-generate] Starting: {len(combos)} recipes from PlanRules via LLM...")
+        generated_names: List[str] = []
+
+        for p_name, p_grams, c_name, c_grams in combos:
+            meal_plan_A = schemas.PlannedMeal(
+                meal_type="pranzo",
+                items=[
+                    schemas.PlannedItem(
+                        item_name=p_name,
+                        food_group="proteina",
+                        quantity=p_grams,
+                        unit="g",
+                    ),
+                    schemas.PlannedItem(
+                        item_name=c_name,
+                        food_group="carboidrati",
+                        quantity=c_grams,
+                        unit="g",
+                    ),
+                ],
+            )
+            meal_plan_B = schemas.PlannedMeal(meal_type="pranzo", items=[])
+
+            result = self._generate_llm_recipe_suggestion(
+                meal_plan_A, meal_plan_B, profile_A, profile_B,
+                pantry_items=[], consumed_entries_A=[], consumed_entries_B=[],
+                used_recipe_names=list(generated_names),
+            )
+
+            if result:
+                # Promote from draft_structured → approved so _get_all_recipes() finds it
+                cand = self.db.query(CandidateRecipe).filter(CandidateRecipe.id == result.recipe_id).first()
+                if cand:
+                    cand.status = "approved"
+                    # Fix protein food_group: LLM always saves "proteina" but we know the real category.
+                    # Without this, protein_cat_limits (e.g. carne_rossa:1) would never apply to these recipes.
+                    correct_fg = _name_to_food_group(p_name)
+                    if correct_fg != "proteina":
+                        import copy as _copy
+                        from sqlalchemy.orm.attributes import flag_modified
+                        updated_content = _copy.deepcopy(cand.recipe_data.get("content", []))
+                        for ing in updated_content:
+                            if isinstance(ing, dict) and ing.get("food_group") == "proteina":
+                                ing["food_group"] = correct_fg
+                                break
+                        cand.recipe_data = {**cand.recipe_data, "content": updated_content}
+                        flag_modified(cand, "recipe_data")
+                    self.db.commit()
+                    generated_names.append(result.name)
+                    _LOGGER.info(f"[pre-generate] Approved: '{result.name}' ({p_name}/{correct_fg} + {c_name})")
+
+        _LOGGER.info(f"[pre-generate] Done: {len(generated_names)}/{len(combos)} recipes approved")
+
     def _generate_from_plan_rules(
         self,
         rules: schemas.PlanRules,
@@ -526,6 +665,11 @@ class PlannerEngine:
         New generation path when PlanRules are available.
         Builds protein sequence from frequency_targets, then suggests recipes slot-by-slot.
         """
+        # Auto-populate catalog from PlanRules constraints if too sparse
+        if len(self._get_all_recipes()) < 5:
+            _LOGGER.info("[PlanRules] Catalog too sparse — pre-generating recipes from PDF constraints via LLM")
+            self._pre_generate_catalog(rules, profile_id_A, profile_id_B or "persona_b")
+
         protein_sequence = self._build_protein_sequence(rules.frequency_targets)
         _LOGGER.info(f"[PlanRules] protein_sequence={protein_sequence}")
 
@@ -545,6 +689,7 @@ class PlannerEngine:
         used_recipe_ids: set = self._load_recent_plan_recipe_ids(profile_id_A, start_date)
         used_fingerprints: set = set()
         used_vegs: List[str] = []
+        recently_selected: List[str] = []  # ordered list for recent-ID buffer in fallback 2
         day_slot = 0
         generated_plan: List[schemas.DailyPlannedMeals] = []
 
@@ -576,6 +721,7 @@ class PlannerEngine:
                     meal_plan_A, meal_plan_B, profile_id_A, profile_id_B, current_date, {},
                     excluded_recipe_ids=used_recipe_ids,
                     excluded_fingerprints=used_fingerprints,
+                    allow_llm=False,
                     **_common_kwargs,
                 )
                 # Fallback 1: rilassa il vincolo fingerprint
@@ -585,15 +731,19 @@ class PlannerEngine:
                         meal_plan_A, meal_plan_B, profile_id_A, profile_id_B, current_date, {},
                         excluded_recipe_ids=used_recipe_ids,
                         excluded_fingerprints=set(),
+                        allow_llm=False,
                         **_common_kwargs,
                     )
-                # Fallback 2: rilassa anche il vincolo ricette già usate
+                # Fallback 2: rilassa anche il vincolo ricette già usate (LLM ammesso solo qui)
                 if not best_recipes:
                     _LOGGER.info(f"[fallback2] {current_date} {meal_type}: rilasso recipe_ids")
+                    # Escludi solo le ricette selezionate di recente (evita ripetizioni immediate)
+                    recent_ids = set(recently_selected[-2:]) if recently_selected else set()
                     best_recipes = self.suggest_recipes_for_meal(
                         meal_plan_A, meal_plan_B, profile_id_A, profile_id_B, current_date, {},
-                        excluded_recipe_ids=set(),
+                        excluded_recipe_ids=recent_ids,
                         excluded_fingerprints=set(),
+                        allow_llm=True,
                         **_common_kwargs,
                     )
 
@@ -625,6 +775,7 @@ class PlannerEngine:
                     ))
 
                     used_recipe_ids.add(best_recipe.recipe_id)
+                    recently_selected.append(best_recipe.recipe_id)
 
                     # Track fingerprint to prevent visually identical meals
                     selected_recipe_obj = next(
@@ -1684,7 +1835,8 @@ class PlannerEngine:
                                  day_slot: int = 0,
                                  _debug_log: Optional[dict] = None,
                                  target_count: int = 3,
-                                 use_llm_fill: bool = False):
+                                 use_llm_fill: bool = False,
+                                 allow_llm: bool = True):
         
         profile_A = self._get_user_profile(profile_id_A)
         profile_B = self._get_user_profile(profile_id_B)
@@ -1843,6 +1995,29 @@ class PlannerEngine:
                     f"excluding items used ≥2 times: {over_limit}"
                 )
 
+        # Soft filter: prefer balanced meals (protein + carb)
+        # If composed (protein+carb) recipes exist in pool → keep only those.
+        # If none exist BUT we still have ID exclusions → return empty to force fallback 2,
+        #   where ID restrictions are lifted and composed options reappear.
+        # If none exist AND no ID restrictions (already fallback 2) → accept whatever is left.
+        _prot_norm = {"proteina", "proteine", "pollo", "pesce", "carne_rossa", "legum"}
+        _carb_norm = {"carboidrat", "carboidrato"}
+
+        def _is_composed(recipe):
+            ings = recipe.content.components if recipe.is_composed_dish else recipe.content
+            fgs = {self._normalize_food_group(getattr(i, "food_group", "")) for i in ings}
+            return bool(fgs & _prot_norm) and bool(fgs & _carb_norm)
+
+        composed_only = [r for r in valid_recipes if _is_composed(r["recipe"])]
+        if composed_only:
+            valid_recipes = composed_only
+            _LOGGER.info(f"[composed-filter] Narrowed to {len(composed_only)} balanced (protein+carb) recipe(s)")
+        elif excluded_recipe_ids:
+            # No composed in current filtered pool, but we have ID exclusions.
+            # Return empty to trigger fallback 2 (which relaxes ID exclusions → composed reappear).
+            _LOGGER.info("[composed-filter] No balanced recipes in pool (all ID-excluded); returning empty to force fallback")
+            valid_recipes = []
+
         # Load veg_target from PlanRules for the soft constraint
         _veg_min_grams: float = 0.0
         _veg_portion_overrides: Optional[Dict[str, float]] = None
@@ -1871,6 +2046,14 @@ class PlannerEngine:
                 min_portions = _veg_min_grams / PlannerEngine._VEG_DEFAULT_PORTION_GRAMS
                 if portions < min_portions:
                     score -= 0.2
+
+            # Bonus for composed meals (protein + carb) — prefer balanced over pure-carb/pure-protein
+            _ings = getattr(dosed_recipe.content, "components", None) or dosed_recipe.content
+            _fgs = {self._normalize_food_group(getattr(i, "food_group", "")) for i in _ings}
+            _prot_fgs = {"proteina", "proteine", "pollo", "pesce", "carne_rossa", "legum"}
+            _carb_fgs = {"carboidrat", "carboidrato"}
+            if _fgs & _prot_fgs and _fgs & _carb_fgs:
+                score += 0.5
 
             filtered_recipes.append({
                 "recipe": dosed_recipe,
@@ -1913,7 +2096,7 @@ class PlannerEngine:
             ))
 
         # Trigger LLM if: no candidates, OR target protein unmet, OR fill mode (always in fantasy, or catalog insufficient)
-        need_llm = (
+        need_llm = allow_llm and (
             not candidate_options
             or target_category_unmet
             or use_llm_fill  # fantasy_mode: always call LLM to prepend creative option
@@ -1977,11 +2160,11 @@ class PlannerEngine:
                 if not skip:
                     llm_options.append(llm_suggestion)
 
-            # Merge: if target unmet, LLM goes first; otherwise catalog first then LLM fill
-            if target_category_unmet and candidate_options:
-                return (llm_options + candidate_options)[:target_count]
+            # Merge: LLM first when ExtraFantasy mode or target category unmet; catalog first otherwise
             if not candidate_options:
                 return llm_options[:target_count]
+            if use_llm_fill or target_category_unmet:
+                return (llm_options + candidate_options)[:target_count]
             return (candidate_options + llm_options)[:target_count]
 
         return candidate_options

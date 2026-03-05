@@ -133,6 +133,7 @@ class PlanRules(Base):
     frequency_targets = Column(JSON)    # {"carne_bianca": {"min":2,"max":3,"hard_max":null}}
     veg_target = Column(JSON, nullable=True)  # {"min_grams": 150, "portion_grams": {"insalata mista": 80, ...}}
     free_meal_quota = Column(Integer, nullable=True)  # max pasti liberi a settimana
+    meal_slots = Column(JSON, nullable=True)           # struttura giornaliera tipo (colazione, spuntini, ecc.)
 
 
 class AppSettings(Base):
@@ -188,6 +189,7 @@ def create_db_and_tables():
         for table, col, col_type in [
             ("plan_rules", "veg_target", "JSON"),
             ("plan_rules", "free_meal_quota", "INTEGER"),
+            ("plan_rules", "meal_slots", "JSON"),
         ]:
             try:
                 conn.execute(__import__("sqlalchemy").text(
