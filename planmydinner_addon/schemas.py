@@ -244,4 +244,5 @@ class AppSettings(BaseModel):
     llm_base_url: Optional[str] = None
     llm_temperature: Optional[float] = None
     llm_custom_rules: Optional[str] = None
+    llm_generation_mode: Optional[str] = "per_slot"  # "off" | "per_slot" | "full_week"
     has_api_key: bool = False               # True if api_key is stored in DB

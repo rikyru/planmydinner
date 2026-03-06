@@ -429,6 +429,126 @@ class LLMGateway:
             _LOGGER.error(f"Errore in generate_structured_meal: {e}")
             return None
 
+    def generate_full_week_plan_json(
+        self,
+        rules_dict: Dict[str, Any],
+        profile_id_A: str,
+        profile_id_B: str,
+        start_date: str,
+        custom_rules: str = "",
+        use_cache: bool = True,
+    ) -> Optional[str]:
+        """
+        Chiama il LLM UNA SOLA VOLTA per generare l'intero piano settimanale (7 giorni × 2 pasti).
+        Restituisce una stringa JSON con la struttura: {"daily_plans": [...]} conforme a DailyPlannedMeals.
+        Usato quando llm_generation_mode = "full_week".
+        """
+        freq_text = ""
+        if rules_dict.get("frequency_targets"):
+            lines = []
+            for cat, tgt in rules_dict["frequency_targets"].items():
+                lines.append(f"  - {cat}: min {tgt.get('min',1)}, max {tgt.get('max',3)} volte/settimana")
+            freq_text = "\n".join(lines)
+
+        carb_text = json.dumps(rules_dict.get("carb_target", {"pranzo": 80, "cena": 60}), ensure_ascii=False)
+        prot_text = json.dumps(rules_dict.get("protein_target", {"pranzo": 150, "cena": 120}), ensure_ascii=False)
+
+        custom_block = ""
+        if custom_rules.strip():
+            custom_block = f"\nRegole aggiuntive dell'utente:\n{custom_rules}\n"
+
+        prompt = f"""Sei un pianificatore nutrizionale esperto. Genera un piano settimanale completo per 7 giorni a partire da {start_date}.
+
+Profilo principale: {profile_id_A}, profilo secondario: {profile_id_B}.
+
+Vincoli nutritivi:
+- Grammi carboidrati target: {carb_text}
+- Grammi proteine target: {prot_text}
+
+Frequenze proteiche settimanali (distribuite su 14 pasti):
+{freq_text if freq_text else "  Nessuna frequenza specifica, sii vario."}
+{custom_block}
+Regole generali:
+- Genera esattamente 7 giorni, ognuno con pranzo e cena.
+- Non ripetere la stessa ricetta nella settimana.
+- Alterna le fonti proteiche (pollo, pesce, carne rossa, legumi, uova, latticini).
+- Includi sempre una verdura per ogni pasto.
+- Difficulty deve essere uno tra: facile, media, difficile, sconosciuto.
+- food_group deve essere uno tra: carboidrati, proteine, grassi, verdure, frutta, latticini, altro.
+- Le quantità devono essere in grammi (unit: "g").
+
+Rispondi SOLO con un JSON valido, senza testo aggiuntivo, con questa struttura esatta:
+{{
+  "daily_plans": [
+    {{
+      "date": "YYYY-MM-DD",
+      "meals": [
+        {{
+          "meal_type": "pranzo",
+          "recipe_name": "Nome ricetta",
+          "difficulty": "facile",
+          "total_time_minutes": 30,
+          "ingredients": [
+            {{"name": "pasta", "food_group": "carboidrati", "grams_{profile_id_A}": 80, "grams_{profile_id_B}": 70}},
+            {{"name": "pollo", "food_group": "proteine", "grams_{profile_id_A}": 150, "grams_{profile_id_B}": 130}},
+            {{"name": "insalata", "food_group": "verdure", "grams_{profile_id_A}": 80, "grams_{profile_id_B}": 80}}
+          ]
+        }},
+        {{
+          "meal_type": "cena",
+          "recipe_name": "Nome ricetta",
+          "difficulty": "facile",
+          "total_time_minutes": 25,
+          "ingredients": [
+            {{"name": "riso", "food_group": "carboidrati", "grams_{profile_id_A}": 70, "grams_{profile_id_B}": 60}},
+            {{"name": "salmone", "food_group": "proteine", "grams_{profile_id_A}": 130, "grams_{profile_id_B}": 120}},
+            {{"name": "spinaci", "food_group": "verdure", "grams_{profile_id_A}": 100, "grams_{profile_id_B}": 100}}
+          ]
+        }}
+      ]
+    }}
+  ]
+}}"""
+
+        cache_key = self._cache_key("full_week_plan", profile_id_A, profile_id_B, start_date,
+                                    json.dumps(rules_dict, sort_keys=True), custom_rules)
+        if use_cache and cache_key in self._cache:
+            _LOGGER.info("LLM cache hit: generate_full_week_plan_json")
+            return self._cache[cache_key]
+
+        if not self._client:
+            _LOGGER.error("LLM client non inizializzato. Impossibile generare piano settimanale.")
+            return None
+
+        messages = [
+            {"role": "system", "content": "Sei un assistente nutrizionale esperto. Rispondi SOLO con JSON valido, senza testo aggiuntivo."},
+            {"role": "user", "content": prompt},
+        ]
+
+        try:
+            if self.provider == "openai":
+                response = self._client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    temperature=self.temperature,
+                    response_format={"type": "json_object"},
+                )
+                raw = response.choices[0].message.content
+            elif self.provider == "ollama":
+                response = self._client.chat(model=self.model, messages=messages)
+                raw = response["message"]["content"]
+            else:
+                _LOGGER.error(f"Provider LLM non supportato: {self.provider}")
+                return None
+
+            if raw and use_cache:
+                self._cache[cache_key] = raw
+                self._save_cache()
+            return raw
+        except Exception as e:
+            _LOGGER.error(f"Errore in generate_full_week_plan_json: {e}")
+            return None
+
     def generate_meal_plan_json(self, prompt: str, use_cache: bool = True) -> Optional[str]:
         """
         Chiama il LLM per il parsing di un piano alimentare da testo (usato da import PDF/testo).

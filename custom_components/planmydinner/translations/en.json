@@ -1,0 +1,22 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Plan My Dinner",
+        "description": "Connect to your Plan My Dinner add-on.",
+        "data": {
+          "host": "Host",
+          "port": "Port",
+          "profile_id_A": "Profile A (primary)",
+          "profile_id_B": "Profile B (optional)"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Cannot connect to the add-on. Check host and port."
+    },
+    "abort": {
+      "already_configured": "This instance is already configured."
+    }
+  }
+}

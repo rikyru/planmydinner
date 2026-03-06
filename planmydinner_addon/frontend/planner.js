@@ -23,6 +23,11 @@ const WeekView = defineComponent({
                                 class="btn-regenerate sidebar-btn">
                             {{ generating ? 'Generando...' : 'Rigenera' }}
                         </button>
+                        <button @click.stop="generateWithAI" :disabled="generating"
+                                class="btn-ai sidebar-btn"
+                                title="Genera il piano usando il LLM (modalità configurabile in Impostazioni)">
+                            {{ generating ? 'Generando...' : '🤖 Genera con AI' }}
+                        </button>
                         <button @click.stop="generateWeek(true)" :disabled="generating"
                                 class="btn-fantasy sidebar-btn"
                                 title="Usa LLM per inventare ricette creative ad ogni slot">
@@ -51,6 +56,10 @@ const WeekView = defineComponent({
                     <div style="display:flex; gap:8px; flex-wrap:wrap;">
                         <button @click.stop="generateWeek(false)" :disabled="generating" class="btn-primary">
                             {{ generating ? 'Generazione...' : 'Genera piano 7 giorni' }}
+                        </button>
+                        <button @click.stop="generateWithAI" :disabled="generating" class="btn-ai"
+                                title="Genera il piano usando il LLM (modalità configurabile in Impostazioni)">
+                            {{ generating ? 'Generando...' : '🤖 Genera con AI' }}
                         </button>
                         <button @click.stop="generateWeek(true)" :disabled="generating" class="btn-fantasy"
                                 title="Usa LLM per inventare ricette creative ad ogni slot">
@@ -314,6 +323,11 @@ const WeekView = defineComponent({
 
                     <!-- Tabs -->
                     <div style="display:flex; gap:6px; margin-bottom:14px; border-bottom:2px solid #dee2e6; padding-bottom:6px;">
+                        <button @click="debugTab='status'"
+                                :style="debugTab==='status' ? 'font-weight:700;border-bottom:2px solid #339af0;color:#1971c2;' : 'color:#495057;'"
+                                style="background:none;border:none;cursor:pointer;font-size:14px;padding:4px 8px;">
+                            📋 Stato sistema
+                        </button>
                         <button @click="debugTab='trace'"
                                 :style="debugTab==='trace' ? 'font-weight:700;border-bottom:2px solid #339af0;color:#1971c2;' : 'color:#495057;'"
                                 style="background:none;border:none;cursor:pointer;font-size:14px;padding:4px 8px;">
@@ -327,6 +341,119 @@ const WeekView = defineComponent({
                     </div>
 
                     <div v-if="debugLoading" class="loading">Caricamento dati debug...</div>
+
+                    <!-- Tab: Stato sistema -->
+                    <div v-else-if="debugTab==='status'">
+                        <div v-if="!debugStatus" class="hint">Nessun dato. Apri il debug per caricare.</div>
+                        <template v-else>
+
+                            <!-- Path generazione -->
+                            <div style="margin-bottom:14px; padding:10px 14px; border-radius:8px;"
+                                 :style="debugStatus.generation_path==='none' ? 'background:#fff5f5;border:1px solid #ffc9c9;' :
+                                         debugStatus.generation_path==='plan_rules' ? 'background:#ebfbee;border:1px solid #b2f2bb;' :
+                                         'background:#fff9db;border:1px solid #ffec99;'">
+                                <strong>Path di generazione:</strong>
+                                <span style="margin-left:8px; font-size:14px;"
+                                      :style="debugStatus.generation_path==='none' ? 'color:#c92a2a;' :
+                                              debugStatus.generation_path==='plan_rules' ? 'color:#2f9e44;' : 'color:#e67700;'">
+                                    {{ debugStatus.generation_path === 'plan_rules' ? '✅ PlanRules (importato da PDF)' :
+                                       debugStatus.generation_path === 'legacy'     ? '⚠️ Legacy StructuredMealPlan' :
+                                                                                      '❌ Nessun piano — generazione impossibile' }}
+                                </span>
+                            </div>
+
+                            <!-- PlanRules -->
+                            <div style="margin-bottom:14px;">
+                                <strong style="font-size:13px;">📐 PlanRules</strong>
+                                <div v-if="!debugStatus.plan_rules" style="color:#868e96; font-size:13px; margin-top:4px;">
+                                    Non trovate. Importa un piano PDF prima di generare.
+                                </div>
+                                <div v-else style="font-size:12px; margin-top:6px; display:grid; grid-template-columns:1fr 1fr; gap:6px;">
+                                    <div style="background:#f8f9fa; border-radius:6px; padding:8px;">
+                                        <div style="color:#868e96; font-size:11px; margin-bottom:4px;">Importato</div>
+                                        <div>{{ debugStatus.plan_rules.imported_at?.slice(0,16).replace('T',' ') }}</div>
+                                    </div>
+                                    <div style="background:#f8f9fa; border-radius:6px; padding:8px;">
+                                        <div style="color:#868e96; font-size:11px; margin-bottom:4px;">Frequenze proteiche</div>
+                                        <div v-if="!debugStatus.plan_rules.frequency_targets || Object.keys(debugStatus.plan_rules.frequency_targets).length===0" style="color:#c92a2a;">
+                                            ⚠️ Nessuna — planner non sa come distribuire proteine
+                                        </div>
+                                        <div v-for="(tgt, cat) in debugStatus.plan_rules.frequency_targets" :key="cat">
+                                            <strong>{{ cat }}</strong>: {{ tgt.min }}–{{ tgt.max }}x/sett
+                                            <span v-if="tgt.hard_max"> (hard max {{ tgt.hard_max }})</span>
+                                        </div>
+                                    </div>
+                                    <div style="background:#f8f9fa; border-radius:6px; padding:8px;">
+                                        <div style="color:#868e96; font-size:11px; margin-bottom:4px;">Carbo target (g)</div>
+                                        <div v-for="(v, k) in debugStatus.plan_rules.carb_target" :key="k">{{ k }}: {{ v }}g</div>
+                                        <div v-if="!debugStatus.plan_rules.carb_target" style="color:#c92a2a;">⚠️ Non impostato</div>
+                                    </div>
+                                    <div style="background:#f8f9fa; border-radius:6px; padding:8px;">
+                                        <div style="color:#868e96; font-size:11px; margin-bottom:4px;">Proteina target (g)</div>
+                                        <div v-for="(v, k) in debugStatus.plan_rules.protein_target" :key="k">{{ k }}: {{ v }}g</div>
+                                        <div v-if="!debugStatus.plan_rules.protein_target" style="color:#c92a2a;">⚠️ Non impostato</div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Sequenza proteica -->
+                            <div style="margin-bottom:14px;">
+                                <strong style="font-size:13px;">🔗 Sequenza proteica (14 slot)</strong>
+                                <div v-if="!debugStatus.protein_sequence_14?.length" style="color:#868e96; font-size:13px; margin-top:4px;">
+                                    Non calcolabile (mancano frequency_targets).
+                                </div>
+                                <div v-else style="display:flex; flex-wrap:wrap; gap:4px; margin-top:6px;">
+                                    <template v-for="(cat, i) in debugStatus.protein_sequence_14" :key="i">
+                                        <div style="font-size:11px; padding:3px 7px; border-radius:4px; background:#e7f5ff; color:#1971c2;">
+                                            <span style="color:#868e96;">{{ i%2===0 ? '🌞' : '🌙' }}{{ Math.floor(i/2)+1 }}</span>
+                                            {{ cat || '—' }}
+                                        </div>
+                                    </template>
+                                </div>
+                            </div>
+
+                            <!-- Pool ricette -->
+                            <div style="margin-bottom:14px;">
+                                <strong style="font-size:13px;">📚 Pool ricette</strong>
+                                <div style="display:flex; gap:10px; margin-top:6px; flex-wrap:wrap;">
+                                    <div style="background:#f8f9fa; border-radius:6px; padding:8px 12px; font-size:12px;">
+                                        Totale: <strong :style="debugStatus.recipe_pool.total < 5 ? 'color:#c92a2a;' : 'color:#2f9e44;'">
+                                            {{ debugStatus.recipe_pool.total }}
+                                        </strong>
+                                        <span v-if="debugStatus.recipe_pool.total < 5" style="color:#c92a2a;"> ⚠️ Troppo poche — usa seed o bulk import</span>
+                                    </div>
+                                    <div style="background:#f8f9fa; border-radius:6px; padding:8px 12px; font-size:12px;">
+                                        Manuali: <strong>{{ debugStatus.recipe_pool.manual }}</strong>
+                                        <span style="color:#868e96;"> (+1.5 boost)</span>
+                                    </div>
+                                    <div v-for="(n, diff) in debugStatus.recipe_pool.by_difficulty" :key="diff"
+                                         style="background:#f8f9fa; border-radius:6px; padding:8px 12px; font-size:12px;">
+                                        {{ diff }}: {{ n }}
+                                    </div>
+                                </div>
+                                <details style="margin-top:8px; font-size:12px; color:#495057;">
+                                    <summary style="cursor:pointer; color:#1971c2;">Mostra nomi ({{ debugStatus.recipe_pool.names_sample?.length }})</summary>
+                                    <div style="margin-top:6px; display:flex; flex-wrap:wrap; gap:4px;">
+                                        <span v-for="name in debugStatus.recipe_pool.names_sample" :key="name"
+                                              style="background:#f1f3f5; border-radius:4px; padding:2px 6px;">{{ name }}</span>
+                                    </div>
+                                </details>
+                            </div>
+
+                            <!-- Candidate Recipes -->
+                            <div style="margin-bottom:14px;">
+                                <strong style="font-size:13px;">🧪 CandidateRecipe (generate da LLM)</strong>
+                                <div style="display:flex; gap:8px; margin-top:6px; flex-wrap:wrap;">
+                                    <div v-if="debugStatus.candidate_recipes.total === 0" style="color:#868e96; font-size:12px;">Nessuna.</div>
+                                    <div v-for="(n, status) in debugStatus.candidate_recipes.by_status" :key="status"
+                                         style="background:#f8f9fa; border-radius:6px; padding:8px 12px; font-size:12px;">
+                                        {{ status }}: <strong>{{ n }}</strong>
+                                    </div>
+                                </div>
+                            </div>
+
+                        </template>
+                    </div>
 
                     <!-- Tab: Trace generazione -->
                     <div v-else-if="debugTab==='trace'">
@@ -500,8 +627,9 @@ const WeekView = defineComponent({
             loadingRecipe: false,
             // Debug modal
             showDebugModal: false,
-            debugTab: 'trace',
+            debugTab: 'status',
             debugLoading: false,
+            debugStatus: null,
             debugTrace: [],
             debugLlmLog: [],
             debugExpandTrace: null,
@@ -583,6 +711,43 @@ const WeekView = defineComponent({
                 if (!resp.ok) throw new Error(await resp.text());
                 this.weekPlan = await resp.json();
                 this.toast.add(fantasyMode ? '✨ Piano ExtraFantasy generato!' : 'Piano generato!', 'success');
+            } catch (e) {
+                this.error = 'Errore: ' + e.message;
+            } finally {
+                this.generating = false;
+            }
+        },
+        async generateWithAI() {
+            if (!this.profileA || !this.profileB) return;
+            // Read mode from settings to show appropriate label
+            let modeLabel = 'AI';
+            try {
+                const s = await fetch('/settings/');
+                if (s.ok) {
+                    const sd = await s.json();
+                    const modeMap = { off: 'algoritmo', per_slot: 'AI (14 chiamate)', full_week: 'AI (1 chiamata)' };
+                    modeLabel = modeMap[sd.llm_generation_mode] || 'AI';
+                    if (sd.llm_generation_mode === 'off') {
+                        this.toast.add('Modalità AI disattivata. Attivala in Impostazioni → Modalità generazione AI.', 'error');
+                        return;
+                    }
+                }
+            } catch {}
+
+            this.generating = true;
+            this.error = null;
+            try {
+                const params = new URLSearchParams({
+                    profile_id_A: this.profileA.id,
+                    profile_id_B: this.profileB.id,
+                    current_date: this.startDate,
+                    fantasy_mode: false,
+                    // no ai_mode param: backend reads it from AppSettings
+                });
+                const resp = await fetch('/planner/generate-week?' + params, { method: 'POST' });
+                if (!resp.ok) throw new Error(await resp.text());
+                this.weekPlan = await resp.json();
+                this.toast.add(`🤖 Piano generato con ${modeLabel}!`, 'success');
             } catch (e) {
                 this.error = 'Errore: ' + e.message;
             } finally {
@@ -915,6 +1080,7 @@ const WeekView = defineComponent({
         async openDebugModal() {
             this.showDebugModal = true;
             this.debugLoading = true;
+            this.debugStatus = null;
             this.debugTrace = [];
             this.debugLlmLog = [];
             this.debugExpandTrace = null;
@@ -925,10 +1091,12 @@ const WeekView = defineComponent({
                     profile_id_B: this.profileB?.id || '',
                     start_date: this.startDate,
                 });
-                const [traceResp, logResp] = await Promise.all([
+                const [statusResp, traceResp, logResp] = await Promise.all([
+                    fetch('/planner/debug-status?' + params),
                     fetch('/planner/debug-generate?' + params),
                     fetch('/planner/llm-log?last=50'),
                 ]);
+                if (statusResp.ok) this.debugStatus = await statusResp.json();
                 if (traceResp.ok) this.debugTrace = await traceResp.json();
                 if (logResp.ok) {
                     const logData = await logResp.json();

@@ -98,11 +98,30 @@ def generate_weekly_plan(
     profile_id_B: str,
     current_date: date = date.today(),
     fantasy_mode: bool = False,
+    ai_mode: Optional[str] = None,   # "off" | "per_slot" | "full_week" | None (use setting)
     db: Session = Depends(get_db)
 ):
-    """Force-generate a 7-day plan from current_date and save it."""
+    """Force-generate a 7-day plan from current_date and save it.
+
+    ai_mode: if None, reads llm_generation_mode from AppSettings.
+    Pass ai_mode explicitly to override the stored setting.
+    """
+    # Resolve effective ai_mode: explicit param > stored setting
+    effective_ai_mode = ai_mode
+    if effective_ai_mode is None:
+        from ..database import AppSettings as AppSettingsDB
+        settings_row = db.query(AppSettingsDB).filter(AppSettingsDB.id == 1).first()
+        effective_ai_mode = (settings_row.llm_generation_mode if settings_row else None) or "off"
+
+    # "off" means pure algorithmic (no ai_mode override)
+    planner_ai_mode = None if effective_ai_mode == "off" else effective_ai_mode
+
     planner = PlannerEngine(db, llm_gateway=request.app.state.llm_gateway)
-    weekly_plan = planner.generate_weekly_plan(profile_id_A, profile_id_B, current_date, fantasy_mode=fantasy_mode)
+    weekly_plan = planner.generate_weekly_plan(
+        profile_id_A, profile_id_B, current_date,
+        fantasy_mode=fantasy_mode,
+        ai_mode=planner_ai_mode,
+    )
     if not weekly_plan:
         raise HTTPException(status_code=404, detail="Could not generate a weekly plan.")
     _save_generated_plan(db, profile_id_A, profile_id_B, current_date, weekly_plan)
@@ -271,6 +290,101 @@ def get_plan_rules(
         for r in (plan.rotation_rules or [])
     ]
     return {"rotation_rules": rules, "grammi_targets": grammi_targets, "plan_rules": plan_rules_data}
+
+
+@router.get("/debug-status")
+def debug_status(
+    profile_id_A: str,
+    profile_id_B: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    """
+    Diagnostica pre-generazione: mostra lo stato di PlanRules, pool ricette,
+    CandidateRecipe, piano strutturale legacy, e la sequenza proteica che verrebbe
+    costruita. Utile per capire perché il piano è vuoto o monotono.
+    """
+    from ..planner import PlannerEngine
+
+    planner = PlannerEngine(db)
+
+    # ── 1. PlanRules ──────────────────────────────────────────────────────
+    plan_rules_db = db.query(database.PlanRules).filter(
+        database.PlanRules.profile_id == profile_id_A
+    ).order_by(database.PlanRules.imported_at.desc()).first()
+
+    plan_rules_info = None
+    protein_sequence = []
+    if plan_rules_db:
+        freq = plan_rules_db.frequency_targets or {}
+        protein_sequence = PlannerEngine._build_protein_sequence(freq, n_slots=14)
+        plan_rules_info = {
+            "id": plan_rules_db.id,
+            "imported_at": plan_rules_db.imported_at,
+            "carb_target": plan_rules_db.carb_target,
+            "protein_target": plan_rules_db.protein_target,
+            "frequency_targets": freq,
+            "veg_target": plan_rules_db.veg_target,
+            "free_meal_quota": plan_rules_db.free_meal_quota,
+            "carb_options_count": len(plan_rules_db.carb_options or {}),
+            "protein_options_count": len(plan_rules_db.protein_options or {}),
+        }
+
+    # ── 2. Legacy StructuredMealPlan ──────────────────────────────────────
+    legacy_plan = planner._get_latest_meal_plan(profile_id_A)
+    legacy_info = None
+    if legacy_plan:
+        legacy_info = {
+            "id": legacy_plan.id,
+            "start_date": legacy_plan.start_date,
+            "days": len(legacy_plan.daily_plans),
+            "rotation_rules": len(legacy_plan.rotation_rules or []),
+        }
+
+    # ── 3. Generation path ────────────────────────────────────────────────
+    generation_path = "plan_rules" if plan_rules_db else ("legacy" if legacy_plan else "none")
+
+    # ── 4. Recipe pool ────────────────────────────────────────────────────
+    all_recipes = planner._get_all_recipes()
+    manual_count = sum(1 for r in all_recipes if "true" in (r.tags or {}).get("manual", []))
+    food_groups_found: Dict[str, int] = {}
+    for r in all_recipes:
+        try:
+            content = r.content if isinstance(r.content, list) else []
+            for ing in content:
+                fg = getattr(ing, "food_group", None) or (ing.get("food_group") if isinstance(ing, dict) else None)
+                if fg == "proteine":
+                    # Try to get protein item name for category mapping
+                    pass
+        except Exception:
+            pass
+    difficulties: Dict[str, int] = {}
+    for r in all_recipes:
+        difficulties[r.difficulty] = difficulties.get(r.difficulty, 0) + 1
+
+    recipe_names = [r.name for r in all_recipes[:30]]
+
+    # ── 5. CandidateRecipe ────────────────────────────────────────────────
+    candidates = db.query(database.CandidateRecipe).all()
+    candidate_by_status: Dict[str, int] = {}
+    for c in candidates:
+        candidate_by_status[c.status] = candidate_by_status.get(c.status, 0) + 1
+
+    return {
+        "generation_path": generation_path,
+        "plan_rules": plan_rules_info,
+        "legacy_plan": legacy_info,
+        "protein_sequence_14": protein_sequence,
+        "recipe_pool": {
+            "total": len(all_recipes),
+            "manual": manual_count,
+            "by_difficulty": difficulties,
+            "names_sample": recipe_names,
+        },
+        "candidate_recipes": {
+            "total": len(candidates),
+            "by_status": candidate_by_status,
+        },
+    }
 
 
 @router.put("/rules/{profile_id}")

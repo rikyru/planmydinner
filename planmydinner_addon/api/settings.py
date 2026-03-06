@@ -30,6 +30,7 @@ def get_settings(db: Session = Depends(get_db)):
         llm_base_url=row.llm_base_url,
         llm_temperature=row.llm_temperature,
         llm_custom_rules=row.llm_custom_rules,
+        llm_generation_mode=row.llm_generation_mode or "off",
         has_api_key=bool(row.llm_api_key),
     )
 
@@ -51,6 +52,8 @@ def update_settings(body: schemas.AppSettings, request: Request, db: Session = D
         row.llm_temperature = body.llm_temperature
     if body.llm_custom_rules is not None:
         row.llm_custom_rules = body.llm_custom_rules
+    if body.llm_generation_mode is not None:
+        row.llm_generation_mode = body.llm_generation_mode
 
     db.commit()
     db.refresh(row)
@@ -73,6 +76,7 @@ def update_settings(body: schemas.AppSettings, request: Request, db: Session = D
         llm_base_url=row.llm_base_url,
         llm_temperature=row.llm_temperature,
         llm_custom_rules=row.llm_custom_rules,
+        llm_generation_mode=row.llm_generation_mode or "off",
         has_api_key=bool(row.llm_api_key),
     )
 

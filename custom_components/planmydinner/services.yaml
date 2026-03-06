@@ -1,0 +1,112 @@
+generate_week:
+  name: Generate Week
+  description: Generate a weekly meal plan using the algorithmic planner.
+  fields:
+    profile_id_A:
+      name: Profile A
+      description: Primary profile ID (default from config entry).
+      example: "persona_a"
+      selector:
+        text:
+    profile_id_B:
+      name: Profile B
+      description: Secondary profile ID (optional).
+      example: "persona_b"
+      selector:
+        text:
+    current_date:
+      name: Date
+      description: Week start date in YYYY-MM-DD format (default today).
+      example: "2026-03-10"
+      selector:
+        text:
+
+generate_week_ai:
+  name: Generate Week with AI
+  description: Generate a weekly meal plan using AI (mode configured in settings).
+  fields:
+    profile_id_A:
+      name: Profile A
+      description: Primary profile ID (default from config entry).
+      example: "persona_a"
+      selector:
+        text:
+    profile_id_B:
+      name: Profile B
+      description: Secondary profile ID (optional).
+      example: "persona_b"
+      selector:
+        text:
+    current_date:
+      name: Date
+      description: Week start date in YYYY-MM-DD format (default today).
+      example: "2026-03-10"
+      selector:
+        text:
+    ai_mode:
+      name: AI Mode
+      description: Override AI mode (per_slot or full_week). Leave empty to use app settings.
+      example: "per_slot"
+      selector:
+        select:
+          options:
+            - "per_slot"
+            - "full_week"
+
+mark_consumed:
+  name: Mark Meal Consumed
+  description: Mark a planned meal as consumed.
+  fields:
+    profile_id:
+      name: Profile
+      description: Profile ID (default profile A from config entry).
+      example: "persona_a"
+      selector:
+        text:
+    meal_date:
+      name: Date
+      description: Date of the meal in YYYY-MM-DD format (default today).
+      example: "2026-03-06"
+      selector:
+        text:
+    meal_type:
+      name: Meal Type
+      description: pranzo or cena.
+      example: "pranzo"
+      required: true
+      selector:
+        select:
+          options:
+            - "pranzo"
+            - "cena"
+    recipe_id:
+      name: Recipe ID
+      description: ID of the recipe to mark as consumed.
+      example: "abc123"
+      required: true
+      selector:
+        text:
+
+add_pantry_item:
+  name: Add Pantry Item
+  description: Add an item to the pantry.
+  fields:
+    item:
+      name: Item
+      description: Pantry item data (name, quantity, unit, category).
+      example: '{"name": "Pasta", "quantity": 500, "unit": "g", "category": "cereali"}'
+      required: true
+      selector:
+        object:
+
+remove_pantry_item:
+  name: Remove Pantry Item
+  description: Remove an item from the pantry by ID.
+  fields:
+    item_id:
+      name: Item ID
+      description: ID of the pantry item to remove.
+      example: "abc123"
+      required: true
+      selector:
+        text:

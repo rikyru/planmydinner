@@ -1,11 +1,24 @@
 """Config flow for Plan My Dinner integration."""
+from __future__ import annotations
+import aiohttp
 import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.const import CONF_HOST, CONF_PORT
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .const import DOMAIN
+from .const import DOMAIN, CONF_PROFILE_A, CONF_PROFILE_B
 
-class ConfigFlow(config_entries.ConfigFlow, domain="planmydinner"):
+STEP_USER_SCHEMA = vol.Schema(
+    {
+        vol.Required(CONF_HOST, default="localhost"): str,
+        vol.Required(CONF_PORT, default=8000): int,
+        vol.Required(CONF_PROFILE_A, default="persona_a"): str,
+        vol.Optional(CONF_PROFILE_B, default="persona_b"): str,
+    }
+)
+
+
+class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Plan My Dinner."""
 
     VERSION = 1
@@ -15,25 +28,29 @@ class ConfigFlow(config_entries.ConfigFlow, domain="planmydinner"):
         errors = {}
 
         if user_input is not None:
-            # Here you would typically validate the connection to the add-on
-            # For now, we just accept the input.
-            # Example validation:
-            # try:
-            #     await self.hass.async_add_executor_job(
-            #         my_api_client.test_connection, user_input[CONF_HOST], user_input[CONF_PORT]
-            #     )
-            # except CannotConnect:
-            #     errors["base"] = "cannot_connect"
-            # else:
-            return self.async_create_entry(title="Plan My Dinner", data=user_input)
+            host = user_input[CONF_HOST]
+            port = user_input[CONF_PORT]
+            session = async_get_clientsession(self.hass)
+            try:
+                async with session.get(
+                    f"http://{host}:{port}/profiles",
+                    timeout=aiohttp.ClientTimeout(total=5),
+                ) as resp:
+                    if resp.status >= 500:
+                        errors["base"] = "cannot_connect"
+            except Exception:
+                errors["base"] = "cannot_connect"
+
+            if not errors:
+                await self.async_set_unique_id(f"{host}:{port}")
+                self._abort_if_unique_id_configured()
+                return self.async_create_entry(
+                    title=f"Plan My Dinner ({host}:{port})",
+                    data=user_input,
+                )
 
         return self.async_show_form(
             step_id="user",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(CONF_HOST, default="localhost"): str,
-                    vol.Required(CONF_PORT, default=8000): int,
-                }
-            ),
+            data_schema=STEP_USER_SCHEMA,
             errors=errors,
         )

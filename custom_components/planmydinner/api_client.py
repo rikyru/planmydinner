@@ -73,6 +73,25 @@ class PlanMyDinnerApiClient:
         path = f"/consumed-entries/override?profile_id={profile_id}&meal_date={meal_date}&meal_type={meal_type}"
         return await self._request("POST", path, json=override_details)
 
+    async def get_plan_for_date(self, profile_id_A: str, profile_id_B: str, target_date: str) -> Optional[Dict[str, Any]]:
+        """Get the saved plan that covers target_date (read-only, no generation)."""
+        path = f"/planner/plan-for-date?profile_id_A={profile_id_A}&profile_id_B={profile_id_B}&target_date={target_date}"
+        return await self._request("GET", path)
+
+    async def get_weekly_plan_stored(self, profile_id_A: str, profile_id_B: str, start_date: str) -> Optional[Dict[str, Any]]:
+        """Get the stored weekly plan for start_date (returns cached, no forced generation)."""
+        path = f"/planner/weekly-plan?profile_id_A={profile_id_A}&profile_id_B={profile_id_B}&start_date={start_date}"
+        try:
+            return await self._request("GET", path)
+        except aiohttp.ClientResponseError as err:
+            if err.status == 404:
+                return None
+            raise
+
+    async def get_profiles(self) -> Dict[str, Any]:
+        """Get all profiles."""
+        return await self._request("GET", "/profiles")
+
     async def generate_weekly_plan(self, profile_id_A: str, profile_id_B: str, current_date: str) -> Dict[str, Any]:
         """Generate a full weekly meal plan."""
         path = f"/planner/generate-week?profile_id_A={profile_id_A}&profile_id_B={profile_id_B}&current_date={current_date}"

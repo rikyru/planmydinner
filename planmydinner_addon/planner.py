@@ -139,10 +139,14 @@ class PlannerEngine:
         _LOGGER.debug(f"Attempting to get food group for item: '{item_name}'")
 
         keyword_map = {
-            "carne_rossa": [r"\bmanzo\b", r"\bbistecca\b", r"\bcarne trita\b", r"\bsalsiccia\b"],
-            "pollo": [r"\bpollo\b", r"\bpetti di pollo\b"],
-            "legumi": [r"\bceci\b", r"\blenticchie\b", r"\bfagioli\b"],
-            "pesce": [r"\bpesce\b", r"\bsalmone\b", r"\btonno\b", r"\bmerluzzo\b"],
+            "carne_rossa": [r"\bmanzo\b", r"\bbistecca\b", r"\bcarne trita\b", r"\bsalsiccia\b",
+                            r"\bvitellone\b", r"\bbovino\b", r"\bagnello\b", r"\bcinghiale\b", r"\bmaiale\b"],
+            "carne_bianca": [r"\bpollo\b", r"\bpetto di pollo\b", r"\bpetti di pollo\b",
+                             r"\btacchino\b", r"\bsovracoscio\b",
+                             r"\bprosciutto cotto\b", r"\bprosciutto crudo\b"],
+            "legumi": [r"\bceci\b", r"\blenticchie\b", r"\bfagioli\b", r"\bpiselli\b", r"\bfave\b"],
+            "pesce": [r"\bpesce\b", r"\bsalmone\b", r"\btonno\b", r"\bmerluzzo\b",
+                      r"\borata\b", r"\bspigola\b", r"\bsgombro\b"],
             "carboidrato": [r"\bpasta\b", r"\briso\b", r"\bpane\b", r"\bpatate\b"],
             "verdura": [
                 r"\bverdura\b", r"\binsalata\b", r"\bpomodoro\b", r"\bcetriolo\b", r"\bcarota\b", r"\bpeperone\b",
@@ -243,20 +247,24 @@ class PlannerEngine:
                     ingredients = consumed_recipe.content.components if consumed_recipe.is_composed_dish else consumed_recipe.content
                     for ing in ingredients:
                         food_group = self._normalize_food_group(ing.food_group)
-                        consumption_counts[food_group] = consumption_counts.get(food_group, 0) + 1
+                        # Canonicalize: pollo → carne_bianca so rotation rules on carne_bianca fire correctly
+                        cat = self._PROTEIN_CATEGORY_MAP.get(food_group, food_group)
+                        consumption_counts[cat] = consumption_counts.get(cat, 0) + 1
                         consumption_counts[ing.name.lower()] = consumption_counts.get(ing.name.lower(), 0) + 1
             elif entry.override_details and entry.override_details.ingredients:
                 for ing in entry.override_details.ingredients:
                     food_group = self._get_food_group_for_item(ing.name)
                     if food_group:
                         normalized_food_group = self._normalize_food_group(food_group)
-                        consumption_counts[normalized_food_group] = consumption_counts.get(normalized_food_group, 0) + 1
+                        cat = self._PROTEIN_CATEGORY_MAP.get(normalized_food_group, normalized_food_group)
+                        consumption_counts[cat] = consumption_counts.get(cat, 0) + 1
                         consumption_counts[ing.name.lower()] = consumption_counts.get(ing.name.lower(), 0) + 1
             elif entry.override_details and entry.override_details.free_text_name:
                 food_group = self._get_food_group_for_item(entry.override_details.free_text_name)
                 if food_group:
                     normalized_food_group = self._normalize_food_group(food_group)
-                    consumption_counts[normalized_food_group] = consumption_counts.get(normalized_food_group, 0) + 1
+                    cat = self._PROTEIN_CATEGORY_MAP.get(normalized_food_group, normalized_food_group)
+                    consumption_counts[cat] = consumption_counts.get(cat, 0) + 1
                     consumption_counts[entry.override_details.free_text_name.lower()] = consumption_counts.get(entry.override_details.free_text_name.lower(), 0) + 1
         
         _LOGGER.debug(f"Consumption counts: {consumption_counts}")
@@ -269,8 +277,13 @@ class PlannerEngine:
                 if count >= rule.max_per_week:
                     _LOGGER.debug(f"Count for '{normalized_rule_fg}' ({count}) meets or exceeds max ({rule.max_per_week})")
                     for rec_ing in recipe_ingredients:
-                        # A rule can apply to a food group OR a specific ingredient name
-                        if self._normalize_food_group(rec_ing.food_group) == normalized_rule_fg or rec_ing.name.lower() == normalized_rule_fg:
+                        # A rule can apply to a food group OR a specific ingredient name.
+                        # Resolve both sides through _PROTEIN_CATEGORY_MAP so that
+                        # "pollo" (food_group) and "carne_bianca" (rule) are treated as equal.
+                        rec_fg = self._normalize_food_group(rec_ing.food_group)
+                        rec_fg_cat = self._PROTEIN_CATEGORY_MAP.get(rec_fg, rec_fg)
+                        rule_fg_cat = self._PROTEIN_CATEGORY_MAP.get(normalized_rule_fg, normalized_rule_fg)
+                        if rec_fg == normalized_rule_fg or rec_fg_cat == rule_fg_cat or rec_ing.name.lower() == normalized_rule_fg:
                             _LOGGER.debug(f"!!! Rotation rule triggered for recipe {recipe.id} on '{rule.food_group_or_item}' with ing '{rec_ing.name}'. Current count: {count}, Max: {rule.max_per_week}")
                             return False, None, None
         
@@ -420,9 +433,9 @@ class PlannerEngine:
         Builds a PlannedMeal from PlanRules gram targets.
         target_cat: protein category (carne_bianca, carne_rossa, pesce, legumi, uova) or None.
         """
-        # Map protein category → food_group
+        # Map protein category → food_group (use canonical name directly)
         _cat_to_fg = {
-            "carne_bianca": "pollo",
+            "carne_bianca": "carne_bianca",
             "carne_rossa":  "carne_rossa",
             "pesce":        "pesce",
             "legumi":       "legumi",
@@ -543,13 +556,16 @@ class PlannerEngine:
 
         # Maps protein ingredient keywords to food_group so category limits work correctly.
         # Keywords sorted by length (longest first) to avoid "pollo" matching "prosciutto crudo di pollo".
+        # Maps protein ingredient names to their canonical food_group / protein category.
+        # "carne_bianca" is used directly (matches frequency_targets category names) so that
+        # rotation limits apply correctly without requiring _PROTEIN_CATEGORY_MAP translation.
         _FG_KEYWORDS = [
             ("vitellone", "carne_rossa"), ("manzo", "carne_rossa"), ("bovino", "carne_rossa"),
             ("maiale", "carne_rossa"), ("agnello", "carne_rossa"), ("cinghiale", "carne_rossa"),
-            ("petto di pollo", "pollo"), ("sovracoscio", "pollo"), ("tacchino", "pollo"),
-            ("prosciutto cotto", "pollo"), ("prosciutto crudo", "pollo"), ("pollo", "pollo"),
+            ("petto di pollo", "carne_bianca"), ("sovracoscio", "carne_bianca"), ("tacchino", "carne_bianca"),
+            ("prosciutto cotto", "carne_bianca"), ("prosciutto crudo", "carne_bianca"), ("pollo", "carne_bianca"),
             ("salmone", "pesce"), ("tonno", "pesce"), ("merluzzo", "pesce"),
-            ("orata", "pesce"), ("spigola", "pesce"), ("pesce", "pesce"),
+            ("orata", "pesce"), ("spigola", "pesce"), ("sgombro", "pesce"), ("pesce", "pesce"),
             ("ceci", "legumi"), ("fagioli", "legumi"), ("lenticchie", "legumi"),
             ("piselli", "legumi"), ("fave", "legumi"), ("soia", "legumi"),
             ("uova", "proteina"), ("uovo", "proteina"),
@@ -721,7 +737,8 @@ class PlannerEngine:
                     meal_plan_A, meal_plan_B, profile_id_A, profile_id_B, current_date, {},
                     excluded_recipe_ids=used_recipe_ids,
                     excluded_fingerprints=used_fingerprints,
-                    allow_llm=False,
+                    allow_llm=fantasy_mode,          # ExtraFantasy: LLM proattivo su ogni slot
+                    strict_target_protein=True,       # se categoria assente in DB → forza fallback
                     **_common_kwargs,
                 )
                 # Fallback 1: rilassa il vincolo fingerprint
@@ -731,19 +748,20 @@ class PlannerEngine:
                         meal_plan_A, meal_plan_B, profile_id_A, profile_id_B, current_date, {},
                         excluded_recipe_ids=used_recipe_ids,
                         excluded_fingerprints=set(),
-                        allow_llm=False,
+                        allow_llm=fantasy_mode,
+                        strict_target_protein=True,
                         **_common_kwargs,
                     )
-                # Fallback 2: rilassa anche il vincolo ricette già usate (LLM ammesso solo qui)
+                # Fallback 2: rilassa tutto + LLM sempre ammesso (genera categoria mancante)
                 if not best_recipes:
-                    _LOGGER.info(f"[fallback2] {current_date} {meal_type}: rilasso recipe_ids")
-                    # Escludi solo le ricette selezionate di recente (evita ripetizioni immediate)
+                    _LOGGER.info(f"[fallback2] {current_date} {meal_type}: rilasso recipe_ids, LLM ammesso")
                     recent_ids = set(recently_selected[-2:]) if recently_selected else set()
                     best_recipes = self.suggest_recipes_for_meal(
                         meal_plan_A, meal_plan_B, profile_id_A, profile_id_B, current_date, {},
                         excluded_recipe_ids=recent_ids,
                         excluded_fingerprints=set(),
                         allow_llm=True,
+                        strict_target_protein=False,  # usa DB se LLM non disponibile
                         **_common_kwargs,
                     )
 
@@ -820,13 +838,136 @@ class PlannerEngine:
 
         return generated_plan
 
-    def generate_weekly_plan(self, profile_id_A: str, profile_id_B: Optional[str], start_date: date, fantasy_mode: bool = False) -> List[schemas.DailyPlannedMeals]:
+    def _generate_full_week_with_llm(
+        self,
+        rules: schemas.PlanRules,
+        profile_id_A: str,
+        profile_id_B: str,
+        start_date: date,
+    ) -> List[schemas.DailyPlannedMeals]:
+        """
+        Genera l'intero piano settimanale con UNA SOLA chiamata LLM.
+        Il LLM riceve le regole nutrizionali e restituisce 7 giorni × 2 pasti.
+        """
+        if not self.llm_gateway:
+            _LOGGER.error("[full_week_llm] LLM gateway non disponibile.")
+            return []
 
+        rules_dict = {
+            "carb_target": rules.carb_target or {"pranzo": 80, "cena": 60},
+            "protein_target": rules.protein_target or {"pranzo": 150, "cena": 120},
+            "frequency_targets": rules.frequency_targets or {},
+        }
+        custom_rules = getattr(self.llm_gateway, "custom_rules", "") or ""
+
+        _LOGGER.info("[full_week_llm] Chiamata LLM singola per piano settimanale...")
+        raw = self.llm_gateway.generate_full_week_plan_json(
+            rules_dict=rules_dict,
+            profile_id_A=profile_id_A,
+            profile_id_B=profile_id_B,
+            start_date=start_date.isoformat(),
+            custom_rules=custom_rules,
+        )
+        if not raw:
+            _LOGGER.error("[full_week_llm] LLM ha restituito None.")
+            return []
+
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError as e:
+            _LOGGER.error(f"[full_week_llm] JSON non valido: {e}. Raw: {raw[:500]}")
+            return []
+
+        daily_plans_raw = data.get("daily_plans", [])
+        result: List[schemas.DailyPlannedMeals] = []
+
+        for day_data in daily_plans_raw:
+            day_date = day_data.get("date", "")
+            meals_out: List[schemas.PlannedMeal] = []
+
+            for meal_data in day_data.get("meals", []):
+                meal_type = meal_data.get("meal_type", "pranzo")
+                recipe_name = meal_data.get("recipe_name", "Pasto LLM")
+                difficulty = meal_data.get("difficulty", "facile")
+                total_time = meal_data.get("total_time_minutes", 30)
+
+                # Build a CandidateRecipe from LLM output and save it
+                ingredients_raw = meal_data.get("ingredients", [])
+                content: List[schemas.RecipeIngredient] = []
+                for ing in ingredients_raw:
+                    g_a = ing.get(f"grams_{profile_id_A}", ing.get("grams", 100))
+                    g_b = ing.get(f"grams_{profile_id_B}", ing.get("grams", 100))
+                    content.append(schemas.RecipeIngredient(
+                        name=ing.get("name", "ingrediente"),
+                        food_group=ing.get("food_group", "altro"),
+                        quantities={
+                            profile_id_A: schemas.QuantityPerProfile(qty=g_a, unit="g", grams_equiv=g_a),
+                            profile_id_B: schemas.QuantityPerProfile(qty=g_b, unit="g", grams_equiv=g_b),
+                        }
+                    ))
+
+                recipe_data = schemas.RecipeCreate(
+                    name=recipe_name,
+                    content=content,
+                    steps=[],
+                    total_time_minutes=int(total_time),
+                    difficulty=difficulty if difficulty in ("facile", "media", "difficile", "sconosciuto") else "facile",
+                    tags={"mood": ["normale"], "cleanup": ["facile"], "manual": ["true"]},
+                )
+
+                # Save as CandidateRecipe (draft_structured) in DB
+                candidate = CandidateRecipe(
+                    id=str(uuid.uuid4()),
+                    status="draft_structured",
+                    usage_count=1,
+                    recipe_data=recipe_data.model_dump(),
+                )
+                try:
+                    self.db.add(candidate)
+                    self.db.commit()
+                    self.db.refresh(candidate)
+                except Exception as e:
+                    _LOGGER.warning(f"[full_week_llm] Impossibile salvare CandidateRecipe: {e}")
+                    self.db.rollback()
+
+                # Build planned items from ingredients
+                items = [
+                    schemas.PlannedItem(
+                        item_name=ing.name,
+                        food_group=ing.food_group,
+                        quantity=ing.quantities.get(profile_id_A, schemas.QuantityPerProfile(qty=0, unit="g")).qty,
+                        unit="g",
+                        recipe_id=candidate.id,
+                    )
+                    for ing in content
+                ]
+                meals_out.append(schemas.PlannedMeal(meal_type=meal_type, items=items))
+
+            if day_date and meals_out:
+                result.append(schemas.DailyPlannedMeals(date=day_date, meals=meals_out))
+
+        _LOGGER.info(f"[full_week_llm] Piano generato: {len(result)} giorni.")
+        return result
+
+    def generate_weekly_plan(self, profile_id_A: str, profile_id_B: Optional[str], start_date: date, fantasy_mode: bool = False, ai_mode: Optional[str] = None) -> List[schemas.DailyPlannedMeals]:
+        """
+        ai_mode override: "off" | "per_slot" | "full_week" | None.
+        Se None, usa il valore salvato in AppSettings.
+        """
         # New path: if PlanRules exist, use rule-based generation (no fixed weekly schedule)
         plan_rules = self._get_latest_plan_rules(profile_id_A)
         if plan_rules:
-            _LOGGER.info(f"[generate_weekly_plan] Using PlanRules path for profile '{profile_id_A}' (fantasy_mode={fantasy_mode})")
-            return self._generate_from_plan_rules(plan_rules, profile_id_A, profile_id_B, start_date, fantasy_mode=fantasy_mode)
+            effective_mode = ai_mode  # may be None (algorithmic) or "per_slot"/"full_week"
+
+            if effective_mode == "full_week":
+                _LOGGER.info(f"[generate_weekly_plan] AI full_week per '{profile_id_A}'")
+                return self._generate_full_week_with_llm(
+                    plan_rules, profile_id_A, profile_id_B or "persona_b", start_date
+                )
+
+            use_llm_fill = (effective_mode == "per_slot") or fantasy_mode
+            _LOGGER.info(f"[generate_weekly_plan] PlanRules path per '{profile_id_A}' (fantasy={fantasy_mode}, ai_mode={effective_mode})")
+            return self._generate_from_plan_rules(plan_rules, profile_id_A, profile_id_B, start_date, fantasy_mode=use_llm_fill)
 
         # Legacy path: use StructuredMealPlan (day-of-week mapping)
         # Use the most recent imported plan (any date), so future start_dates work fine.
@@ -1026,16 +1167,20 @@ class PlannerEngine:
         return generated_plan
 
     # Gruppi alimentari che contano come proteine
-    _PROTEIN_GROUPS = {"proteina", "pollo", "pesce", "carne_rossa", "legumi"}
+    _PROTEIN_GROUPS = {"proteina", "pollo", "carne_bianca", "pesce", "carne_rossa", "legumi"}
 
-    # Mappa food_group → categoria proteica per il vincolo pranzo/cena
+    # Mappa food_group → categoria proteica canonica.
+    # "pollo" è il food_group legacy nelle ricette esistenti; "carne_bianca" è il nome
+    # canonico usato in frequency_targets, protein_sequence e protein_cat_counts.
+    # Entrambi mappano a "carne_bianca" così i confronti funzionano in entrambe le direzioni.
     _PROTEIN_CATEGORY_MAP = {
-        "pollo":       "carne_bianca",
-        "carne_rossa": "carne_rossa",
-        "pesce":       "pesce",
-        "legumi":      "legumi",
-        "proteina":    "proteina",
-        "proteine":    "proteina",
+        "pollo":        "carne_bianca",
+        "carne_bianca": "carne_bianca",
+        "carne_rossa":  "carne_rossa",
+        "pesce":        "pesce",
+        "legumi":       "legumi",
+        "proteina":     "proteina",
+        "proteine":     "proteina",
     }
 
     # Catalogo verdure specifiche con metodi cottura compatibili
@@ -1836,7 +1981,8 @@ class PlannerEngine:
                                  _debug_log: Optional[dict] = None,
                                  target_count: int = 3,
                                  use_llm_fill: bool = False,
-                                 allow_llm: bool = True):
+                                 allow_llm: bool = True,
+                                 strict_target_protein: bool = False):
         
         profile_A = self._get_user_profile(profile_id_A)
         profile_B = self._get_user_profile(profile_id_B)
@@ -1972,6 +2118,11 @@ class PlannerEngine:
                 valid_recipes = preferred
             else:
                 target_category_unmet = True
+                if strict_target_protein:
+                    _LOGGER.info(
+                        f"[target-protein] strict=True, nessuna ricetta DB per '{target_protein_category}' → lista vuota (forza fallback LLM)"
+                    )
+                    return []
                 _LOGGER.info(
                     f"[target-protein] No recipes match '{target_protein_category}', keeping all {len(valid_recipes)}. "
                     f"Will trigger LLM if catalog candidates insufficient."

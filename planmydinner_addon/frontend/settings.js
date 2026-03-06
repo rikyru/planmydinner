@@ -60,7 +60,29 @@ const SettingsView = defineComponent({
                 </div>
             </div>
 
-            <!-- ── Sezione 1b: Cache LLM ── -->
+            <!-- ── Sezione 1b: Modalità generazione AI ── -->
+            <div class="settings-section">
+                <h3 class="settings-section__title">🤖 Modalità generazione AI</h3>
+                <div class="settings-section__body">
+                    <p class="settings-hint">
+                        Controlla se e come il LLM viene usato durante la generazione del piano settimanale
+                        (pulsante <strong>"Genera con AI"</strong> nella vista Settimana).
+                    </p>
+                    <div class="settings-field">
+                        <label>Modalità</label>
+                        <select v-model="config.llm_generation_mode">
+                            <option value="off">Disattivata — solo algoritmo (nessuna chiamata LLM)</option>
+                            <option value="per_slot">14 chiamate — una per ogni slot (pranzo/cena × 7 giorni)</option>
+                            <option value="full_week">1 chiamata — piano intero in un unico prompt</option>
+                        </select>
+                    </div>
+                    <button class="btn-primary" @click="saveGenerationMode" :disabled="savingMode">
+                        {{ savingMode ? 'Salvataggio...' : 'Salva modalità' }}
+                    </button>
+                </div>
+            </div>
+
+            <!-- ── Sezione 1c: Cache LLM ── -->
             <div class="settings-section">
                 <h3 class="settings-section__title">⚡ Cache LLM</h3>
                 <div class="settings-section__body">
@@ -112,10 +134,12 @@ const SettingsView = defineComponent({
                 llm_base_url: '',
                 llm_temperature: 0.7,
                 llm_custom_rules: '',
+                llm_generation_mode: 'off',
             },
             hasApiKey: false,
             savingConfig: false,
             savingRules: false,
+            savingMode: false,
             cacheEntries: null,
             clearingCache: false,
         };
@@ -136,6 +160,7 @@ const SettingsView = defineComponent({
                 this.config.llm_base_url = data.llm_base_url || '';
                 this.config.llm_temperature = data.llm_temperature || 0.7;
                 this.config.llm_custom_rules = data.llm_custom_rules || '';
+                this.config.llm_generation_mode = data.llm_generation_mode || 'off';
                 // api_key is never returned — keep field empty
             } catch (e) {
                 this.toast.add('Errore nel caricamento impostazioni', 'error');
@@ -189,6 +214,23 @@ const SettingsView = defineComponent({
                 this.toast.add('Errore: ' + e.message, 'error');
             } finally {
                 this.clearingCache = false;
+            }
+        },
+        async saveGenerationMode() {
+            this.savingMode = true;
+            try {
+                const resp = await fetch('/settings/', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ llm_generation_mode: this.config.llm_generation_mode }),
+                });
+                if (!resp.ok) throw new Error('Errore nel salvataggio');
+                const modeLabels = { off: 'Disattivata', per_slot: '14 chiamate', full_week: '1 chiamata' };
+                this.toast.add(`Modalità AI: ${modeLabels[this.config.llm_generation_mode] || this.config.llm_generation_mode}`, 'success');
+            } catch (e) {
+                this.toast.add('Errore: ' + e.message, 'error');
+            } finally {
+                this.savingMode = false;
             }
         },
         async saveRules() {
