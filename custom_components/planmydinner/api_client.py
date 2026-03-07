@@ -79,14 +79,9 @@ class PlanMyDinnerApiClient:
         return await self._request("GET", path)
 
     async def get_weekly_plan_stored(self, profile_id_A: str, profile_id_B: str, start_date: str) -> Optional[Dict[str, Any]]:
-        """Get the stored weekly plan for start_date (returns cached, no forced generation)."""
-        path = f"/planner/weekly-plan?profile_id_A={profile_id_A}&profile_id_B={profile_id_B}&start_date={start_date}"
-        try:
-            return await self._request("GET", path)
-        except aiohttp.ClientResponseError as err:
-            if err.status == 404:
-                return None
-            raise
+        """Get the stored weekly plan for start_date (read-only, never triggers generation)."""
+        path = f"/planner/generated-week?profile_id_A={profile_id_A}&profile_id_B={profile_id_B}&start_date={start_date}"
+        return await self._request("GET", path)
 
     async def get_profiles(self) -> Dict[str, Any]:
         """Get all profiles."""

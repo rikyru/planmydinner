@@ -158,6 +158,30 @@ def get_weekly_plan(
     return weekly_plan
 
 
+@router.get("/generated-week")
+def get_generated_week(
+    profile_id_A: str,
+    profile_id_B: Optional[str] = None,
+    start_date: date = date.today(),
+    db: Session = Depends(get_db)
+):
+    """
+    Read-only: returns the stored weekly plan for start_date, or null if none exists.
+    Never triggers generation. Safe to poll frequently (e.g. from HA coordinator).
+    """
+    cached = db.query(GeneratedWeeklyPlan).filter(
+        GeneratedWeeklyPlan.profile_id_A == profile_id_A,
+        GeneratedWeeklyPlan.week_start_date == start_date.isoformat()
+    ).first()
+    if not cached:
+        return None
+    return {
+        "start_date": cached.week_start_date,
+        "profile_id_B": cached.profile_id_B,
+        "daily_plans": [schemas.DailyPlannedMeals.model_validate(dp) for dp in cached.daily_plans],
+    }
+
+
 @router.get("/plan-for-date")
 def get_plan_for_date(
     profile_id_A: str,
