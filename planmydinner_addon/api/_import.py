@@ -99,7 +99,13 @@ a) carb_options e protein_options per PRANZO e CENA:
 b) carb_target / protein_target: grammi target espliciti del documento per pranzo/cena. null se non specificato.
 
 c) frequency_targets: frequenze settimanali per categoria proteica (min/max a settimana).
-   Chiavi: carne_bianca, carne_rossa, pesce, legumi, uova, formaggio.
+   Chiavi valide: carne_bianca, carne_rossa, pesce, legumi, uova, formaggio.
+   IMPORTANTE: includi SOLO le categorie esplicitamente menzionate nel documento.
+   Non aggiungere categorie che non compaiono nel testo.
+   Interpreta le frequenze così:
+   - "N volta" o "N volte" (valore singolo, es. "1 volta", "2 volte") → min: N, max: N
+   - "N-M volte" (intervallo, es. "2-4 volte") → min: N, max: M
+   - "max N" / "fino a N" → min: 0, max: N
 
 d) free_meal_quota: numero di pasti/giorni liberi a settimana. null se non menzionato.
 
@@ -166,12 +172,11 @@ SCHEMA OUTPUT ESATTO:
       "cena": [{{"name": "salmone", "quantity": 120, "unit": "g", "portion_text": null}}]
     }},
     "frequency_targets": {{
-      "carne_bianca": {{"min": 2, "max": 3}},
-      "carne_rossa": {{"min": 0, "max": 1}},
-      "pesce": {{"min": 2, "max": 3}},
-      "legumi": {{"min": 2, "max": 4}},
-      "uova": {{"min": 1, "max": 3}},
-      "formaggio": {{"min": 0, "max": 2}}
+      "uova": {{"min": 2, "max": 4}},
+      "carne_rossa": {{"min": 1, "max": 1}},
+      "carne_bianca": {{"min": 2, "max": 2}},
+      "legumi": {{"min": 3, "max": 5}},
+      "formaggio": {{"min": 2, "max": 2}}
     }},
     "free_meal_quota": null,
     "meal_slots": {{
@@ -206,7 +211,7 @@ SCHEMA OUTPUT ESATTO:
   ]
 }}
 
-I food_group validi per daily_plans: carboidrati, verdure, frutta, proteina, legumi, pesce, pollo, carne_rossa, grassi, altro.
+I food_group validi per daily_plans: carboidrati, verdure, frutta, proteina, latticini, legumi, pesce, pollo, carne_rossa, grassi, altro.
 Le grammature nei daily_plans devono corrispondere alle quantità delle opzioni scelte.
 
 Testo del piano:
@@ -377,6 +382,7 @@ def _derive_plan_rules(plan: schemas.StructuredMealPlan) -> schemas.PlanRules:
         "pesce": "pesce",
         "legumi": "legumi",
         "uova": "uova", "proteina": "uova",
+        "latticini": "formaggio", "formaggio": "formaggio",
     }
     frequency_targets = {k: dict(v) for k, v in freq_defaults.items()}
     for rule in (plan.rotation_rules or []):
@@ -486,6 +492,7 @@ def _plan_rules_from_override(plan: schemas.StructuredMealPlan, override: Dict[s
         "pollo": "carne_bianca", "carne_bianca": "carne_bianca",
         "carne_rossa": "carne_rossa", "pesce": "pesce",
         "legumi": "legumi", "uova": "uova", "proteina": "uova",
+        "latticini": "formaggio", "formaggio": "formaggio",
     }
     for rule in (plan.rotation_rules or []):
         fg = (rule.food_group_or_item if hasattr(rule, "food_group_or_item")

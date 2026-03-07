@@ -9,10 +9,26 @@ __pycache__/
 *.db
 *.sqlite3
 
-# Env
+# Env / Secrets
 .env
 venv/
 .venv/
+
+# Logs / temp
 *.log
 log_debug.txt
 temp-vue-project/
+
+# Node / frontend build
+node_modules/
+
+# PDF personali (piani dieta)
+*.pdf
+
+# File di sviluppo interni
+prompt.txt
+context/
+.claude/
+
+# Dati persistenti runtime
+planmydinner_addon/data/

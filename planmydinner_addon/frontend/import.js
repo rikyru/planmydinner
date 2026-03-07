@@ -123,38 +123,38 @@ const ImportWizard = defineComponent({
                                 <table class="criteri-table">
                                     <thead>
                                         <tr>
-                                            <th>Alimento</th><th>Min/sett</th><th>Max/sett</th><th>Hard</th><th></th>
+                                            <th>Categoria</th><th>Min/sett</th><th>Max/sett</th><th></th>
                                         </tr>
                                     </thead>
                                     <tbody>
-                                        <tr v-for="(r, i) in (parsedData.rotation_rules || [])" :key="i">
+                                        <tr v-for="(freq, cat) in editableFrequencies" :key="cat">
+                                            <td style="font-weight:500">{{ cat }}</td>
                                             <td>
-                                                <input v-model="r.food_group_or_item" class="criteri-input"
-                                                       placeholder="es. carne_rossa">
-                                            </td>
-                                            <td>
-                                                <input type="number" v-model.number="r.min_per_week"
+                                                <input type="number" v-model.number="editableFrequencies[cat].min"
                                                        class="criteri-input-sm" min="0" placeholder="—">
                                             </td>
                                             <td>
-                                                <input type="number" v-model.number="r.max_per_week"
+                                                <input type="number" v-model.number="editableFrequencies[cat].max"
                                                        class="criteri-input-sm" min="0" placeholder="—">
                                             </td>
-                                            <td style="text-align:center">
-                                                <input type="checkbox" v-model="r.is_hard_constraint">
-                                            </td>
                                             <td>
-                                                <button @click="parsedData.rotation_rules.splice(i,1)"
+                                                <button @click="removeFrequency(cat)"
                                                         class="btn-danger" style="padding:2px 7px; font-size:11px">✕</button>
                                             </td>
                                         </tr>
-                                        <tr v-if="!(parsedData.rotation_rules || []).length">
-                                            <td colspan="5" style="color:#adb5bd">Nessuna regola estratta</td>
+                                        <tr v-if="!Object.keys(editableFrequencies).length">
+                                            <td colspan="4" style="color:#adb5bd">Nessuna frequenza estratta</td>
                                         </tr>
                                     </tbody>
                                 </table>
-                                <button @click="addFrequencyRule()" class="btn-secondary"
-                                        style="margin-top:8px; font-size:12px; padding:4px 10px">+ Aggiungi regola</button>
+                                <div style="margin-top:8px; display:flex; gap:6px; align-items:center">
+                                    <select v-model="newFreqCategory" class="criteri-input" style="flex:1">
+                                        <option value="">Aggiungi categoria...</option>
+                                        <option v-for="c in availableFreqCategories" :key="c" :value="c">{{ c }}</option>
+                                    </select>
+                                    <button @click="addFrequency()" :disabled="!newFreqCategory"
+                                            class="btn-secondary" style="font-size:12px; padding:4px 10px">+</button>
+                                </div>
                                 <div style="margin-top:12px; display:flex; align-items:center; gap:10px">
                                     <label style="font-size:13px; font-weight:500">Pasti liberi/settimana:</label>
                                     <input type="number" v-model.number="editableFreeMealQuota"
@@ -256,7 +256,9 @@ const ImportWizard = defineComponent({
             uniqueRecipes: [],   // [{fp, name, items, include}]
             editableTargets: { carb: {}, protein: {} },
             editableOptions: { carb: { pranzo: '', cena: '' }, protein: { pranzo: '', cena: '' } },
+            editableFrequencies: {},
             editableFreeMealQuota: null,
+            newFreqCategory: '',
             profiles: [],
             selectedProfile: null,
             uploading: false,
@@ -369,6 +371,7 @@ const ImportWizard = defineComponent({
                     protein_target: this.editableTargets.protein,
                     carb_options: Object.keys(carbOptions).length ? carbOptions : null,
                     protein_options: Object.keys(proteinOptions).length ? proteinOptions : null,
+                    frequency_targets: Object.keys(this.editableFrequencies).length ? this.editableFrequencies : null,
                     meal_slots: pr.meal_slots || null,
                     free_meal_quota: this.editableFreeMealQuota ?? null,
                 };
@@ -397,7 +400,9 @@ const ImportWizard = defineComponent({
             this.uniqueRecipes = [];
             this.editableTargets = { carb: {}, protein: {} };
             this.editableOptions = { carb: { pranzo: '', cena: '' }, protein: { pranzo: '', cena: '' } };
+            this.editableFrequencies = {};
             this.editableFreeMealQuota = null;
+            this.newFreqCategory = '';
             this.file = null;
             this.textContent = '';
             this.selectedProfile = null;
@@ -434,6 +439,7 @@ const ImportWizard = defineComponent({
                         cena: toStr(pr.protein_options, 'cena'),
                     },
                 };
+                this.editableFrequencies = JSON.parse(JSON.stringify(pr.frequency_targets || {}));
                 this.editableFreeMealQuota = pr.free_meal_quota ?? null;
             } else {
                 // Fallback: derive from daily_plans by averaging
@@ -459,6 +465,7 @@ const ImportWizard = defineComponent({
                     protein: avg(proteinSums),
                 };
                 this.editableOptions = { carb: { pranzo: '', cena: '' }, protein: { pranzo: '', cena: '' } };
+                this.editableFrequencies = {};
                 this.editableFreeMealQuota = null;
             }
         },
@@ -492,14 +499,21 @@ const ImportWizard = defineComponent({
             if (names.length === 2) return `${names[0]} con ${names[1]}`;
             return `${names[0]} con ${names[1]} e ${names[2]}`;
         },
-        addFrequencyRule() {
-            if (!this.parsedData.rotation_rules) this.parsedData.rotation_rules = [];
-            this.parsedData.rotation_rules.push({
-                food_group_or_item: '',
-                min_per_week: null,
-                max_per_week: null,
-                is_hard_constraint: false,
-            });
+        addFrequency() {
+            if (!this.newFreqCategory) return;
+            this.editableFrequencies[this.newFreqCategory] = { min: 0, max: 1 };
+            this.newFreqCategory = '';
+        },
+        removeFrequency(cat) {
+            const copy = { ...this.editableFrequencies };
+            delete copy[cat];
+            this.editableFrequencies = copy;
+        },
+    },
+    computed: {
+        availableFreqCategories() {
+            const all = ['carne_bianca', 'carne_rossa', 'pesce', 'legumi', 'uova', 'formaggio'];
+            return all.filter(c => !(c in this.editableFrequencies));
         },
     },
 });

@@ -157,6 +157,9 @@ class PlannerEngine:
             "grasso": [r"\bolio\b", r"\bburro\b", r"\bfrutta secca\b", r"\bnoci\b", r"\bmandorle\b"],
             "frutta": [r"\bmela\b", r"\bbanana\b", r"\barancia\b", r"\bfragola\b", r"\bfrutta\b"],
             "proteina": [r"\buova\b", r"\btofu\b"],
+            "latticini": [r"\bmozzarella\b", r"\bricotta\b", r"\bcrescenza\b", r"\bgrana\b",
+                          r"\bparmigiano\b", r"\bformaggio\b", r"\bfiocchi di latte\b",
+                          r"\bstracchino\b", r"\bscamorza\b", r"\bpecorino\b", r"\bemmental\b"],
         }
 
         for group, keywords in keyword_map.items():
@@ -441,6 +444,8 @@ class PlannerEngine:
             "legumi":       "legumi",
             "uova":         "proteina",
             "proteina":     "proteina",
+            "formaggio":    "latticini",
+            "latticini":    "latticini",
         }
         carb_g = float((rules.carb_target or {}).get(meal_type, 80))
         protein_g = float((rules.protein_target or {}).get(meal_type, 120))
@@ -569,6 +574,9 @@ class PlannerEngine:
             ("ceci", "legumi"), ("fagioli", "legumi"), ("lenticchie", "legumi"),
             ("piselli", "legumi"), ("fave", "legumi"), ("soia", "legumi"),
             ("uova", "proteina"), ("uovo", "proteina"),
+            ("mozzarella", "latticini"), ("ricotta", "latticini"), ("crescenza", "latticini"),
+            ("grana", "latticini"), ("parmigiano", "latticini"), ("fiocchi di latte", "latticini"),
+            ("stracchino", "latticini"), ("scamorza", "latticini"), ("pecorino", "latticini"),
         ]
 
         def _name_to_food_group(name: str) -> str:
@@ -604,13 +612,38 @@ class PlannerEngine:
         default_protein_g = float((rules.protein_target or {}).get("pranzo", 120))
         default_carb_g = float((rules.carb_target or {}).get("pranzo", 80))
 
-        # Each protein × top-3 carbs, max 20 total LLM calls
-        MAX_RECIPES = 20
+        # Build combos ensuring coverage across protein CATEGORIES (not just first 20 proteins).
+        # Strategy: group protein_opts by food_group category, then interleave so that each
+        # category gets at least MIN_PER_CAT combos before any category gets more.
+        MIN_PER_CAT = 2   # minimum recipes per distinct protein category
+        MAX_RECIPES = 30  # total cap (was 20 — raised to allow diverse categories)
+
+        from collections import defaultdict as _dd
+        cat_to_opts: dict = _dd(list)
+        for popt in protein_opts:
+            p_name = _opt_name(popt)
+            cat = _name_to_food_group(p_name)
+            cat_to_opts[cat].append(popt)
+
+        # Round-robin: fill MIN_PER_CAT per category first, then top-up
+        interleaved = []
+        for _round in range(MIN_PER_CAT):
+            for cat_opts in cat_to_opts.values():
+                if _round < len(cat_opts):
+                    interleaved.append(cat_opts[_round])
+        # Fill remaining slots with any protein not yet covered
+        seen = set(id(o) for o in interleaved)
+        for popt in protein_opts:
+            if id(popt) not in seen:
+                interleaved.append(popt)
+                seen.add(id(popt))
+
         combos = []
-        for popt in protein_opts[:10]:
+        carb_top = carb_opts[:3]
+        for popt in interleaved:
             p_name = _opt_name(popt)
             p_grams = _opt_grams(popt) or default_protein_g
-            for copt in carb_opts[:3]:
+            for copt in carb_top:
                 c_name = _opt_name(copt)
                 c_grams = _opt_grams(copt) or default_carb_g
                 combos.append((p_name, p_grams, c_name, c_grams))
@@ -695,8 +728,14 @@ class PlannerEngine:
             hard_max = tgt.get("hard_max")
             effective_max = hard_max if hard_max is not None else tgt.get("max", 7)
             protein_cat_limits[cat] = int(effective_max)
-        # Map carne_bianca → effectively "pollo" in the recipe cat system
+        # Conservative defaults for categories not in frequency_targets, to prevent
+        # a single protein type from filling all unconstrained slots (e.g. uova every day).
         protein_cat_limits.setdefault("carne_bianca", 3)
+        protein_cat_limits.setdefault("carne_rossa", 2)
+        protein_cat_limits.setdefault("pesce", 4)
+        protein_cat_limits.setdefault("legumi", 4)
+        protein_cat_limits.setdefault("proteina", 4)  # uova/tofu: max 4 slots / week
+        protein_cat_limits.setdefault("formaggio", 2)  # latticini: max 2 slots / week
 
         protein_cat_counts: Dict[str, int] = {}
         protein_item_counts: Dict[str, int] = {}
@@ -1167,7 +1206,7 @@ class PlannerEngine:
         return generated_plan
 
     # Gruppi alimentari che contano come proteine
-    _PROTEIN_GROUPS = {"proteina", "pollo", "carne_bianca", "pesce", "carne_rossa", "legumi"}
+    _PROTEIN_GROUPS = {"proteina", "pollo", "carne_bianca", "pesce", "carne_rossa", "legumi", "latticini", "formaggio"}
 
     # Mappa food_group → categoria proteica canonica.
     # "pollo" è il food_group legacy nelle ricette esistenti; "carne_bianca" è il nome
@@ -1181,24 +1220,29 @@ class PlannerEngine:
         "legumi":       "legumi",
         "proteina":     "proteina",
         "proteine":     "proteina",
+        "latticini":    "formaggio",
+        "formaggio":    "formaggio",
     }
 
-    # Catalogo verdure specifiche con metodi cottura compatibili
+    # Catalogo verdure specifiche con metodi cottura compatibili.
+    # "griglia" è inclusa perché molte ricette LLM usano quel cooking_method.
     _VEG_CATALOG = [
-        {"name": "zucchine",      "methods": ["tegame", "forno", "vapore"]},
+        {"name": "zucchine",      "methods": ["tegame", "forno", "vapore", "griglia"]},
         {"name": "spinaci",       "methods": ["tegame", "vapore"]},
         {"name": "broccoli",      "methods": ["forno", "vapore", "tegame"]},
         {"name": "carote",        "methods": ["forno", "vapore", "tegame"]},
-        {"name": "peperoni",      "methods": ["forno", "tegame"]},
-        {"name": "melanzane",     "methods": ["forno", "tegame"]},
+        {"name": "peperoni",      "methods": ["forno", "tegame", "griglia"]},
+        {"name": "melanzane",     "methods": ["forno", "tegame", "griglia"]},
         {"name": "fagiolini",     "methods": ["vapore", "tegame"]},
         {"name": "cavolfiore",    "methods": ["forno", "vapore"]},
         {"name": "finocchi",      "methods": ["forno", "tegame"]},
-        {"name": "asparagi",      "methods": ["vapore", "forno"]},
-        {"name": "pomodori",      "methods": ["forno", "tegame"]},
-        {"name": "insalata mista","methods": []},  # compatibile con tutto
+        {"name": "asparagi",      "methods": ["vapore", "forno", "griglia"]},
+        {"name": "pomodori",      "methods": ["forno", "tegame", "griglia"]},
+        {"name": "insalata mista","methods": []},  # compatibile con tutto (crudo/griglia/ecc.)
         {"name": "bietole",       "methods": ["tegame", "vapore"]},
         {"name": "piselli",       "methods": ["tegame", "vapore"]},
+        {"name": "radicchio",     "methods": ["griglia", "tegame", "crudo"]},
+        {"name": "cetrioli",      "methods": ["crudo"]},
     ]
     # Nomi generici da sostituire con verdure specifiche
     _VEG_GENERIC_NAMES = {"verdure", "verdura", "verdura mista", "verdure miste", "contorno"}
@@ -1234,7 +1278,7 @@ class PlannerEngine:
         carb_name = None
         has_veg = False
 
-        protein_groups = {"proteina", "proteine", "pollo", "pesce", "carne_rossa", "legumi"}
+        protein_groups = {"proteina", "proteine", "pollo", "carne_bianca", "pesce", "carne_rossa", "legumi"}
         carb_groups = {"carboidrati", "carboidrato"}
 
         for ing in content:
@@ -1401,17 +1445,35 @@ class PlannerEngine:
         tokens = set(rec_name.lower().split())
         return any(tokens & set(pi.name.lower().split()) for pi in pantry_items)
 
+    # Recognised short method names. Anything else is treated as free-text and parsed.
+    _KNOWN_METHODS = {"tegame", "forno", "vapore", "griglia", "crudo", "bollitura", "microonde"}
+
     def _get_cooking_method(self, recipe_id: str) -> str:
-        """Returns the primary cooking method of a recipe (e.g. 'tegame', 'forno')."""
+        """Returns the primary cooking method (short name) of a recipe.
+        If the stored value is a full sentence (LLM sometimes writes the step text there),
+        we extract a recognised keyword from it; fallback to 'tegame'."""
+        def _parse(raw: str) -> str:
+            raw = (raw or "").lower()
+            for kw in ("griglia", "forno", "vapore", "crudo", "bollitura"):
+                if kw in raw:
+                    return kw
+            return "tegame"
+
+        def _from_methods(methods: list) -> str:
+            if not methods:
+                return "tegame"
+            first = methods[0].lower().strip()
+            if first in self._KNOWN_METHODS:
+                return first
+            return _parse(first)  # stored value is free text
+
         db_recipe = self.db.query(Recipe).filter(Recipe.id == recipe_id).first()
         if db_recipe:
-            methods = (db_recipe.tags or {}).get("cooking_methods", [])
-            return methods[0].lower() if methods else "tegame"
+            return _from_methods((db_recipe.tags or {}).get("cooking_methods", []))
         candidate = self.db.query(CandidateRecipe).filter(CandidateRecipe.id == recipe_id).first()
         if candidate:
             data = candidate.recipe_data if isinstance(candidate.recipe_data, dict) else candidate.recipe_data.model_dump()
-            methods = data.get("tags", {}).get("cooking_methods", [])
-            return methods[0].lower() if methods else "tegame"
+            return _from_methods(data.get("tags", {}).get("cooking_methods", []))
         return "tegame"
 
     @staticmethod
@@ -2151,7 +2213,7 @@ class PlannerEngine:
         # If none exist BUT we still have ID exclusions → return empty to force fallback 2,
         #   where ID restrictions are lifted and composed options reappear.
         # If none exist AND no ID restrictions (already fallback 2) → accept whatever is left.
-        _prot_norm = {"proteina", "proteine", "pollo", "pesce", "carne_rossa", "legum"}
+        _prot_norm = {"proteina", "proteine", "pollo", "carne_bianca", "pesce", "carne_rossa", "legum", "latticini", "formaggio"}
         _carb_norm = {"carboidrat", "carboidrato"}
 
         def _is_composed(recipe):
@@ -2201,7 +2263,7 @@ class PlannerEngine:
             # Bonus for composed meals (protein + carb) — prefer balanced over pure-carb/pure-protein
             _ings = getattr(dosed_recipe.content, "components", None) or dosed_recipe.content
             _fgs = {self._normalize_food_group(getattr(i, "food_group", "")) for i in _ings}
-            _prot_fgs = {"proteina", "proteine", "pollo", "pesce", "carne_rossa", "legum"}
+            _prot_fgs = {"proteina", "proteine", "pollo", "carne_bianca", "pesce", "carne_rossa", "legum", "latticini", "formaggio"}
             _carb_fgs = {"carboidrat", "carboidrato"}
             if _fgs & _prot_fgs and _fgs & _carb_fgs:
                 score += 0.5
