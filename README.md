@@ -115,9 +115,11 @@ Per HA OS o HA Supervised con il Supervisor:
 4. Nella tab **Configurazione** imposta le variabili LLM (come sopra)
 5. Avvia l'add-on e verifica i log
 
-L'add-on espone la Web UI su `http://<ha-ip>:8000`.
+La Web UI è accessibile tramite **HA Ingress** (sidebar di HA, senza aprire porte extra) o direttamente su `http://<ha-ip>:8000`.
 
 ### HA Core / Docker puro
+
+> **Nota**: HA Core (container Docker) non supporta il sistema Add-on/Supervisor. La Web UI **non appare in sidebar HA**. Usa il container standalone e accedi direttamente su `http://<ip>:8000/ui/`. L'integrazione HACS (sensori) funziona comunque.
 
 Se usi HA Core in Docker, usa `docker-compose.yml` come riferimento e adattalo al tuo setup:
 
