@@ -356,7 +356,7 @@ const Profiles = defineComponent({
     methods: {
         async fetchProfiles() {
             try {
-                const resp = await fetch('/profiles/');
+                const resp = await window.apiFetch('/profiles/');
                 this.profiles = await resp.json();
                 if (this.profiles.length && !this.selectedProfile) {
                     await this.selectProfile(this.profiles[0]);
@@ -367,7 +367,7 @@ const Profiles = defineComponent({
         },
         async createProfile() {
             try {
-                const resp = await fetch('/profiles/', {
+                const resp = await window.apiFetch('/profiles/', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ id: this.newProfileId, name: this.newProfileName }),
@@ -390,7 +390,7 @@ const Profiles = defineComponent({
             this.rules = null;
             this.loadingRules = true;
             try {
-                const resp = await fetch(`/planner/rules?profile_id_A=${profile.id}`);
+                const resp = await window.apiFetch(`/planner/rules?profile_id_A=${profile.id}`);
                 if (resp.ok) {
                     this.rules = await resp.json();
                 }
@@ -452,7 +452,7 @@ const Profiles = defineComponent({
                         cena: toArray(this.editedRules.protein_options.cena),
                     },
                 };
-                const resp = await fetch(`/planner/rules/${this.selectedProfile.id}`, {
+                const resp = await window.apiFetch(`/planner/rules/${this.selectedProfile.id}`, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload),
@@ -460,7 +460,7 @@ const Profiles = defineComponent({
                 if (!resp.ok) throw new Error(await resp.text());
                 this.editingRules = false;
                 // Ricarica le regole
-                const rulesResp = await fetch(`/planner/rules?profile_id_A=${this.selectedProfile.id}`);
+                const rulesResp = await window.apiFetch(`/planner/rules?profile_id_A=${this.selectedProfile.id}`);
                 if (rulesResp.ok) this.rules = await rulesResp.json();
                 this.toast.add('Vincoli salvati!', 'success');
             } catch (e) {
@@ -485,7 +485,7 @@ const Profiles = defineComponent({
         },
         async loadVegPortions() {
             try {
-                const resp = await fetch('/planner/veg-portions');
+                const resp = await window.apiFetch('/planner/veg-portions');
                 if (resp.ok) this.vegPortions = await resp.json();
             } catch (e) {}
         },

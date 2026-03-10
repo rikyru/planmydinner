@@ -162,7 +162,7 @@ const ShoppingList = defineComponent({
             this.loading = true;
             this.error = null;
             try {
-                const resp = await fetch('/profiles/');
+                const resp = await window.apiFetch('/profiles/');
                 this.profiles = await resp.json();
                 if (this.profiles.length >= 2) await this.loadShoppingList();
             } catch (e) {
@@ -182,7 +182,7 @@ const ShoppingList = defineComponent({
                 start_date: this.startDate,
             });
             try {
-                const resp = await fetch('/shopping-list?' + params);
+                const resp = await window.apiFetch('/shopping-list?' + params);
                 if (!resp.ok) return;
                 this.shoppingData = await resp.json();
                 this.buildLocalItems();
@@ -229,7 +229,7 @@ const ShoppingList = defineComponent({
                     unit: item.unit,
                     category: item.category || null,
                 }];
-                const resp = await fetch('/pantry/items/bulk', {
+                const resp = await window.apiFetch('/pantry/items/bulk', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(body),

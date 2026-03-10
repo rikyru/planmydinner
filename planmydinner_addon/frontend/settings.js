@@ -151,7 +151,7 @@ const SettingsView = defineComponent({
     methods: {
         async loadSettings() {
             try {
-                const resp = await fetch('/settings/');
+                const resp = await window.apiFetch('/settings/');
                 if (!resp.ok) return;
                 const data = await resp.json();
                 this.hasApiKey = data.has_api_key || false;
@@ -179,7 +179,7 @@ const SettingsView = defineComponent({
                 if (this.config.llm_api_key && this.config.llm_api_key.trim()) {
                     body.llm_api_key = this.config.llm_api_key.trim();
                 }
-                const resp = await fetch('/settings/', {
+                const resp = await window.apiFetch('/settings/', {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(body),
@@ -197,7 +197,7 @@ const SettingsView = defineComponent({
         },
         async loadCacheStats() {
             try {
-                const resp = await fetch('/settings/llm-cache/stats');
+                const resp = await window.apiFetch('/settings/llm-cache/stats');
                 if (resp.ok) this.cacheEntries = (await resp.json()).entries;
             } catch {}
         },
@@ -205,7 +205,7 @@ const SettingsView = defineComponent({
             if (!confirm('Svuotare la cache LLM? Le prossime chiamate verranno rifatte da zero.')) return;
             this.clearingCache = true;
             try {
-                const resp = await fetch('/settings/llm-cache', { method: 'DELETE' });
+                const resp = await window.apiFetch('/settings/llm-cache', { method: 'DELETE' });
                 if (!resp.ok) throw new Error('Errore');
                 const data = await resp.json();
                 this.cacheEntries = 0;
@@ -219,7 +219,7 @@ const SettingsView = defineComponent({
         async saveGenerationMode() {
             this.savingMode = true;
             try {
-                const resp = await fetch('/settings/', {
+                const resp = await window.apiFetch('/settings/', {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ llm_generation_mode: this.config.llm_generation_mode }),
@@ -236,7 +236,7 @@ const SettingsView = defineComponent({
         async saveRules() {
             this.savingRules = true;
             try {
-                const resp = await fetch('/settings/', {
+                const resp = await window.apiFetch('/settings/', {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ llm_custom_rules: this.config.llm_custom_rules }),

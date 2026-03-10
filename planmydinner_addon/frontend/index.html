@@ -88,6 +88,21 @@
         </div>
     </div>
 
+    <script>
+        // Compute the API base path from <base href> injected by the server.
+        // When running behind HA ingress: base = "/api/hassio_ingress/TOKEN/ui/"
+        // so _apiBase = "/api/hassio_ingress/TOKEN" (parent of /ui/).
+        // In standalone mode: no <base> tag → _apiBase = "" and all fetch('/...') work as-is.
+        window._apiBase = (() => {
+            const base = document.querySelector('base');
+            if (!base) return '';
+            try {
+                const p = new URL('..', base.href).pathname.replace(/\/$/, '');
+                return p === '/' ? '' : p;
+            } catch { return ''; }
+        })();
+        window.apiFetch = (path, opts) => fetch(window._apiBase + path, opts);
+    </script>
     <script type="module">
         import { createApp, reactive } from 'vue';
         import TodayView from './today.js?v=4';

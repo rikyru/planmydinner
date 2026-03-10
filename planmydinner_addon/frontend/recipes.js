@@ -242,7 +242,7 @@ const Recipes = defineComponent({
         async fetchRecipes() {
             this.loading = true;
             try {
-                const resp = await fetch('/recipes/');
+                const resp = await window.apiFetch('/recipes/');
                 this.recipes = await resp.json();
             } catch (e) {
                 this.toast.add('Errore nel caricamento ricette: ' + e.message, 'error');
@@ -312,7 +312,7 @@ const Recipes = defineComponent({
             const url = isEdit ? `/recipes/${this.editedRecipe.id}` : '/recipes/';
             const method = isEdit ? 'PUT' : 'POST';
             try {
-                const resp = await fetch(url, {
+                const resp = await window.apiFetch(url, {
                     method,
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(this._buildPayload()),
@@ -328,7 +328,7 @@ const Recipes = defineComponent({
         async deleteAllRecipes() {
             if (!confirm(`Eliminare tutte le ${this.recipes.length} ricette? Questa azione è irreversibile.`)) return;
             try {
-                const resp = await fetch('/recipes/all', { method: 'DELETE' });
+                const resp = await window.apiFetch('/recipes/all', { method: 'DELETE' });
                 if (!resp.ok) throw new Error(await resp.text());
                 const result = await resp.json();
                 await this.fetchRecipes();
@@ -340,7 +340,7 @@ const Recipes = defineComponent({
         async deleteRecipe(id) {
             if (!confirm('Eliminare questa ricetta?')) return;
             try {
-                const resp = await fetch(`/recipes/${id}`, { method: 'DELETE' });
+                const resp = await window.apiFetch(`/recipes/${id}`, { method: 'DELETE' });
                 if (!resp.ok) throw new Error(await resp.text());
                 await this.fetchRecipes();
                 this.toast.add('Ricetta eliminata.', 'success');
@@ -364,7 +364,7 @@ const Recipes = defineComponent({
                 const pA = localStorage.getItem('profile_a_id') || 'persona_a';
                 const pB = localStorage.getItem('profile_b_id') || 'persona_b';
                 const params = new URLSearchParams({ profile_a_id: pA, profile_b_id: pB });
-                const resp = await fetch('/recipes/bulk?' + params, {
+                const resp = await window.apiFetch('/recipes/bulk?' + params, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(items),

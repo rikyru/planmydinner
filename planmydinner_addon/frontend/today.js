@@ -267,7 +267,7 @@ const TodayView = defineComponent({
             this.loading = true;
             this.error = null;
             try {
-                const resp = await fetch('/profiles/');
+                const resp = await window.apiFetch('/profiles/');
                 this.profiles = await resp.json();
                 if (this.profiles.length >= 2) {
                     await this.loadWeeklyPlan();
@@ -286,7 +286,7 @@ const TodayView = defineComponent({
                 profile_id_B: this.profileB.id,
                 target_date: this.today,
             });
-            const resp = await fetch('/planner/plan-for-date?' + params);
+            const resp = await window.apiFetch('/planner/plan-for-date?' + params);
             if (!resp.ok || resp.status === 204) {
                 this.dailyPlans = [];
                 this.todayPlan = null;
@@ -309,7 +309,7 @@ const TodayView = defineComponent({
                 const recipeId = meal.items?.[0]?.recipe_id;
                 if (!recipeId) continue;
                 try {
-                    const resp = await fetch(`/recipes/detail/${recipeId}`);
+                    const resp = await window.apiFetch(`/recipes/detail/${recipeId}`);
                     if (resp.ok) {
                         this.recipeDetails[meal.meal_type] = await resp.json();
                     }
@@ -320,7 +320,7 @@ const TodayView = defineComponent({
             if (!this.profileA) return;
             try {
                 const params = new URLSearchParams({ profile_id_A: this.profileA.id });
-                const resp = await fetch('/planner/adherence?' + params);
+                const resp = await window.apiFetch('/planner/adherence?' + params);
                 if (resp.ok) this.adherence = await resp.json();
             } catch (_) { /* non bloccare */ }
         },
@@ -333,7 +333,7 @@ const TodayView = defineComponent({
                     profile_id_B: this.profileB.id,
                     current_date: this.today,
                 });
-                const resp = await fetch('/planner/generate-week?' + params, { method: 'POST' });
+                const resp = await window.apiFetch('/planner/generate-week?' + params, { method: 'POST' });
                 if (!resp.ok) throw new Error(await resp.text());
                 const allDays = await resp.json();
                 this.dailyPlans = allDays;
@@ -360,7 +360,7 @@ const TodayView = defineComponent({
                     meal_type: mealType,
                     current_date: this.today,
                 });
-                const resp = await fetch('/planner/change-recipe?' + params, { method: 'POST' });
+                const resp = await window.apiFetch('/planner/change-recipe?' + params, { method: 'POST' });
                 if (!resp.ok) throw new Error(await resp.text());
                 this.recipeOptions = await resp.json();
             } catch (e) {
@@ -378,7 +378,7 @@ const TodayView = defineComponent({
                     current_date: this.today,
                     recipe_id: recipeId,
                 });
-                const resp = await fetch('/planner/apply-recipe-option?' + params, { method: 'POST' });
+                const resp = await window.apiFetch('/planner/apply-recipe-option?' + params, { method: 'POST' });
                 if (!resp.ok) throw new Error(await resp.text());
                 this.closeModal();
                 await this.loadWeeklyPlan();
@@ -398,7 +398,7 @@ const TodayView = defineComponent({
                     type: 'planned',
                     consumed_recipe_id: recipeId,
                 };
-                const resp = await fetch('/consumed-entries/', {
+                const resp = await window.apiFetch('/consumed-entries/', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(body),
@@ -428,7 +428,7 @@ const TodayView = defineComponent({
                     recipe_id: recipeId,
                     component,
                 });
-                const resp = await fetch('/planner/change-component?' + params, { method: 'POST' });
+                const resp = await window.apiFetch('/planner/change-component?' + params, { method: 'POST' });
                 if (!resp.ok) throw new Error(await resp.text());
                 this.recipeOptions = await resp.json();
             } catch (e) {
@@ -461,7 +461,7 @@ const TodayView = defineComponent({
                     meal_type: mealType,
                     current_date: this.today,
                 });
-                const resp = await fetch('/planner/free-meal?' + params, {
+                const resp = await window.apiFetch('/planner/free-meal?' + params, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ title: this.freeMealTitle, notes: '' }),
@@ -484,7 +484,7 @@ const TodayView = defineComponent({
                     meal_type: mealType,
                     current_date: this.today,
                 });
-                const resp = await fetch('/planner/free-meal?' + params, { method: 'DELETE' });
+                const resp = await window.apiFetch('/planner/free-meal?' + params, { method: 'DELETE' });
                 if (!resp.ok) throw new Error(await resp.text());
                 await this.loadWeeklyPlan();
                 await this.loadAdherence();
@@ -509,7 +509,7 @@ const TodayView = defineComponent({
                     meal_type: this.customMealType,
                     current_date: this.today,
                 });
-                const resp = await fetch('/planner/set-custom-meal?' + params, {
+                const resp = await window.apiFetch('/planner/set-custom-meal?' + params, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(this.customForm),

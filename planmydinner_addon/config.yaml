@@ -1,0 +1,41 @@
+name: "Plan My Dinner"
+description: "Pianificatore di pasti settimanali con IA per chi segue un piano alimentare"
+version: "1.1.1"
+slug: "planmydinner"
+homeassistant: "2024.1.0"
+url: "https://github.com/rikyru/planmydinner"
+
+arch:
+  - aarch64
+  - amd64
+  - armhf
+  - armv7
+  - i386
+
+startup: application
+boot: auto
+
+ingress: true
+ingress_port: 8000
+panel_icon: mdi:silverware-fork-knife
+panel_title: "Plan My Dinner"
+
+ports:
+  8000/tcp: 8000
+ports_description:
+  8000/tcp: "Web UI e API"
+
+map:
+  - data:rw
+
+options:
+  llm_provider: "ollama"
+  llm_model: "llama3"
+  llm_base_url: "http://host.docker.internal:11434"
+  llm_api_key: ""
+
+schema:
+  llm_provider: str
+  llm_model: str
+  llm_base_url: str
+  llm_api_key: str

@@ -51,7 +51,7 @@ const Pantry = defineComponent({
     },
     methods: {
         fetchItems() {
-            fetch('/pantry/items')
+            window.apiFetch('/pantry/items')
                 .then(response => response.json())
                 .then(data => {
                     this.items = data;
@@ -72,7 +72,7 @@ const Pantry = defineComponent({
             const method = this.editedItem.id ? 'PUT' : 'POST';
             const url = this.editedItem.id ? `/pantry/items/${this.editedItem.id}` : '/pantry/items';
 
-            fetch(url, {
+            window.apiFetch(url, {
                 method: method,
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(this.editedItem),
@@ -83,7 +83,7 @@ const Pantry = defineComponent({
             });
         },
         deleteItem(itemId) {
-            fetch(`/pantry/items/${itemId}`, { method: 'DELETE' })
+            window.apiFetch(`/pantry/items/${itemId}`, { method: 'DELETE' })
                 .then(() => {
                     this.fetchItems();
                 });

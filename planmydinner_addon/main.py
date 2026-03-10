@@ -1,9 +1,9 @@
 import os
 import mimetypes
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from .database import create_db_and_tables # Relative import
 from .llm_gateway import LLMGateway # Import LLMGateway
@@ -93,7 +93,24 @@ app.add_middleware(
 
 # Construct the absolute path to the frontend directory
 frontend_dir = os.path.join(os.path.dirname(__file__), "frontend")
-app.mount("/ui", StaticFiles(directory=frontend_dir, html=True), name="ui")
+
+# Serve index.html dynamically so we can inject <base href> for HA ingress support.
+# The X-Ingress-Path header is set by HA Supervisor when running as an add-on.
+@app.get("/ui", response_class=HTMLResponse, include_in_schema=False)
+@app.get("/ui/", response_class=HTMLResponse, include_in_schema=False)
+@app.get("/ui/index.html", response_class=HTMLResponse, include_in_schema=False)
+async def serve_ui_index(request: Request):
+    ingress_path = request.headers.get("X-Ingress-Path", "").rstrip("/")
+    base_href = f"{ingress_path}/ui/" if ingress_path else "/ui/"
+    index_path = os.path.join(frontend_dir, "index.html")
+    with open(index_path, "r", encoding="utf-8") as f:
+        html = f.read()
+    # Inject <base href> as first child of <head> so all relative URLs resolve correctly
+    html = html.replace("<head>", f'<head>\n    <base href="{base_href}">', 1)
+    return HTMLResponse(html)
+
+# Serve all other static assets (CSS, JS, images) — no html=True to avoid index fallback
+app.mount("/ui", StaticFiles(directory=frontend_dir), name="ui")
 
 
 app.include_router(profiles_router.router)
@@ -108,8 +125,9 @@ app.include_router(settings_router.router)
 
 
 @app.get("/")
-async def root():
-    return RedirectResponse(url="/ui")
+async def root(request: Request):
+    ingress_path = request.headers.get("X-Ingress-Path", "").rstrip("/")
+    return RedirectResponse(url=f"{ingress_path}/ui/")
 
 @app.get("/health")
 async def health():

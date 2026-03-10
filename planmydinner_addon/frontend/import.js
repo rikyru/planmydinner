@@ -274,7 +274,7 @@ const ImportWizard = defineComponent({
     methods: {
         async fetchProfiles() {
             try {
-                const resp = await fetch('/profiles/');
+                const resp = await window.apiFetch('/profiles/');
                 if (resp.ok) this.profiles = await resp.json();
             } catch (e) { /* silenzioso */ }
         },
@@ -289,7 +289,7 @@ const ImportWizard = defineComponent({
                 const formData = new FormData();
                 formData.append('pdf_file', this.file);
                 formData.append('profile_id', this.selectedProfile);
-                const resp = await fetch('/import/pdf', { method: 'POST', body: formData });
+                const resp = await window.apiFetch('/import/pdf', { method: 'POST', body: formData });
                 if (!resp.ok) {
                     const err = await resp.json().catch(() => ({ detail: 'Errore sconosciuto' }));
                     throw new Error(err.detail || 'Errore nel parsing del PDF');
@@ -312,7 +312,7 @@ const ImportWizard = defineComponent({
                 const formData = new FormData();
                 formData.append('profile_id', this.selectedProfile);
                 formData.append('text_content', this.textContent);
-                const resp = await fetch('/import/text', { method: 'POST', body: formData });
+                const resp = await window.apiFetch('/import/text', { method: 'POST', body: formData });
                 if (!resp.ok) {
                     const err = await resp.json().catch(() => ({ detail: 'Errore sconosciuto' }));
                     throw new Error(err.detail || 'Errore nell\'analisi del testo');
@@ -376,7 +376,7 @@ const ImportWizard = defineComponent({
                     free_meal_quota: this.editableFreeMealQuota ?? null,
                 };
 
-                const resp = await fetch('/import/save', {
+                const resp = await window.apiFetch('/import/save', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({

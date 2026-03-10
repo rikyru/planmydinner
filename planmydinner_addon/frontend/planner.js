@@ -671,7 +671,7 @@ const WeekView = defineComponent({
             this.loading = true;
             this.error = null;
             try {
-                const resp = await fetch('/profiles/');
+                const resp = await window.apiFetch('/profiles/');
                 this.profiles = await resp.json();
                 if (this.profiles.length >= 2) await this.loadWeekPlan();
             } catch (e) {
@@ -687,7 +687,7 @@ const WeekView = defineComponent({
                 profile_id_B: this.profileB?.id || '',
                 start_date: this.startDate,
             });
-            const resp = await fetch('/planner/weekly-plan?' + params);
+            const resp = await window.apiFetch('/planner/weekly-plan?' + params);
             if (resp.ok) {
                 this.weekPlan = await resp.json();
             } else if (resp.status === 404) {
@@ -707,7 +707,7 @@ const WeekView = defineComponent({
                     current_date: this.startDate,
                     fantasy_mode: fantasyMode,
                 });
-                const resp = await fetch('/planner/generate-week?' + params, { method: 'POST' });
+                const resp = await window.apiFetch('/planner/generate-week?' + params, { method: 'POST' });
                 if (!resp.ok) throw new Error(await resp.text());
                 this.weekPlan = await resp.json();
                 this.toast.add(fantasyMode ? '✨ Piano ExtraFantasy generato!' : 'Piano generato!', 'success');
@@ -722,7 +722,7 @@ const WeekView = defineComponent({
             // Read mode from settings to show appropriate label
             let modeLabel = 'AI';
             try {
-                const s = await fetch('/settings/');
+                const s = await window.apiFetch('/settings/');
                 if (s.ok) {
                     const sd = await s.json();
                     const modeMap = { off: 'algoritmo', per_slot: 'AI (14 chiamate)', full_week: 'AI (1 chiamata)' };
@@ -744,7 +744,7 @@ const WeekView = defineComponent({
                     fantasy_mode: false,
                     // no ai_mode param: backend reads it from AppSettings
                 });
-                const resp = await fetch('/planner/generate-week?' + params, { method: 'POST' });
+                const resp = await window.apiFetch('/planner/generate-week?' + params, { method: 'POST' });
                 if (!resp.ok) throw new Error(await resp.text());
                 this.weekPlan = await resp.json();
                 this.toast.add(`🤖 Piano generato con ${modeLabel}!`, 'success');
@@ -789,7 +789,7 @@ const WeekView = defineComponent({
                     meal_type: mealType,
                     current_date: dateStr,
                 });
-                const resp = await fetch('/planner/change-recipe?' + params, { method: 'POST' });
+                const resp = await window.apiFetch('/planner/change-recipe?' + params, { method: 'POST' });
                 if (!resp.ok) throw new Error(await resp.text());
                 const options = await resp.json();
                 if (!options.length) throw new Error('Nessuna ricetta trovata dall\'LLM.');
@@ -800,7 +800,7 @@ const WeekView = defineComponent({
                     current_date: dateStr,
                     recipe_id: options[0].recipe_id,
                 });
-                const applyResp = await fetch('/planner/apply-recipe-option?' + applyParams, { method: 'POST' });
+                const applyResp = await window.apiFetch('/planner/apply-recipe-option?' + applyParams, { method: 'POST' });
                 if (!applyResp.ok) throw new Error(await applyResp.text());
                 await this.loadWeekPlan();
                 // Auto-apri il modal con il dettaglio della ricetta appena generata
@@ -836,7 +836,7 @@ const WeekView = defineComponent({
                     meal_type: mealType,
                     current_date: dateStr,
                 });
-                const resp = await fetch('/planner/change-recipe?' + params, { method: 'POST' });
+                const resp = await window.apiFetch('/planner/change-recipe?' + params, { method: 'POST' });
                 if (!resp.ok) throw new Error(await resp.text());
                 this.recipeOptions = await resp.json();
             } catch (e) {
@@ -854,7 +854,7 @@ const WeekView = defineComponent({
                     current_date: this.currentDate,
                     recipe_id: recipeId,
                 });
-                const resp = await fetch('/planner/apply-recipe-option?' + params, { method: 'POST' });
+                const resp = await window.apiFetch('/planner/apply-recipe-option?' + params, { method: 'POST' });
                 if (!resp.ok) throw new Error(await resp.text());
                 this.closeModal();
                 await this.loadWeekPlan();
@@ -900,7 +900,7 @@ const WeekView = defineComponent({
                     recipe_id: recipeId,
                     component,
                 });
-                const resp = await fetch('/planner/change-component?' + params, { method: 'POST' });
+                const resp = await window.apiFetch('/planner/change-component?' + params, { method: 'POST' });
                 if (!resp.ok) throw new Error(await resp.text());
                 this.mealModalOptions = await resp.json();
             } catch (e) {
@@ -919,7 +919,7 @@ const WeekView = defineComponent({
                     current_date: this.mealModalDate,
                     recipe_id: recipeId,
                 });
-                const resp = await fetch('/planner/apply-recipe-option?' + params, { method: 'POST' });
+                const resp = await window.apiFetch('/planner/apply-recipe-option?' + params, { method: 'POST' });
                 if (!resp.ok) throw new Error(await resp.text());
                 this.closeMealModal();
                 await this.loadWeekPlan();
@@ -960,7 +960,7 @@ const WeekView = defineComponent({
                     veg_grams: c.veg_grams || 150,
                     notes: c.notes.trim(),
                 };
-                const resp = await fetch('/planner/set-custom-meal?' + params, {
+                const resp = await window.apiFetch('/planner/set-custom-meal?' + params, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(body),
@@ -999,7 +999,7 @@ const WeekView = defineComponent({
                     meal_type: this.mealModalMeal.meal_type,
                     current_date: this.mealModalDate,
                 });
-                const resp = await fetch('/planner/not-eaten?' + params, { method: 'POST' });
+                const resp = await window.apiFetch('/planner/not-eaten?' + params, { method: 'POST' });
                 if (!resp.ok) throw new Error(await resp.text());
                 this.closeMealModal();
                 await this.loadWeekPlan();
@@ -1019,7 +1019,7 @@ const WeekView = defineComponent({
                     meal_type: this.mealModalMeal.meal_type,
                     current_date: this.mealModalDate,
                 });
-                const resp = await fetch('/planner/not-eaten?' + params, { method: 'DELETE' });
+                const resp = await window.apiFetch('/planner/not-eaten?' + params, { method: 'DELETE' });
                 if (!resp.ok) throw new Error(await resp.text());
                 this.closeMealModal();
                 await this.loadWeekPlan();
@@ -1042,7 +1042,7 @@ const WeekView = defineComponent({
                     meal_type: this.mealModalMeal.meal_type,
                     current_date: this.mealModalDate,
                 });
-                const resp = await fetch('/planner/free-meal?' + params, {
+                const resp = await window.apiFetch('/planner/free-meal?' + params, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ title: this.freeMealModalTitle.trim() || 'Pasto libero', notes: '' }),
@@ -1066,7 +1066,7 @@ const WeekView = defineComponent({
                     meal_type: this.mealModalMeal.meal_type,
                     current_date: this.mealModalDate,
                 });
-                const resp = await fetch('/planner/free-meal?' + params, { method: 'DELETE' });
+                const resp = await window.apiFetch('/planner/free-meal?' + params, { method: 'DELETE' });
                 if (!resp.ok) throw new Error(await resp.text());
                 this.closeMealModal();
                 await this.loadWeekPlan();
@@ -1092,9 +1092,9 @@ const WeekView = defineComponent({
                     start_date: this.startDate,
                 });
                 const [statusResp, traceResp, logResp] = await Promise.all([
-                    fetch('/planner/debug-status?' + params),
-                    fetch('/planner/debug-generate?' + params),
-                    fetch('/planner/llm-log?last=50'),
+                    window.apiFetch('/planner/debug-status?' + params),
+                    window.apiFetch('/planner/debug-generate?' + params),
+                    window.apiFetch('/planner/llm-log?last=50'),
                 ]);
                 if (statusResp.ok) this.debugStatus = await statusResp.json();
                 if (traceResp.ok) this.debugTrace = await traceResp.json();
@@ -1118,7 +1118,7 @@ const WeekView = defineComponent({
             if (!rid) return;
             this.loadingRecipe = true;
             try {
-                const r = await fetch(`/recipes/detail/${rid}`);
+                const r = await window.apiFetch(`/recipes/detail/${rid}`);
                 this.mealRecipeDetail = r.ok ? await r.json() : null;
                 if (!r.ok) this.mealModalError = 'Ricetta non trovata.';
             } catch {

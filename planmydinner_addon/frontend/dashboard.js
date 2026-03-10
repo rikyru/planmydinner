@@ -107,7 +107,7 @@ const Dashboard = defineComponent({
             this.loading = true;
             this.error = null;
             try {
-                const resp = await fetch('/profiles/');
+                const resp = await window.apiFetch('/profiles/');
                 if (!resp.ok) throw new Error('Errore nel caricamento dei profili.');
                 this.profiles = await resp.json();
                 if (this.profiles.length >= 2) {
@@ -125,7 +125,7 @@ const Dashboard = defineComponent({
                 profile_id_B: this.profileB.id,
                 start_date: this.today,
             });
-            const resp = await fetch('/planner/weekly-plan?' + params);
+            const resp = await window.apiFetch('/planner/weekly-plan?' + params);
             if (!resp.ok) {
                 this.weeklyPlan = [];
                 return;
@@ -141,7 +141,7 @@ const Dashboard = defineComponent({
                     profile_id_B: this.profileB.id,
                     current_date: this.today,
                 });
-                const resp = await fetch('/planner/generate-week?' + params, { method: 'POST' });
+                const resp = await window.apiFetch('/planner/generate-week?' + params, { method: 'POST' });
                 if (!resp.ok) {
                     const data = await resp.json();
                     throw new Error(data.detail || 'Errore nella generazione.');
@@ -168,7 +168,7 @@ const Dashboard = defineComponent({
                     meal_type: mealType,
                     current_date: date,
                 });
-                const resp = await fetch('/planner/change-recipe?' + params, { method: 'POST' });
+                const resp = await window.apiFetch('/planner/change-recipe?' + params, { method: 'POST' });
                 if (!resp.ok) {
                     const data = await resp.json();
                     throw new Error(data.detail || 'Nessuna alternativa trovata.');
@@ -189,7 +189,7 @@ const Dashboard = defineComponent({
                     current_date: this.currentDate,
                     recipe_id: recipeId,
                 });
-                const resp = await fetch('/planner/apply-recipe-option?' + params, { method: 'POST' });
+                const resp = await window.apiFetch('/planner/apply-recipe-option?' + params, { method: 'POST' });
                 if (!resp.ok) throw new Error('Errore nell\'applicazione della ricetta.');
                 this.closeModal();
                 await this.fetchWeeklyPlan();
