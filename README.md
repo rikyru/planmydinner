@@ -202,6 +202,55 @@ title: Pasti di oggi
 
 ---
 
+## Profili
+
+Plan My Dinner supporta fino a **due profili** (Persona A e Persona B) con grammature distinte per ogni ingrediente. Utile per coppie o famiglie con piani alimentari diversi.
+
+- **Profilo A**: piano nutrizionale principale (es. chi segue la dieta del nutrizionista)
+- **Profilo B**: secondo profilo opzionale con proprie grammature (es. partner con fabbisogno diverso)
+- Il piano settimanale viene generato tenendo conto di entrambi i profili contemporaneamente
+- Ogni ricetta può avere grammature separate per A e B: il pianificatore mostra i valori corretti per ciascuno
+- Vai su **Profili** per creare/modificare i profili e i loro vincoli (categorie proteiche, limiti settimanali)
+- I vincoli (es. "carne rossa max 1 volta/sett") sono configurabili indipendentemente per profilo
+
+---
+
+## Funzionalità avanzate
+
+### Vista Settimana — azioni sul pasto
+
+Cliccando su un pasto nella vista settimanale si apre un popup con:
+
+- **↕ Cambia carboidrato** — sostituisce il carboidrato con un'altra opzione del piano, scalando i grammi
+- **↕ Cambia proteina** — sostituisce la proteina mantenendo il target proteico
+- **↕ Cambia verdura** — swap verdura con equivalente calorico
+- **↺ Cambia ricetta** — propone 3 ricette alternative dal catalogo
+- **✨ ExtraFantasy** — chiede all'IA una ricetta nuova generata al momento, coerente con i vincoli del piano
+- **📋 Vedi ricetta** — mostra ingredienti e nome completo della ricetta generata
+- **Non mangiato** (pasti passati) — registra che il pasto non è stato consumato
+- **Pasto libero** (pasti passati) — registra un pasto fuori piano
+
+### ExtraFantasy
+
+Genera una ricetta completamente nuova tramite LLM per quello slot specifico, rispettando:
+- Categoria proteica richiesta da quel giorno (es. "tocca il pesce")
+- Grammature del piano nutrizionale
+- Stagionalità e ingredienti in dispensa
+
+La ricetta viene mostrata subito in un modal con nome e ingredienti.
+
+### Pasti liberi e aderenza
+
+Nel piano nutrizionale puoi specificare un numero di **pasti liberi** a settimana (`free_meal_quota`). Il widget aderenza nella vista Oggi mostra quanti ne hai usati e quanti ne rimangono.
+
+### Debug LLM (sviluppatori)
+
+Con almeno 2 profili configurati, appare il bottone **🐛 Debug** in sidebar. Mostra:
+- **Trace generazione**: per ogni slot del piano, quali candidati erano disponibili, i filtri applicati e il punteggio finale
+- **Log LLM**: le ultime 50 chiamate all'IA con prompt completo e risposta grezza, espandibili
+
+---
+
 ## Flusso d'uso tipico
 
 ### 1. Importa il piano del nutrizionista
