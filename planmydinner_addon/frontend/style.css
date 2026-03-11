@@ -207,9 +207,35 @@
 /* Azioni pasto */
 .meal-actions {
     display: flex;
+    flex-direction: column;
     gap: 8px;
     padding: 10px 16px 14px;
     border-top: 1px solid #f1f3f5;
+}
+.btn-action-primary {
+    width: 100%;
+    padding: 11px;
+    font-size: 15px;
+    font-weight: 700;
+}
+.action-row-swaps {
+    display: flex;
+    gap: 6px;
+}
+.action-row-swaps .btn-swap {
+    flex: 1;
+    font-size: 12px;
+    padding: 8px 4px;
+    text-align: center;
+}
+.action-row-secondary {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+.action-row-secondary button {
+    font-size: 12px;
+    padding: 7px 10px;
 }
 .btn-detail { background: #e9ecef; color: #495057; }
 .btn-detail:hover { background: #dee2e6; }
@@ -367,3 +393,35 @@ textarea:focus { outline: none; border-color: #4263eb; box-shadow: 0 0 0 2px rgb
 .free-meal-widget { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 8px 12px; background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 8px; margin-bottom: 12px; font-size: 13px; }
 .free-meal-count { color: #495057; }
 .free-meal-msg { color: #2f9e44; font-weight: 600; }
+
+/* ---- Mobile overrides ---- */
+@media (max-width: 600px) {
+    .today-view { max-width: 100%; }
+
+    /* Adherence strip: stack se troppo stretta */
+    .adherence-strip { flex-wrap: wrap; }
+    .adherence-bar-wrap { max-width: 100%; width: 100%; }
+
+    /* Meal box: padding ridotto */
+    .meal-header { padding: 10px 12px 0; }
+    .recipe-name { padding: 5px 12px 8px; font-size: 14px; }
+    .meal-components { padding: 0 12px 8px; }
+    .meal-actions { padding: 10px 12px 12px; }
+
+    /* Dettaglio: full width, font ridotto */
+    .detail-panel { margin: 0 10px 10px; padding: 10px; }
+    .detail-table { font-size: 12px; }
+
+    /* Bottoni: touch target minimo 44px */
+    .btn-action-primary { padding: 13px; font-size: 16px; min-height: 48px; }
+    .action-row-swaps .btn-swap { min-height: 40px; }
+    .action-row-secondary button { min-height: 38px; }
+
+    /* Modal: quasi full screen su mobile */
+    .modal { padding: 16px; border-radius: 10px 10px 0 0; }
+    .modal-overlay { align-items: flex-end; }
+
+    /* Toast: centrato in basso invece che in basso a destra */
+    #toast-container { right: 12px; left: 12px; bottom: 12px; }
+    .toast { min-width: unset; width: 100%; text-align: center; }
+}

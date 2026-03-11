@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Plan My Dinner</title>
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🍽️</text></svg>">
-    <link rel="stylesheet" href="style.css?v=13">
+    <link rel="stylesheet" href="style.css?v=14">
     <link rel="stylesheet" href="dashboard.css">
     <script type="importmap">
       {
@@ -18,11 +18,13 @@
         /* ---- Layout base ---- */
         * { box-sizing: border-box; }
         body { margin: 0; font-family: system-ui, sans-serif; background: #f8f9fa; color: #212529; }
-        nav { display: flex; gap: 4px; padding: 12px 16px; background: #fff; border-bottom: 1px solid #dee2e6; }
-        nav a { padding: 8px 14px; border-radius: 6px; cursor: pointer; font-size: 14px; color: #495057; user-select: none; }
+        nav { display: flex; gap: 4px; padding: 8px 12px; background: #fff; border-bottom: 1px solid #dee2e6; overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none; -ms-overflow-style: none; }
+        nav::-webkit-scrollbar { display: none; }
+        nav a { padding: 8px 14px; border-radius: 6px; cursor: pointer; font-size: 14px; color: #495057; user-select: none; white-space: nowrap; flex-shrink: 0; }
         nav a:hover { background: #f1f3f5; }
         nav a.active { background: #4263eb; color: #fff; font-weight: 600; }
-        main { padding: 20px; }
+        main { padding: 16px; }
+        @media (max-width: 600px) { main { padding: 10px 12px; } }
 
         /* ---- Stati comuni ---- */
         .loading { padding: 24px; text-align: center; color: #868e96; font-style: italic; }
@@ -105,7 +107,7 @@
     </script>
     <script type="module">
         import { createApp, reactive } from 'vue';
-        import TodayView from './today.js?v=4';
+        import TodayView from './today.js?v=5';
         import WeekView from './planner.js?v=13';
         import ImportWizard from './import.js?v=11';
         import ShoppingList from './shopping.js?v=7';

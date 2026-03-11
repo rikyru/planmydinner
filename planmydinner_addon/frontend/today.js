@@ -134,24 +134,30 @@ const TodayView = defineComponent({
 
                         <!-- Normal meal actions -->
                         <template v-else>
-                            <button v-if="recipeDetails[meal.meal_type]"
-                                    @click="toggleDetail(meal.meal_type)"
-                                    class="btn-detail">
-                                {{ expandedMeal === meal.meal_type ? 'Chiudi' : 'Dettaglio' }}
-                            </button>
-                            <button @click="openChangeModal(meal.meal_type)">Cambia</button>
-                            <button v-if="meal.items?.[0]?.recipe_id"
-                                    @click="openComponentModal(meal.meal_type, meal.items[0].recipe_id, 'carb')"
-                                    class="btn-swap">↕ Carbo</button>
-                            <button v-if="meal.items?.[0]?.recipe_id"
-                                    @click="openComponentModal(meal.meal_type, meal.items[0].recipe_id, 'protein')"
-                                    class="btn-swap">↕ Proteina</button>
-                            <button v-if="meal.items?.[0]?.recipe_id"
-                                    @click="openComponentModal(meal.meal_type, meal.items[0].recipe_id, 'veg')"
-                                    class="btn-swap">↕ Verdura</button>
-                            <button @click="markConsumed(meal.meal_type)" class="btn-consumed">Ho mangiato</button>
-                            <button @click="openFreeMealPrompt(meal.meal_type)" class="btn-free">Pasto libero</button>
-                            <button @click="openCustomModal(meal.meal_type)" class="btn-secondary">Personalizzato</button>
+                            <!-- Primary: Ho mangiato -->
+                            <button @click="markConsumed(meal.meal_type)" class="btn-consumed btn-action-primary">✓ Ho mangiato</button>
+
+                            <!-- Swap row (solo se c'è una ricetta) -->
+                            <div v-if="meal.items?.[0]?.recipe_id" class="action-row-swaps">
+                                <button @click="openComponentModal(meal.meal_type, meal.items[0].recipe_id, 'carb')"
+                                        class="btn-swap">↕ Carbo</button>
+                                <button @click="openComponentModal(meal.meal_type, meal.items[0].recipe_id, 'protein')"
+                                        class="btn-swap">↕ Proteina</button>
+                                <button @click="openComponentModal(meal.meal_type, meal.items[0].recipe_id, 'veg')"
+                                        class="btn-swap">↕ Verdura</button>
+                            </div>
+
+                            <!-- Secondary actions -->
+                            <div class="action-row-secondary">
+                                <button @click="openChangeModal(meal.meal_type)" class="btn-secondary">↺ Cambia</button>
+                                <button v-if="recipeDetails[meal.meal_type]"
+                                        @click="toggleDetail(meal.meal_type)"
+                                        class="btn-detail">
+                                    {{ expandedMeal === meal.meal_type ? '✕ Chiudi' : '📋 Dettaglio' }}
+                                </button>
+                                <button @click="openFreeMealPrompt(meal.meal_type)" class="btn-free">🎉 Libero</button>
+                                <button @click="openCustomModal(meal.meal_type)" class="btn-secondary">✏️ Personalizzato</button>
+                            </div>
                         </template>
                     </div>
                 </div>
