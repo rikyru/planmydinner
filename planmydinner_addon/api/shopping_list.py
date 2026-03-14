@@ -14,13 +14,15 @@ async def get_shopping_list(
     profile_id_A: str,
     profile_id_B: str,
     start_date: date,
+    exclude_consumed: bool = False,
     db: Session = Depends(get_db)
 ):
     """
     Generate a shopping list for a given week.
+    If exclude_consumed=true, skips meals already marked as consumed from the plan.
     """
     planner = PlannerEngine(db)
-    return planner.generate_shopping_list_for_week(profile_id_A, profile_id_B, start_date)
+    return planner.generate_shopping_list_for_week(profile_id_A, profile_id_B, start_date, exclude_consumed)
 
 
 @router.get("/export/csv")
@@ -28,13 +30,14 @@ async def export_shopping_list_csv(
     profile_id_A: str,
     profile_id_B: str,
     start_date: date,
+    exclude_consumed: bool = False,
     db: Session = Depends(get_db)
 ):
     """
     Export the shopping list as a CSV file.
     """
     planner = PlannerEngine(db)
-    shopping_list = planner.generate_shopping_list_for_week(profile_id_A, profile_id_B, start_date)
+    shopping_list = planner.generate_shopping_list_for_week(profile_id_A, profile_id_B, start_date, exclude_consumed)
     lines = ["Nome,Quantità,Unità,Categoria"]
     for category, items in shopping_list.items_by_category.items():
         for item in items:

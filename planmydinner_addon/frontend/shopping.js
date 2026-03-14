@@ -35,6 +35,9 @@ const ShoppingList = defineComponent({
                     <label class="toggle-label">
                         <input type="checkbox" v-model="showPerProfile" /> Per persona
                     </label>
+                    <label class="toggle-label" title="Esclude i pasti già segnati come consumati questa settimana">
+                        <input type="checkbox" v-model="excludeConsumed" @change="loadShoppingList" /> Escludi già consumati
+                    </label>
                     <button v-if="doneCount > 0" @click="clearDone" class="btn-secondary" style="font-size:13px">
                         Rimuovi {{ doneCount }} presi ✓
                     </button>
@@ -115,6 +118,7 @@ const ShoppingList = defineComponent({
             error: null,
             collapsedCategories: {},
             showPerProfile: false,
+            excludeConsumed: false,
             startDate: mondayStr,
             today,
             showAddForm: false,
@@ -137,6 +141,7 @@ const ShoppingList = defineComponent({
                 profile_id_A: this.profileA.id,
                 profile_id_B: this.profileB.id,
                 start_date: this.startDate,
+                exclude_consumed: this.excludeConsumed,
             });
             return '/shopping-list/export/csv?' + params;
         },
@@ -180,6 +185,7 @@ const ShoppingList = defineComponent({
                 profile_id_A: this.profileA.id,
                 profile_id_B: this.profileB?.id || '',
                 start_date: this.startDate,
+                exclude_consumed: this.excludeConsumed,
             });
             try {
                 const resp = await window.apiFetch('/shopping-list?' + params);

@@ -16,6 +16,10 @@ const WeekView = defineComponent({
                     <span class="sidebar-range">→ {{ endDateLabel }}</span>
                 </div>
 
+                <div v-if="isPastWeek" class="past-week-warning" title="Stai visualizzando una settimana passata">
+                    ⚠️ Settimana passata
+                </div>
+
                 <div class="sidebar-actions">
                     <button @click.stop="goToToday" class="btn-today sidebar-btn">Oggi</button>
                     <template v-if="!loading && profiles.length >= 2">
@@ -639,6 +643,12 @@ const WeekView = defineComponent({
     computed: {
         profileA() { return this.profiles[0] || null; },
         profileB() { return this.profiles[1] || null; },
+        isPastWeek() {
+            if (!this.startDate) return false;
+            const endOfWeek = new Date(this.startDate + 'T12:00:00');
+            endOfWeek.setDate(endOfWeek.getDate() + 6);
+            return endOfWeek.toISOString().slice(0, 10) < this.today;
+        },
         endDateLabel() {
             if (!this.startDate) return '';
             const end = new Date(this.startDate + 'T12:00:00');
@@ -698,6 +708,7 @@ const WeekView = defineComponent({
         },
         async generateWeek(fantasyMode = false) {
             if (!this.profileA || !this.profileB) return;
+            if (this.isPastWeek && !confirm('Stai generando un piano per una settimana già passata. Continuare?')) return;
             this.generating = true;
             this.error = null;
             try {
@@ -719,6 +730,7 @@ const WeekView = defineComponent({
         },
         async generateWithAI() {
             if (!this.profileA || !this.profileB) return;
+            if (this.isPastWeek && !confirm('Stai generando un piano per una settimana già passata. Continuare?')) return;
             // Read mode from settings to show appropriate label
             let modeLabel = 'AI';
             try {

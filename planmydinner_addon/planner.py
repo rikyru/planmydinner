@@ -2786,7 +2786,7 @@ class PlannerEngine:
 
         return [], False
 
-    def generate_shopping_list_for_week(self, profile_id_A: str, profile_id_B: str, start_date: date) -> schemas.AggregatedShoppingList:
+    def generate_shopping_list_for_week(self, profile_id_A: str, profile_id_B: str, start_date: date, exclude_consumed: bool = False) -> schemas.AggregatedShoppingList:
         # Find plan by exact start_date (rolling, no Monday-snapping)
         cached = self.db.query(GeneratedWeeklyPlan).filter(
             GeneratedWeeklyPlan.profile_id_A == profile_id_A,
@@ -2798,7 +2798,9 @@ class PlannerEngine:
             weekly_plan = self.generate_weekly_plan(profile_id_A, profile_id_B, start_date)
         pantry_items = self._get_pantry_items()
 
-        # Raccogli pasti "mangiati fuori" (override free-text) per escluderli dalla spesa
+        # Raccogli pasti da escludere dalla spesa:
+        # - override free-text (mangiati fuori) sempre esclusi
+        # - pasti consumati dal piano (type="recipe") esclusi se exclude_consumed=True
         override_meals: set = set()
         end_date = start_date + timedelta(days=6)
         all_consumed_for_week = self._get_consumed_entries(profile_id_A, end_date, 7)
@@ -2806,6 +2808,8 @@ class PlannerEngine:
             all_consumed_for_week += self._get_consumed_entries(profile_id_B, end_date, 7)
         for entry in all_consumed_for_week:
             if entry.type == "override" and entry.override_details and entry.override_details.free_text_name:
+                override_meals.add((entry.date, entry.meal_type))
+            elif exclude_consumed and entry.type == "recipe":
                 override_meals.add((entry.date, entry.meal_type))
 
         # item_key → {name, qty_A, qty_B, unit, category, notes}

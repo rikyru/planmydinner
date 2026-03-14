@@ -20,6 +20,7 @@
 .sidebar-range { display: block; font-size: 13px; color: #868e96; margin-top: 6px; }
 .sidebar-actions { display: flex; flex-direction: column; gap: 8px; }
 .sidebar-btn { width: 100%; text-align: center; }
+.past-week-warning { background: #fff3cd; color: #856404; border: 1px solid #ffc107; border-radius: 6px; padding: 6px 10px; font-size: 12px; font-weight: 600; margin-bottom: 8px; }
 
 /* Buttons */
 .btn-regenerate { background: #4263eb; color: #fff; border-radius: 6px; padding: 8px 16px; border: none; cursor: pointer; font-size: 14px; }
