@@ -49,10 +49,10 @@ router = APIRouter(
 # ---------------------------------------------------------------------------
 
 def _find_plan_covering_date(db: Session, profile_id_A: str, target_date: date) -> Optional[GeneratedWeeklyPlan]:
-    """Find any saved GeneratedWeeklyPlan whose 7-day window covers target_date."""
+    """Find the most recently generated plan whose 7-day window covers target_date."""
     plans = db.query(GeneratedWeeklyPlan).filter(
         GeneratedWeeklyPlan.profile_id_A == profile_id_A,
-    ).all()
+    ).order_by(GeneratedWeeklyPlan.generated_at.desc()).all()
     for plan in plans:
         plan_start = date.fromisoformat(plan.week_start_date)
         if plan_start <= target_date <= plan_start + timedelta(days=6):
@@ -62,29 +62,33 @@ def _find_plan_covering_date(db: Session, profile_id_A: str, target_date: date) 
 
 def _save_generated_plan(db: Session, profile_id_A: str, profile_id_B: Optional[str],
                          start_date: date, daily_plans: List[schemas.DailyPlannedMeals]) -> GeneratedWeeklyPlan:
-    """Persist a generated weekly plan keyed by exact start_date (no Monday-snapping)."""
-    existing = db.query(GeneratedWeeklyPlan).filter(
+    """Persist a generated weekly plan, replacing any overlapping existing plans."""
+    # Delete all plans for this profile whose window overlaps with [start_date, start_date+6].
+    # A plan with week_start W overlaps if W <= start_date+6 AND W+6 >= start_date,
+    # i.e. W is in [start_date-6, start_date+6].
+    end_date = start_date + timedelta(days=6)
+    overlap_min = (start_date - timedelta(days=6)).isoformat()
+    overlap_max = end_date.isoformat()
+    old_plans = db.query(GeneratedWeeklyPlan).filter(
         GeneratedWeeklyPlan.profile_id_A == profile_id_A,
-        GeneratedWeeklyPlan.week_start_date == start_date.isoformat()
-    ).first()
+        GeneratedWeeklyPlan.week_start_date >= overlap_min,
+        GeneratedWeeklyPlan.week_start_date <= overlap_max,
+    ).all()
+    for old in old_plans:
+        db.delete(old)
+
     serialized = [dp.model_dump() for dp in daily_plans]
-    if existing:
-        existing.profile_id_B = profile_id_B
-        existing.generated_at = date.today().isoformat()
-        existing.daily_plans = serialized
-        db.add(existing)
-    else:
-        existing = GeneratedWeeklyPlan(
-            id=str(uuid.uuid4()),
-            profile_id_A=profile_id_A,
-            profile_id_B=profile_id_B,
-            week_start_date=start_date.isoformat(),
-            generated_at=date.today().isoformat(),
-            daily_plans=serialized,
-        )
-        db.add(existing)
+    new_plan = GeneratedWeeklyPlan(
+        id=str(uuid.uuid4()),
+        profile_id_A=profile_id_A,
+        profile_id_B=profile_id_B,
+        week_start_date=start_date.isoformat(),
+        generated_at=date.today().isoformat(),
+        daily_plans=serialized,
+    )
+    db.add(new_plan)
     db.commit()
-    return existing
+    return new_plan
 
 
 # ---------------------------------------------------------------------------
