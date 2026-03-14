@@ -26,7 +26,6 @@ node_modules/
 *.pdf
 
 # File di sviluppo interni
-prompt.txt
 context/
 .claude/
 

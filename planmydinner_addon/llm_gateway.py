@@ -410,12 +410,12 @@ class LLMGateway:
                 response = self._client.chat.completions.create(
                     model=self.model,
                     messages=messages,
-                    temperature=0.4,
+                    temperature=self.temperature,
                     response_format={"type": "json_object"},
                 )
                 raw = response.choices[0].message.content
             elif self.provider == "ollama":
-                response = self._client.chat(model=self.model, messages=messages)
+                response = self._client.chat(model=self.model, messages=messages, options={"temperature": self.temperature})
                 raw = response["message"]["content"]
             else:
                 _LOGGER.error(f"Provider LLM non supportato: {self.provider}")
@@ -457,7 +457,7 @@ class LLMGateway:
         if custom_rules.strip():
             custom_block = f"\nRegole aggiuntive dell'utente:\n{custom_rules}\n"
 
-        prompt = f"""Sei un pianificatore nutrizionale esperto. Genera un piano settimanale completo per 7 giorni a partire da {start_date}.
+        prompt = f"""Sei uno chef italiano e pianificatore nutrizionale esperto. Genera un piano settimanale VARIO e CREATIVO per 7 giorni a partire da {start_date}.
 
 Profilo principale: {profile_id_A}, profilo secondario: {profile_id_B}.
 
@@ -466,16 +466,17 @@ Vincoli nutritivi:
 - Grammi proteine target: {prot_text}
 
 Frequenze proteiche settimanali (distribuite su 14 pasti):
-{freq_text if freq_text else "  Nessuna frequenza specifica, sii vario."}
+{freq_text if freq_text else "  Nessuna frequenza specifica — alterna pollo/tacchino, pesce, carne rossa, legumi, uova, formaggio."}
 {custom_block}
-Regole generali:
-- Genera esattamente 7 giorni, ognuno con pranzo e cena.
+REGOLE DI VARIETÀ E CREATIVITÀ:
 - Non ripetere la stessa ricetta nella settimana.
-- Alterna le fonti proteiche (pollo, pesce, carne rossa, legumi, uova, latticini).
-- Includi sempre una verdura per ogni pasto.
-- Difficulty deve essere uno tra: facile, media, difficile, sconosciuto.
-- food_group deve essere uno tra: carboidrati, proteine, grassi, verdure, frutta, latticini, altro.
-- Le quantità devono essere in grammi (unit: "g").
+- Non usare sempre gli stessi carboidrati: alterna pasta, riso, orzo, farro, patate, pane, quinoa, gnocchi.
+- Non usare sempre gli stessi metodi di cottura: alterna forno, tegame, griglia, vapore, saltato, cartoccio.
+- Dai nomi specifici e invitanti alle ricette (es. "Salmone al cartoccio con finocchio e agrumi" non "Pesce al forno").
+- Ispirati alla cucina italiana regionale: scaloppine, involtini, risotti, zuppe, arrosti, frittate, polpette, insalate di cereali, pasta fredda, carpacci, tartare.
+- Varia le verdure: zucchine, melanzane, broccoli, spinaci, cavolo, fagiolini, peperoni, carote, finocchio, radicchio, carciofi.
+- Aggiungi aromi e sapori: rosmarino, timo, basilico, origano, zafferano, curcuma, paprika, limone, capperi, olive.
+- food_group per le proteine deve essere specifico: "carne_bianca" (pollo/tacchino), "pesce", "carne_rossa", "legumi", "uova", "latticini".
 
 Rispondi SOLO con un JSON valido, senza testo aggiuntivo, con questa struttura esatta:
 {{
@@ -485,24 +486,24 @@ Rispondi SOLO con un JSON valido, senza testo aggiuntivo, con questa struttura e
       "meals": [
         {{
           "meal_type": "pranzo",
-          "recipe_name": "Nome ricetta",
+          "recipe_name": "Petto di pollo alle erbe con orzo e zucchine grigliate",
           "difficulty": "facile",
           "total_time_minutes": 30,
           "ingredients": [
-            {{"name": "pasta", "food_group": "carboidrati", "grams_{profile_id_A}": 80, "grams_{profile_id_B}": 70}},
-            {{"name": "pollo", "food_group": "proteine", "grams_{profile_id_A}": 150, "grams_{profile_id_B}": 130}},
-            {{"name": "insalata", "food_group": "verdure", "grams_{profile_id_A}": 80, "grams_{profile_id_B}": 80}}
+            {{"name": "orzo perlato", "food_group": "carboidrati", "grams_{profile_id_A}": 80, "grams_{profile_id_B}": 70}},
+            {{"name": "petto di pollo", "food_group": "carne_bianca", "grams_{profile_id_A}": 150, "grams_{profile_id_B}": 130}},
+            {{"name": "zucchine", "food_group": "verdure", "grams_{profile_id_A}": 120, "grams_{profile_id_B}": 120}}
           ]
         }},
         {{
           "meal_type": "cena",
-          "recipe_name": "Nome ricetta",
+          "recipe_name": "Salmone al cartoccio con finocchio e patate",
           "difficulty": "facile",
-          "total_time_minutes": 25,
+          "total_time_minutes": 35,
           "ingredients": [
-            {{"name": "riso", "food_group": "carboidrati", "grams_{profile_id_A}": 70, "grams_{profile_id_B}": 60}},
-            {{"name": "salmone", "food_group": "proteine", "grams_{profile_id_A}": 130, "grams_{profile_id_B}": 120}},
-            {{"name": "spinaci", "food_group": "verdure", "grams_{profile_id_A}": 100, "grams_{profile_id_B}": 100}}
+            {{"name": "patate", "food_group": "carboidrati", "grams_{profile_id_A}": 150, "grams_{profile_id_B}": 130}},
+            {{"name": "salmone", "food_group": "pesce", "grams_{profile_id_A}": 130, "grams_{profile_id_B}": 120}},
+            {{"name": "finocchio", "food_group": "verdure", "grams_{profile_id_A}": 100, "grams_{profile_id_B}": 100}}
           ]
         }}
       ]

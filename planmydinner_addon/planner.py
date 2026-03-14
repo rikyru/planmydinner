@@ -906,6 +906,7 @@ class PlannerEngine:
             profile_id_B=profile_id_B,
             start_date=start_date.isoformat(),
             custom_rules=custom_rules,
+            use_cache=False,  # ogni generazione deve essere fresca e varia
         )
         if not raw:
             _LOGGER.error("[full_week_llm] LLM ha restituito None.")
