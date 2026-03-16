@@ -183,21 +183,33 @@ Inserisci host e porta del backend (es. `localhost` porta `8000`).
 
 ## Lovelace Card
 
-La card `planmydinner-card` mostra pranzo e cena di oggi, il conteggio prodotti della spesa e un link alla Web UI.
+> **Repo separato**: [github.com/rikyru/planmydinner-card](https://github.com/rikyru/planmydinner-card)
 
-### Installazione
+La card `planmydinner-card` mostra pranzo e cena di oggi, la strip settimanale, lista spesa e dispensa, con pulsanti per generare il piano e aprire la Web UI.
 
-1. Copia `www/planmydinner-card.js` nella directory `www/` della tua configurazione HA
+### Installazione tramite HACS
+
+1. **HACS → Frontend → ⋮ → Custom repositories**
+2. Aggiungi `https://github.com/rikyru/planmydinner-card` come tipo **Lovelace**
+3. Cerca "Plan My Dinner Card" e installa
+4. Ricarica la cache del browser
+
+### Installazione manuale
+
+1. Scarica `planmydinner-card.js` dal [repo della card](https://github.com/rikyru/planmydinner-card) e copialo in `config/www/`
 2. Vai su **Impostazioni → Dashboard → Risorse** e aggiungi:
    - URL: `/local/planmydinner-card.js`
    - Tipo: **JavaScript Module**
-3. Riavvia HA o ricarica la dashboard
 
 ### Uso in Lovelace YAML
 
 ```yaml
 type: custom:planmydinner-card
-title: Pasti di oggi
+title: "Piano Pasti"      # opzionale
+show_week: true            # strip settimanale (default true)
+show_shopping: true        # lista spesa + dispensa (default true)
+show_actions: true         # pulsanti genera/apri UI (default true)
+compact: false             # solo pasti, niente strip/spesa/azioni
 ```
 
 ---
@@ -348,8 +360,6 @@ planmydinner/
 │       └── settings.js       # Impostazioni
 ├── custom_components/
 │   └── planmydinner/         # HA Custom Integration
-├── www/
-│   └── planmydinner-card.js  # Lovelace card
 ├── docker-compose.standalone.yml
 ├── docker-compose.yml        # Con HA + Ollama
 └── .env.example
