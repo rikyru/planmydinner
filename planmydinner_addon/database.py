@@ -191,6 +191,7 @@ def create_db_and_tables():
             ("plan_rules", "veg_target", "JSON"),
             ("plan_rules", "free_meal_quota", "INTEGER"),
             ("plan_rules", "meal_slots", "JSON"),
+            ("app_settings", "llm_generation_mode", "TEXT"),
         ]:
             try:
                 conn.execute(__import__("sqlalchemy").text(
