@@ -15,21 +15,40 @@ _ADDON_SLUGS = ["local_planmydinner", "planmydinner"]
 
 
 async def _fetch_ingress_path(hass: HomeAssistant) -> str | None:
-    """Get the add-on ingress URL path via the HassIO handler stored in hass.data."""
-    hassio = hass.data.get("hassio")
-    if hassio is None:
-        _LOGGER.warning("planmydinner: hassio not available in hass.data, cannot fetch ingress path")
-        return None
-    for slug in _ADDON_SLUGS:
-        try:
-            info = await hassio.get_addon_info(slug)
-            url = info.get("ingress_url")
-            if url:
-                _LOGGER.debug("Got ingress_url for slug %s: %s", slug, url)
-                return url
-        except Exception as e:
-            _LOGGER.debug("get_addon_info failed for slug %s: %s", slug, e)
-    _LOGGER.warning("planmydinner: ingress_url not found for slugs %s", _ADDON_SLUGS)
+    """Get the add-on ingress URL path via the HA hassio component."""
+    # Try the public async_get_addon_info API (HA 2023.3+)
+    try:
+        from homeassistant.components.hassio import async_get_addon_info
+        for slug in _ADDON_SLUGS:
+            try:
+                info = await async_get_addon_info(hass, slug)
+                url = info.get("ingress_url")
+                if url:
+                    _LOGGER.debug("Got ingress_url via async_get_addon_info for %s: %s", slug, url)
+                    return url
+                _LOGGER.warning("planmydinner: async_get_addon_info ok for %s but no ingress_url, got keys: %s", slug, list(info.keys()))
+            except Exception as e:
+                _LOGGER.warning("planmydinner: async_get_addon_info failed for slug %s: %s", slug, e)
+    except ImportError as e:
+        _LOGGER.warning("planmydinner: async_get_addon_info not available: %s", e)
+
+    # Fallback: search hass.data for a hassio-like handler object
+    for key in ["hassio", "homeassistant.components.hassio", "hassio_handler"]:
+        obj = hass.data.get(key)
+        if obj is not None and hasattr(obj, "get_addon_info"):
+            for slug in _ADDON_SLUGS:
+                try:
+                    info = await obj.get_addon_info(slug)
+                    url = info.get("ingress_url")
+                    if url:
+                        return url
+                except Exception as e:
+                    _LOGGER.debug("hass.data[%s].get_addon_info(%s) failed: %s", key, slug, e)
+
+    _LOGGER.warning(
+        "planmydinner: could not get ingress_url. hass.data keys containing 'hassio': %s",
+        [k for k in hass.data if "hassio" in str(k).lower()],
+    )
     return None
 
 def _get_monday(d: date) -> date:
