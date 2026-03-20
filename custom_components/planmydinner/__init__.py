@@ -3,13 +3,50 @@ from __future__ import annotations
 import logging
 from datetime import date
 
+from homeassistant.components.http import HomeAssistantView
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from aiohttp.web import Response
 
 from .const import DOMAIN, PLATFORMS, CONF_PROFILE_A, CONF_PROFILE_B
 from .api_client import PlanMyDinnerApiClient
 from .coordinator import PlanMyDinnerCoordinator
+
+_LOGGER = logging.getLogger(__name__)
+_PROXY_KEY = "_proxy_registered"
+
+
+class PlanMyDinnerProxyView(HomeAssistantView):
+    """Proxy Lovelace card API calls to the planmydinner backend (bypasses CORS/network issues)."""
+
+    url = "/api/planmydinner/{path:.*}"
+    name = "api:planmydinner"
+    requires_auth = True
+
+    def __init__(self, api_client: PlanMyDinnerApiClient) -> None:
+        self._client = api_client
+
+    async def _proxy(self, request, method: str, path: str) -> Response:
+        query = request.query_string
+        url = f"{self._client.base_url}/{path}"
+        if query:
+            url += f"?{query}"
+        body = await request.read() if method in ("POST", "PUT", "PATCH") else None
+        try:
+            async with self._client.session.request(method, url, data=body) as resp:
+                content = await resp.read()
+                ct = resp.headers.get("Content-Type", "application/json").split(";")[0]
+                return Response(body=content, status=resp.status, content_type=ct)
+        except Exception as exc:
+            _LOGGER.error("PlanMyDinner proxy error (%s %s): %s", method, url, exc)
+            return Response(text=str(exc), status=502, content_type="text/plain")
+
+    async def get(self, request, path="") -> Response:
+        return await self._proxy(request, "GET", path)
+
+    async def post(self, request, path="") -> Response:
+        return await self._proxy(request, "POST", path)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -30,6 +67,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await coordinator.async_config_entry_first_refresh()
 
     hass.data[DOMAIN][entry.entry_id] = coordinator
+
+    # Register HTTP proxy view once (allows Lovelace card to reach the backend via HA's external URL)
+    if not hass.data[DOMAIN].get(_PROXY_KEY):
+        hass.http.register_view(PlanMyDinnerProxyView(api_client))
+        hass.data[DOMAIN][_PROXY_KEY] = True
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 

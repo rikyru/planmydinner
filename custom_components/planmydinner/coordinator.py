@@ -10,46 +10,6 @@ from .const import DOMAIN, UPDATE_INTERVAL_MINUTES
 from .api_client import PlanMyDinnerApiClient
 
 _LOGGER = logging.getLogger(__name__)
-# Try both slugs: locally installed add-ons use "local_<slug>", repo add-ons use the plain slug
-_ADDON_SLUGS = ["local_planmydinner", "planmydinner"]
-
-
-async def _fetch_ingress_path(hass: HomeAssistant) -> str | None:
-    """Get the add-on ingress URL path via the HA hassio component."""
-    # Try the public async_get_addon_info API (HA 2023.3+)
-    try:
-        from homeassistant.components.hassio import async_get_addon_info
-        for slug in _ADDON_SLUGS:
-            try:
-                info = await async_get_addon_info(hass, slug)
-                url = info.get("ingress_url")
-                if url:
-                    _LOGGER.debug("Got ingress_url via async_get_addon_info for %s: %s", slug, url)
-                    return url
-                _LOGGER.warning("planmydinner: async_get_addon_info ok for %s but no ingress_url, got keys: %s", slug, list(info.keys()))
-            except Exception as e:
-                _LOGGER.warning("planmydinner: async_get_addon_info failed for slug %s: %s", slug, e)
-    except ImportError as e:
-        _LOGGER.warning("planmydinner: async_get_addon_info not available: %s", e)
-
-    # Fallback: search hass.data for a hassio-like handler object
-    for key in ["hassio", "homeassistant.components.hassio", "hassio_handler"]:
-        obj = hass.data.get(key)
-        if obj is not None and hasattr(obj, "get_addon_info"):
-            for slug in _ADDON_SLUGS:
-                try:
-                    info = await obj.get_addon_info(slug)
-                    url = info.get("ingress_url")
-                    if url:
-                        return url
-                except Exception as e:
-                    _LOGGER.debug("hass.data[%s].get_addon_info(%s) failed: %s", key, slug, e)
-
-    _LOGGER.warning(
-        "planmydinner: could not get ingress_url. All hass.data keys: %s",
-        sorted(str(k) for k in hass.data.keys()),
-    )
-    return None
 
 def _get_monday(d: date) -> date:
     return d - timedelta(days=d.weekday())
@@ -116,9 +76,5 @@ class PlanMyDinnerCoordinator(DataUpdateCoordinator):
             _LOGGER.warning("Could not fetch pantry: %s", e)
             results["pantry"] = []
 
-        # Ingress path for Lovelace card (via HA Supervisor — no add-on rebuild needed)
-        if not hasattr(self, "_ingress_path"):
-            self._ingress_path = await _fetch_ingress_path(self.hass)
-        results["ingress_path"] = self._ingress_path
 
         return results
