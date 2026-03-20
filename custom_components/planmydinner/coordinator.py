@@ -46,8 +46,8 @@ async def _fetch_ingress_path(hass: HomeAssistant) -> str | None:
                     _LOGGER.debug("hass.data[%s].get_addon_info(%s) failed: %s", key, slug, e)
 
     _LOGGER.warning(
-        "planmydinner: could not get ingress_url. hass.data keys containing 'hassio': %s",
-        [k for k in hass.data if "hassio" in str(k).lower()],
+        "planmydinner: could not get ingress_url. All hass.data keys: %s",
+        sorted(str(k) for k in hass.data.keys()),
     )
     return None
 
