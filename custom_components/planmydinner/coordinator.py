@@ -1,11 +1,9 @@
 """DataUpdateCoordinator for Plan My Dinner."""
 from __future__ import annotations
 import logging
-import os
 from datetime import date, timedelta
 
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import DOMAIN, UPDATE_INTERVAL_MINUTES
@@ -17,44 +15,21 @@ _ADDON_SLUGS = ["local_planmydinner", "planmydinner"]
 
 
 async def _fetch_ingress_path(hass: HomeAssistant) -> str | None:
-    """Get the add-on ingress URL path from the HA Supervisor."""
-    # Preferred: use HA's own hassio component API (no token needed)
-    try:
-        from homeassistant.components.hassio import async_get_addon_info
-        for slug in _ADDON_SLUGS:
-            try:
-                info = await async_get_addon_info(hass, slug)
-                url = info.get("ingress_url")
-                if url:
-                    _LOGGER.debug("Got ingress_url via hassio API for slug %s: %s", slug, url)
-                    return url
-            except Exception:
-                continue
-    except ImportError:
-        pass
-
-    # Fallback: direct HTTP call to supervisor
-    token = os.getenv("SUPERVISOR_TOKEN")
-    if not token:
-        _LOGGER.warning("planmydinner: SUPERVISOR_TOKEN not set, cannot fetch ingress path")
+    """Get the add-on ingress URL path via the HassIO handler stored in hass.data."""
+    hassio = hass.data.get("hassio")
+    if hassio is None:
+        _LOGGER.warning("planmydinner: hassio not available in hass.data, cannot fetch ingress path")
         return None
-    session = async_get_clientsession(hass)
     for slug in _ADDON_SLUGS:
         try:
-            async with session.get(
-                f"http://supervisor/addons/{slug}/info",
-                headers={"Authorization": f"Bearer {token}"},
-            ) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    url = data.get("data", {}).get("ingress_url")
-                    if url:
-                        _LOGGER.debug("Got ingress_url via HTTP for slug %s: %s", slug, url)
-                        return url
-                else:
-                    _LOGGER.debug("Supervisor returned %s for slug %s", resp.status, slug)
+            info = await hassio.get_addon_info(slug)
+            url = info.get("ingress_url")
+            if url:
+                _LOGGER.debug("Got ingress_url for slug %s: %s", slug, url)
+                return url
         except Exception as e:
-            _LOGGER.warning("planmydinner: supervisor HTTP call failed for slug %s: %s", slug, e)
+            _LOGGER.debug("get_addon_info failed for slug %s: %s", slug, e)
+    _LOGGER.warning("planmydinner: ingress_url not found for slugs %s", _ADDON_SLUGS)
     return None
 
 def _get_monday(d: date) -> date:
