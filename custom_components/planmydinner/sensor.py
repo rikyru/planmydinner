@@ -110,6 +110,7 @@ class MealPlanWeekSensor(_PlanMyDinnerSensor):
         self._attr_icon = "mdi:calendar-week"
         self._profile_id_A = coordinator.profile_id_A
         self._profile_id_B = coordinator.profile_id_B
+        self._coordinator = coordinator
 
     @property
     def native_value(self) -> str:
@@ -137,7 +138,13 @@ class MealPlanWeekSensor(_PlanMyDinnerSensor):
                 if items:
                     meal_names.append(f"{meal.get('meal_type')}: {items[0].get('item_name','')}")
             summary[d] = meal_names
-        return {"days": summary, "profile_id_A": self._profile_id_A, "profile_id_B": self._profile_id_B}
+        ingress_path = (self._coordinator.data or {}).get("ingress_path")
+        return {
+            "days": summary,
+            "profile_id_A": self._profile_id_A,
+            "profile_id_B": self._profile_id_B,
+            "ingress_path": ingress_path,
+        }
 
 
 class ShoppingListSensor(_PlanMyDinnerSensor):

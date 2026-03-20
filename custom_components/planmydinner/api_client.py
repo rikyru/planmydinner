@@ -83,6 +83,10 @@ class PlanMyDinnerApiClient:
         path = f"/planner/generated-week?profile_id_A={profile_id_A}&profile_id_B={profile_id_B}&start_date={start_date}"
         return await self._request("GET", path)
 
+    async def get_meta_info(self) -> Dict[str, Any]:
+        """Get add-on meta info (ingress_path, etc.)."""
+        return await self._request("GET", "/meta/info")
+
     async def get_profiles(self) -> Dict[str, Any]:
         """Get all profiles."""
         return await self._request("GET", "/profiles")

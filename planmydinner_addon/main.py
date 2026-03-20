@@ -1,12 +1,32 @@
 import os
 import mimetypes
+import httpx
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import RedirectResponse, HTMLResponse
+from fastapi.responses import RedirectResponse, HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from .database import create_db_and_tables # Relative import
 from .llm_gateway import LLMGateway # Import LLMGateway
+
+
+async def _fetch_ingress_path() -> str | None:
+    """Ask the HA Supervisor for this add-on's ingress URL path."""
+    token = os.getenv("SUPERVISOR_TOKEN")
+    if not token:
+        return None
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.get(
+                "http://supervisor/addons/self/info",
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=5.0,
+            )
+            if r.status_code == 200:
+                return r.json().get("data", {}).get("ingress_url")
+    except Exception:
+        pass
+    return None
 
 # Explicitly import routers with relative paths
 from .api import profiles as profiles_router
@@ -75,6 +95,7 @@ async def lifespan(app: FastAPI):
         _db.close()
 
     app.state.llm_gateway = gw
+    app.state.ingress_path = await _fetch_ingress_path()
 
     yield
     print("Shutting down...")
@@ -90,6 +111,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.get("/meta/info", include_in_schema=False)
+async def meta_info(request: Request):
+    return JSONResponse({"ingress_path": request.app.state.ingress_path})
+
 
 # Construct the absolute path to the frontend directory
 frontend_dir = os.path.join(os.path.dirname(__file__), "frontend")

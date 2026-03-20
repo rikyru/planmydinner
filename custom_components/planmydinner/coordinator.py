@@ -77,4 +77,12 @@ class PlanMyDinnerCoordinator(DataUpdateCoordinator):
             _LOGGER.warning("Could not fetch pantry: %s", e)
             results["pantry"] = []
 
+        # Meta (ingress_path for Lovelace card)
+        try:
+            meta = await self.api_client.get_meta_info()
+            results["ingress_path"] = meta.get("ingress_path")
+        except Exception as e:
+            _LOGGER.debug("Could not fetch meta info: %s", e)
+            results["ingress_path"] = None
+
         return results
