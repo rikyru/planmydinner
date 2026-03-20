@@ -12,25 +12,49 @@ from .const import DOMAIN, UPDATE_INTERVAL_MINUTES
 from .api_client import PlanMyDinnerApiClient
 
 _LOGGER = logging.getLogger(__name__)
-_ADDON_SLUG = "planmydinner"
+# Try both slugs: locally installed add-ons use "local_<slug>", repo add-ons use the plain slug
+_ADDON_SLUGS = ["local_planmydinner", "planmydinner"]
 
 
 async def _fetch_ingress_path(hass: HomeAssistant) -> str | None:
     """Get the add-on ingress URL path from the HA Supervisor."""
+    # Preferred: use HA's own hassio component API (no token needed)
+    try:
+        from homeassistant.components.hassio import async_get_addon_info
+        for slug in _ADDON_SLUGS:
+            try:
+                info = await async_get_addon_info(hass, slug)
+                url = info.get("ingress_url")
+                if url:
+                    _LOGGER.debug("Got ingress_url via hassio API for slug %s: %s", slug, url)
+                    return url
+            except Exception:
+                continue
+    except ImportError:
+        pass
+
+    # Fallback: direct HTTP call to supervisor
     token = os.getenv("SUPERVISOR_TOKEN")
     if not token:
+        _LOGGER.warning("planmydinner: SUPERVISOR_TOKEN not set, cannot fetch ingress path")
         return None
-    try:
-        session = async_get_clientsession(hass)
-        async with session.get(
-            f"http://supervisor/addons/{_ADDON_SLUG}/info",
-            headers={"Authorization": f"Bearer {token}"},
-        ) as resp:
-            if resp.status == 200:
-                data = await resp.json()
-                return data.get("data", {}).get("ingress_url")
-    except Exception as e:
-        _LOGGER.debug("Could not fetch ingress path from supervisor: %s", e)
+    session = async_get_clientsession(hass)
+    for slug in _ADDON_SLUGS:
+        try:
+            async with session.get(
+                f"http://supervisor/addons/{slug}/info",
+                headers={"Authorization": f"Bearer {token}"},
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    url = data.get("data", {}).get("ingress_url")
+                    if url:
+                        _LOGGER.debug("Got ingress_url via HTTP for slug %s: %s", slug, url)
+                        return url
+                else:
+                    _LOGGER.debug("Supervisor returned %s for slug %s", resp.status, slug)
+        except Exception as e:
+            _LOGGER.warning("planmydinner: supervisor HTTP call failed for slug %s: %s", slug, e)
     return None
 
 def _get_monday(d: date) -> date:
