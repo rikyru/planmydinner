@@ -226,6 +226,54 @@ async def mark_meal_as_consumed_override(
     return db_entry
 
 
+@router.post("/mark-day")
+def mark_day_as_consumed(profile_id: str, day: str, db: Session = Depends(get_db)):
+    """
+    Segna come consumati, in un colpo solo, tutti i pasti pianificati del giorno
+    che hanno una ricetta assegnata e non sono già stati registrati.
+    Salta pasti liberi, "non mangiato" e slot vuoti. Idempotente.
+    """
+    from datetime import date as _date
+    from .planner import _find_plan_covering_date
+
+    try:
+        target_date = _date.fromisoformat(day)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="day must be an ISO date (YYYY-MM-DD)")
+
+    plan = _find_plan_covering_date(db, profile_id, target_date)
+    if not plan:
+        return {"marked": 0, "skipped": 0, "detail": "No plan covers this date."}
+
+    daily = next((dp for dp in plan.daily_plans if dp.get("date") == day), None)
+    if not daily:
+        return {"marked": 0, "skipped": 0, "detail": "No meals planned for this date."}
+
+    already = {
+        e.meal_type
+        for e in db.query(ConsumedEntry).filter(
+            ConsumedEntry.profile_id == profile_id,
+            ConsumedEntry.date == day,
+        ).all()
+    }
+
+    marked = 0
+    skipped = 0
+    for meal in daily.get("meals", []):
+        meal_type = meal.get("meal_type")
+        items = meal.get("items", [])
+        recipe_id = items[0].get("recipe_id") if items else None
+        fg = items[0].get("food_group") if items else None
+        if not recipe_id or fg in ("free_meal", "not_eaten") or meal_type in already:
+            skipped += 1
+            continue
+        # Riusa la logica del singolo pasto (crea l'entry e scala la dispensa)
+        mark_meal_as_consumed_planned(profile_id, day, meal_type, recipe_id, db)
+        marked += 1
+
+    return {"marked": marked, "skipped": skipped}
+
+
 @router.get("/", response_model=List[schemas.ConsumedEntry])
 def read_consumed_entries(profile_id: str = None, start_date: str = None, end_date: str = None, db: Session = Depends(get_db)):
     """

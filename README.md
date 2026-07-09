@@ -14,6 +14,8 @@ Funziona **standalone** (solo Docker, nessun Home Assistant necessario) o come *
 - **Dispensa** — gestione ingredienti in casa, integrata nel calcolo della spesa
 - **Profili** — supporto a due profili (A e B) con grammature distinte, vincoli editabili dalla UI
 - **Cache LLM** — risparmia chiamate API riusando risposte identiche
+- **Valori nutrizionali** — kcal e macro (proteine/carboidrati/grassi) per porzione, da tabella di composizione locale con fallback stima LLM
+- **API per integrazioni** — `GET /integration/summary` per app esterne (aderenza + nutrizione giornaliera in una chiamata)
 
 ---
 
@@ -255,11 +257,56 @@ La ricetta viene mostrata subito in un modal con nome e ingredienti.
 
 Nel piano nutrizionale puoi specificare un numero di **pasti liberi** a settimana (`free_meal_quota`). Il widget aderenza nella vista Oggi mostra quanti ne hai usati e quanti ne rimangono.
 
+### Valori nutrizionali (kcal + macro)
+
+Ogni ingrediente viene valutato **per 100 g** (peso a crudo/secco per pasta, cereali e legumi) in quest'ordine:
+
+1. valori salvati sull'ingrediente (`nutrition` con `source: manual`)
+2. tabella di composizione locale (~90 alimenti comuni italiani, `source: table`)
+3. stima via LLM con cache permanente su disco (`source: llm`)
+
+`GET /recipes/detail/{id}` include `nutrition_per_portion` per ogni profilo:
+kcal, proteine, carboidrati, grassi, più `coverage` (quota di ingredienti risolti)
+e `sources`. Il campo è calcolato al volo, non persistito.
+
+### Segna tutta la giornata
+
+Nella vista **Oggi** il pulsante "✓✓ Segna tutta la giornata come consumata" registra
+con un tap tutti i pasti pianificati del giorno (salta pasti liberi, "non mangiato"
+e pasti già registrati). Endpoint: `POST /consumed-entries/mark-day?profile_id&day`.
+
 ### Debug LLM (sviluppatori)
 
 Con almeno 2 profili configurati, appare il bottone **🐛 Debug** in sidebar. Mostra:
 - **Trace generazione**: per ogni slot del piano, quali candidati erano disponibili, i filtri applicati e il punteggio finale
 - **Log LLM**: le ultime 50 chiamate all'IA con prompt completo e risposta grezza, espandibili
+
+---
+
+## API per integrazioni esterne
+
+Superficie ufficiale per app esterne (es. dashboard fitness) che leggono i dati in sola lettura:
+
+```
+GET /integration/summary?profile_id=aa&start_date=2026-07-06&end_date=2026-07-12
+```
+
+Restituisce in una sola chiamata (payload versionato, `"version": 1`):
+
+- `adherence` — statistiche di aderenza del periodo (stesso formato di `/planner/adherence`)
+- `days[]` — per ogni giorno: pasti pianificati, liberi, saltati e `nutrition`
+  (kcal + macro sommati dai pasti pianificati, con `coverage`)
+- `averages` — medie giornaliere del periodo (`null` se nessun dato)
+
+Senza parametri data usa la settimana corrente (lunedì → domenica). Risponde
+sempre **200** anche su periodi senza dati (campi a 0/`null`).
+
+### Auth opzionale (`API_KEY`)
+
+Di default l'API è aperta (LAN / rete Docker). Impostando la variabile d'ambiente
+`API_KEY`, ogni chiamata richiede l'header `X-API-Key` (o `?api_key=`); la web UI
+salva la chiave passandola una volta come `/ui/?api_key=...`. Se `API_KEY` non è
+impostata **non cambia nulla** (retro-compatibile).
 
 ---
 

@@ -5,6 +5,9 @@ from typing import List, Optional, Dict, Any
 from datetime import date, timedelta
 import uuid
 import copy
+import logging
+
+_LOGGER = logging.getLogger(__name__)
 
 from pydantic import BaseModel as _BaseModel
 from .. import schemas
@@ -149,10 +152,21 @@ def get_weekly_plan(
         GeneratedWeeklyPlan.week_start_date == start_date.isoformat()
     ).first()
     if cached:
-        return [schemas.DailyPlannedMeals.model_validate(dp) for dp in cached.daily_plans]
+        try:
+            return [schemas.DailyPlannedMeals.model_validate(dp) for dp in cached.daily_plans]
+        except Exception:
+            # Piano salvato con dati non conformi: non rispondere 500, rigenera
+            _LOGGER.exception(
+                f"Stored weekly plan for '{profile_id_A}' ({start_date}) failed validation; regenerating."
+            )
 
     planner = PlannerEngine(db, llm_gateway=request.app.state.llm_gateway)
-    weekly_plan = planner.generate_weekly_plan(profile_id_A, profile_id_B, start_date)
+    try:
+        weekly_plan = planner.generate_weekly_plan(profile_id_A, profile_id_B, start_date)
+    except Exception:
+        # Qualsiasi errore interno di generazione diventa una risposta gestita, mai un 500
+        _LOGGER.exception(f"Weekly plan generation failed for '{profile_id_A}' ({start_date}).")
+        weekly_plan = None
     if not weekly_plan:
         raise HTTPException(
             status_code=404,
@@ -179,11 +193,16 @@ def get_generated_week(
     ).first()
     if not cached:
         return None
-    return {
-        "start_date": cached.week_start_date,
-        "profile_id_B": cached.profile_id_B,
-        "daily_plans": [schemas.DailyPlannedMeals.model_validate(dp) for dp in cached.daily_plans],
-    }
+    try:
+        return {
+            "start_date": cached.week_start_date,
+            "profile_id_B": cached.profile_id_B,
+            "daily_plans": [schemas.DailyPlannedMeals.model_validate(dp) for dp in cached.daily_plans],
+        }
+    except Exception:
+        # Piano salvato corrotto: per il coordinator HA equivale a "nessun piano"
+        _LOGGER.exception(f"Stored weekly plan for '{profile_id_A}' failed validation in /generated-week.")
+        return None
 
 
 @router.get("/plan-for-date")
@@ -786,21 +805,11 @@ def cancel_not_eaten(
     return {"message": "Not-eaten mark cancelled."}
 
 
-@router.get("/adherence")
-def get_adherence(
-    profile_id_A: str,
-    start_date: Optional[date] = Query(default=None),
-    days: int = 7,
-    db: Session = Depends(get_db)
-):
+def compute_adherence_stats(db: Session, profile_id_A: str, start_date: date, end_date: date) -> Dict[str, Any]:
+    """Calcola le statistiche di aderenza nel periodo [start_date, end_date].
+
+    Logica condivisa fra GET /planner/adherence e GET /integration/summary.
     """
-    Returns weekly adherence stats for profile_id_A.
-    Defaults to the current week (Monday → Sunday).
-    """
-    if start_date is None:
-        today = date.today()
-        start_date = today - timedelta(days=today.weekday())  # Monday
-    end_date = start_date + timedelta(days=days - 1)
     today = date.today()
 
     planned_slots = 0
@@ -867,3 +876,21 @@ def get_adherence(
         "end_date": end_date.isoformat(),
         "free_meal_quota": free_meal_quota,
     }
+
+
+@router.get("/adherence")
+def get_adherence(
+    profile_id_A: str,
+    start_date: Optional[date] = Query(default=None),
+    days: int = 7,
+    db: Session = Depends(get_db)
+):
+    """
+    Returns weekly adherence stats for profile_id_A.
+    Defaults to the current week (Monday → Sunday).
+    """
+    if start_date is None:
+        today = date.today()
+        start_date = today - timedelta(days=today.weekday())  # Monday
+    end_date = start_date + timedelta(days=days - 1)
+    return compute_adherence_stats(db, profile_id_A, start_date, end_date)

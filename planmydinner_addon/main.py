@@ -38,6 +38,7 @@ from .api import planner as planner_router
 from .api import shopping_list as shopping_list_router
 from .api import seed as seed_router
 from .api import settings as settings_router
+from .api import integration as integration_router
 
 # Fix for Windows MIME types
 mimetypes.add_type("application/javascript", ".js")
@@ -112,6 +113,24 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# --- Auth opzionale (retro-compatibile) ---------------------------------------
+# Se la env API_KEY è impostata, tutte le chiamate API richiedono l'header
+# X-API-Key (o ?api_key=). Se non impostata, l'API resta aperta come prima.
+# Esenti: web UI statica, root redirect e health check.
+_API_KEY = os.getenv("API_KEY", "").strip()
+_AUTH_EXEMPT_PATHS = {"/", "/health"}
+
+
+@app.middleware("http")
+async def _api_key_middleware(request: Request, call_next):
+    if _API_KEY:
+        path = request.url.path
+        exempt = path in _AUTH_EXEMPT_PATHS or path == "/ui" or path.startswith("/ui/")
+        provided = request.headers.get("X-API-Key") or request.query_params.get("api_key")
+        if not exempt and provided != _API_KEY:
+            return JSONResponse({"detail": "Invalid or missing X-API-Key"}, status_code=401)
+    return await call_next(request)
+
 @app.get("/meta/info", include_in_schema=False)
 async def meta_info(request: Request):
     return JSONResponse({"ingress_path": request.app.state.ingress_path})
@@ -148,6 +167,7 @@ app.include_router(planner_router.router)
 app.include_router(shopping_list_router.router)
 app.include_router(seed_router.router)
 app.include_router(settings_router.router)
+app.include_router(integration_router.router)
 
 
 @app.get("/")

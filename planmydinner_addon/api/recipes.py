@@ -1,11 +1,12 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from typing import List, Optional, Any, Dict
 import uuid
 
 from pydantic import BaseModel as _BaseModel
 from .. import schemas
-from ..database import get_db, Recipe, CandidateRecipe
+from ..database import get_db, Recipe, CandidateRecipe, UserProfile
+from ..nutrition import compute_recipe_nutrition
 
 
 class BulkIngredient(_BaseModel):
@@ -169,21 +170,44 @@ def delete_all_recipes(db: Session = Depends(get_db)):
     return {"deleted": count}
 
 
+def _attach_nutrition_per_portion(validated: schemas.Recipe, db: Session, llm_gateway=None) -> schemas.Recipe:
+    """Calcola i macro per porzione per ogni profilo e li allega alla risposta (best-effort)."""
+    try:
+        profile_ids = [p.id for p in db.query(UserProfile).all()]
+        content = validated.model_dump()["content"]
+        if not profile_ids and isinstance(content, list) and content:
+            profile_ids = list((content[0].get("quantities") or {}).keys())
+        per_portion = {}
+        for pid in profile_ids:
+            nutrition = compute_recipe_nutrition(content, pid, llm_gateway=llm_gateway)
+            if nutrition:
+                per_portion[pid] = nutrition
+        validated.nutrition_per_portion = per_portion or None
+    except Exception:
+        validated.nutrition_per_portion = None
+    return validated
+
+
 @router.get("/detail/{recipe_id}", response_model=schemas.Recipe)
-def get_recipe_detail(recipe_id: str, db: Session = Depends(get_db)):
+def get_recipe_detail(recipe_id: str, request: Request, db: Session = Depends(get_db)):
     """
     Retrieve full recipe detail (content with quantities) from Recipe or CandidateRecipe.
     Used by the UI to display meal components and ingredient doses.
+    Includes nutrition_per_portion (kcal + macro per profilo) when computable.
     """
+    llm_gateway = getattr(request.app.state, "llm_gateway", None)
+
     db_recipe = db.query(Recipe).filter(Recipe.id == recipe_id).first()
     if db_recipe:
-        return db_recipe  # schemas.Recipe has from_attributes=True
+        validated = schemas.Recipe.model_validate(db_recipe)
+        return _attach_nutrition_per_portion(validated, db, llm_gateway)
 
     candidate = db.query(CandidateRecipe).filter(CandidateRecipe.id == recipe_id).first()
     if candidate:
         data = candidate.recipe_data if isinstance(candidate.recipe_data, dict) else candidate.recipe_data.model_dump()
         # Inject the candidate's own id so schemas.Recipe validation passes
-        return {**data, "id": recipe_id}
+        validated = schemas.Recipe.model_validate({**data, "id": recipe_id})
+        return _attach_nutrition_per_portion(validated, db, llm_gateway)
 
     raise HTTPException(status_code=404, detail=f"Recipe {recipe_id} not found")
 

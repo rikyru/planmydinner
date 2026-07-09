@@ -141,10 +141,19 @@ class QuantityPerProfile(BaseModel):
     unit: str
     grams_equiv: Optional[float] = None # Equivalent in grams
 
+class IngredientNutrition(BaseModel):
+    """Valori nutrizionali PER 100 g (peso a crudo/secco per cereali e legumi)."""
+    kcal: Optional[float] = None
+    protein_g: Optional[float] = None
+    carbs_g: Optional[float] = None
+    fat_g: Optional[float] = None
+    source: Optional[str] = Field(default=None, pattern="^(table|llm|manual)$")
+
 class RecipeIngredient(BaseModel):
     name: str
     food_group: str
     quantities: Dict[str, QuantityPerProfile] = Field(..., description="Keys are profile_ids (e.g., 'persona_a', 'persona_b')")
+    nutrition: Optional[IngredientNutrition] = None  # per 100 g, opzionale
 
 class ComposedDishContent(BaseModel):
     dish_name: str
@@ -166,6 +175,9 @@ class RecipeCreate(RecipeBase):
 class Recipe(RecipeBase):
     id: str
     llm_generated_metadata: Optional[Dict[str, Any]] = None # Metadata if LLM generated/enriched
+    # Macro per porzione calcolati on-the-fly (chiave = profile_id), non persistiti.
+    # {"<profile_id>": {"kcal": .., "protein_g": .., "carbs_g": .., "fat_g": .., "coverage": .., "sources": {...}}}
+    nutrition_per_portion: Optional[Dict[str, Any]] = None
     class Config:
         from_attributes = True
 

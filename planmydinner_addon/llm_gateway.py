@@ -260,6 +260,65 @@ class LLMGateway:
             _LOGGER.error(f"Error during LLM call for food group classification: {e}")
             return None
 
+    def estimate_nutrition(self, item_name: str) -> Optional[Dict[str, float]]:
+        """
+        Stima i valori nutrizionali per 100 g di un ingrediente:
+        {"kcal": .., "protein_g": .., "carbs_g": .., "fat_g": ..}.
+        Risultato cachato permanentemente (la composizione di un alimento non cambia).
+        """
+        if not item_name or not item_name.strip():
+            return None
+        cache_key = f"nutrition:{item_name.strip().lower()}"
+        if cache_key in self._cache:
+            _LOGGER.debug(f"LLM cache hit: nutrition '{item_name}'")
+            return self._cache[cache_key]
+
+        if not self._client:
+            _LOGGER.error("LLM client not initialized. Cannot estimate nutrition.")
+            return None
+
+        task_description = (
+            "You are a food composition expert. Given the name of a food item (in Italian), "
+            "estimate its nutritional values PER 100 GRAMS (raw/dry weight for pasta, rice, "
+            "cereals and legumes; raw weight otherwise). "
+            'Respond ONLY with a JSON object in this exact form: '
+            '{"kcal": <number>, "protein_g": <number>, "carbs_g": <number>, "fat_g": <number>}. '
+            "No other text."
+        )
+        messages = [
+            {"role": "system", "content": self._get_system_message(task_description)},
+            {"role": "user", "content": item_name},
+        ]
+
+        try:
+            if self.provider == "openai":
+                response = self._client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    temperature=0.1,
+                    response_format={"type": "json_object"},
+                )
+                raw = response.choices[0].message.content
+            elif self.provider == "ollama":
+                response = self._client.chat(model=self.model, messages=messages)
+                raw = response["message"]["content"]
+            else:
+                _LOGGER.error(f"Unsupported LLM provider for nutrition estimation: {self.provider}")
+                return None
+
+            data = json.loads(raw)
+            values = {k: float(data[k]) for k in ("kcal", "protein_g", "carbs_g", "fat_g")}
+            if not (0 <= values["kcal"] <= 950):
+                _LOGGER.warning(f"LLM nutrition estimate out of range for '{item_name}': {values}")
+                return None
+            self._cache[cache_key] = values
+            self._save_cache()
+            _LOGGER.info(f"LLM estimated nutrition for '{item_name}': {values}")
+            return values
+        except Exception as e:
+            _LOGGER.error(f"Error during LLM nutrition estimation for '{item_name}': {e}")
+            return None
+
     def generate_recipe_from_constraints(self, constraints: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """
         Generates a new, creative, and complete structured recipe based on a set of constraints.

@@ -102,11 +102,23 @@
                 return p === '/' ? '' : p;
             } catch { return ''; }
         })();
-        window.apiFetch = (path, opts) => fetch(window._apiBase + path, opts);
+        // Auth opzionale: se il backend ha API_KEY impostata, la chiave si passa
+        // una volta con ?api_key=... nell'URL (salvata in localStorage) e viene
+        // allegata a ogni chiamata API. Senza API_KEY lato server non cambia nulla.
+        (() => {
+            const k = new URLSearchParams(location.search).get('api_key');
+            if (k) { try { localStorage.setItem('pmd_api_key', k); } catch {} }
+        })();
+        window.apiFetch = (path, opts = {}) => {
+            let key = null;
+            try { key = localStorage.getItem('pmd_api_key'); } catch {}
+            if (key) opts = { ...opts, headers: { ...(opts.headers || {}), 'X-API-Key': key } };
+            return fetch(window._apiBase + path, opts);
+        };
     </script>
     <script type="module">
         import { createApp, reactive } from 'vue';
-        import TodayView from './today.js?v=5';
+        import TodayView from './today.js?v=6';
         import WeekView from './planner.js?v=13';
         import ImportWizard from './import.js?v=11';
         import ShoppingList from './shopping.js?v=7';

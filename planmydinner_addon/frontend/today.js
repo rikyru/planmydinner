@@ -161,6 +161,13 @@ const TodayView = defineComponent({
                         </template>
                     </div>
                 </div>
+
+                <!-- Segna tutta la giornata con un tap -->
+                <div v-if="canMarkDay" style="margin-top:12px;">
+                    <button @click="markDayConsumed" class="btn-consumed" :disabled="markingDay">
+                        {{ markingDay ? 'Registrazione...' : '✓✓ Segna tutta la giornata come consumata' }}
+                    </button>
+                </div>
             </div>
 
             <!-- Modal cambio ricetta / componente -->
@@ -239,6 +246,8 @@ const TodayView = defineComponent({
             // Free meal
             showFreeMealPrompt: null,
             freeMealTitle: '',
+            // Mark whole day
+            markingDay: false,
             // Custom meal
             showCustomModal: false,
             customForm: { title: '', protein_name: '', protein_grams: 0, carb_name: '', carb_grams: 0, veg_name: '', veg_grams: 100, notes: '' },
@@ -252,6 +261,10 @@ const TodayView = defineComponent({
         },
         profileA() { return this.profiles[0] || null; },
         profileB() { return this.profiles[1] || null; },
+        canMarkDay() {
+            return (this.todayPlan?.meals || []).some(m =>
+                m.items?.[0]?.recipe_id && !['free_meal', 'not_eaten'].includes(m.items[0].food_group));
+        },
         freeMealMessage() {
             if (!this.adherence) return '';
             const used = this.adherence.free_meals || 0;
@@ -414,6 +427,25 @@ const TodayView = defineComponent({
                 await this.loadAdherence();
             } catch (e) {
                 this.toast.add('Errore: ' + e.message, 'error');
+            }
+        },
+        async markDayConsumed() {
+            if (!this.profileA) return;
+            this.markingDay = true;
+            try {
+                const params = new URLSearchParams({ profile_id: this.profileA.id, day: this.today });
+                const resp = await window.apiFetch('/consumed-entries/mark-day?' + params, { method: 'POST' });
+                if (!resp.ok) throw new Error(await resp.text());
+                const result = await resp.json();
+                this.toast.add(result.marked > 0
+                    ? `Registrati ${result.marked} pasti di oggi!`
+                    : 'Nessun pasto da registrare (già segnati o senza ricetta).',
+                    result.marked > 0 ? 'success' : 'info');
+                await this.loadAdherence();
+            } catch (e) {
+                this.toast.add('Errore: ' + e.message, 'error');
+            } finally {
+                this.markingDay = false;
             }
         },
         toggleDetail(mealType) {
