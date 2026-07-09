@@ -105,7 +105,7 @@ class PlannerEngine:
     def _get_all_recipes(self) -> List[schemas.Recipe]:
         db_recipes = self.db.query(Recipe).all()
         db_candidate_recipes = self.db.query(CandidateRecipe).filter(CandidateRecipe.status == "approved").all()
-        
+
         all_recipes = []
         for rec in db_recipes:
             try:
@@ -120,7 +120,28 @@ class PlannerEngine:
                 all_recipes.append(rec)
             except Exception as e:
                 _LOGGER.warning(f"CandidateRecipe {cand.id} non valida, saltata: {e}")
+        for rec in all_recipes:
+            self._normalize_recipe_protein_groups(rec)
         return all_recipes
+
+    def _normalize_recipe_protein_groups(self, rec: schemas.Recipe) -> None:
+        """Sostituisce in-memory i food_group proteici generici ("proteina") con la
+        categoria dedotta dal nome dell'ingrediente (es. "vitellone" → carne_rossa).
+
+        Senza questa normalizzazione le ricette generiche sfuggono ai limiti di
+        categoria settimanali, al narrowing sul target e all'esclusione same-day.
+        Non tocca il DB: vale solo per la selezione del planner.
+        """
+        try:
+            ingredients = rec.content.components if rec.is_composed_dish else rec.content
+            for ing in ingredients:
+                fg = (ing.food_group or "").lower()
+                if fg in ("proteina", "proteine"):
+                    inferred = self._infer_protein_fg(ing.name, fg)
+                    if inferred not in ("proteina", "proteine"):
+                        ing.food_group = inferred
+        except Exception:
+            pass  # ricette con content anomalo: lascia i food_group originali
 
     def _normalize_food_group(self, food_group: str) -> str:
         """Normalizes food group names to a singular, consistent format."""
@@ -210,12 +231,14 @@ class PlannerEngine:
         for rec_ing in recipe_ingredients:
             fg = self._normalize_food_group(rec_ing.food_group)
             qty_a = self._get_qty_for_profile(rec_ing.quantities, profile_A.id, "persona_a")
-            if qty_a and qty_a.grams_equiv is not None:
+            # Quantità 0 = ingrediente non previsto per questo profilo (es. ricette
+            # dual-profile con proteine alternative): non deve pesare nel check tolleranza.
+            if qty_a and qty_a.grams_equiv:
                 recipe_food_groups_A[fg] = recipe_food_groups_A.get(fg, 0) + qty_a.grams_equiv
                 recipe_has_profile_A_quantities = True
             if profile_B:
                 qty_b = self._get_qty_for_profile(rec_ing.quantities, profile_B.id, "persona_b")
-                if qty_b and qty_b.grams_equiv is not None:
+                if qty_b and qty_b.grams_equiv:
                     recipe_food_groups_B[fg] = recipe_food_groups_B.get(fg, 0) + qty_b.grams_equiv
                     recipe_has_profile_B_quantities = True
 
@@ -442,7 +465,7 @@ class PlannerEngine:
             "carne_rossa":  "carne_rossa",
             "pesce":        "pesce",
             "legumi":       "legumi",
-            "uova":         "proteina",
+            "uova":         "uova",
             "proteina":     "proteina",
             "formaggio":    "latticini",
             "latticini":    "latticini",
@@ -459,7 +482,23 @@ class PlannerEngine:
         carb_options = (rules.carb_options or {}).get(meal_type, ["pasta"])
         protein_options = (rules.protein_options or {}).get(meal_type, ["pollo"])
         carb_name = _opt_name(carb_options[0]) if carb_options else "pasta"
-        protein_name = _opt_name(protein_options[0]) if protein_options else "pollo"
+
+        # Proteina coerente con la categoria target dello slot: cerca fra le opzioni
+        # del piano quella della categoria giusta; se il piano non ne prevede,
+        # usa l'ingrediente di default della categoria (es. target "uova" → "uova",
+        # non la prima opzione qualsiasi, che sarebbe quasi sempre pollo).
+        protein_name = None
+        if target_cat:
+            for opt in protein_options:
+                opt_name = _opt_name(opt)
+                opt_cat = self._PROTEIN_CATEGORY_MAP.get(self._infer_protein_fg(opt_name))
+                if opt_cat == target_cat:
+                    protein_name = opt_name
+                    break
+            if protein_name is None:
+                protein_name = self._CATEGORY_DEFAULT_ITEMS.get(target_cat)
+        if protein_name is None:
+            protein_name = _opt_name(protein_options[0]) if protein_options else "pollo"
 
         items = [
             schemas.PlannedItem(
@@ -559,32 +598,10 @@ class PlannerEngine:
         if not profile_B:
             profile_B = schemas.UserProfile(id=profile_id_B, name="Dummy")
 
-        # Maps protein ingredient keywords to food_group so category limits work correctly.
-        # Keywords sorted by length (longest first) to avoid "pollo" matching "prosciutto crudo di pollo".
-        # Maps protein ingredient names to their canonical food_group / protein category.
-        # "carne_bianca" is used directly (matches frequency_targets category names) so that
-        # rotation limits apply correctly without requiring _PROTEIN_CATEGORY_MAP translation.
-        _FG_KEYWORDS = [
-            ("vitellone", "carne_rossa"), ("manzo", "carne_rossa"), ("bovino", "carne_rossa"),
-            ("maiale", "carne_rossa"), ("agnello", "carne_rossa"), ("cinghiale", "carne_rossa"),
-            ("petto di pollo", "carne_bianca"), ("sovracoscio", "carne_bianca"), ("tacchino", "carne_bianca"),
-            ("prosciutto cotto", "carne_bianca"), ("prosciutto crudo", "carne_bianca"), ("pollo", "carne_bianca"),
-            ("salmone", "pesce"), ("tonno", "pesce"), ("merluzzo", "pesce"),
-            ("orata", "pesce"), ("spigola", "pesce"), ("sgombro", "pesce"), ("pesce", "pesce"),
-            ("ceci", "legumi"), ("fagioli", "legumi"), ("lenticchie", "legumi"),
-            ("piselli", "legumi"), ("fave", "legumi"), ("soia", "legumi"),
-            ("uova", "proteina"), ("uovo", "proteina"),
-            ("mozzarella", "latticini"), ("ricotta", "latticini"), ("crescenza", "latticini"),
-            ("grana", "latticini"), ("parmigiano", "latticini"), ("fiocchi di latte", "latticini"),
-            ("stracchino", "latticini"), ("scamorza", "latticini"), ("pecorino", "latticini"),
-        ]
-
+        # Mappa nome ingrediente → food_group canonico (keyword list condivisa di classe,
+        # così la categoria è coerente con limiti di rotazione e narrowing sul target).
         def _name_to_food_group(name: str) -> str:
-            n = name.lower()
-            for kw, fg in _FG_KEYWORDS:
-                if kw in n:
-                    return fg
-            return "proteina"
+            return self._infer_protein_fg(name)
 
         def _opt_name(opt) -> str:
             return opt["name"] if isinstance(opt, dict) else str(opt)
@@ -702,6 +719,153 @@ class PlannerEngine:
 
         _LOGGER.info(f"[pre-generate] Done: {len(generated_names)}/{len(combos)} recipes approved")
 
+    def _ensure_category_coverage(
+        self,
+        rules: schemas.PlanRules,
+        profile_id_A: str,
+        profile_id_B: str,
+    ) -> None:
+        """
+        Garantisce almeno una ricetta in catalogo per ogni categoria proteica
+        richiesta dalle frequency_targets con min > 0 (es. uova 2/sett, formaggio 2/sett).
+
+        Senza copertura, gli slot con quei target finiscono nei fallback e vengono
+        riempiti con qualsiasi proteina (tipicamente pollo). Prova prima l'LLM;
+        se non disponibile o fallisce, crea una ricetta-template deterministica
+        (carboidrato del piano + proteina di default + verdure), così i minimi
+        sono soddisfacibili anche a LLM spento.
+        """
+        freq = rules.frequency_targets or {}
+        wanted = [
+            cat for cat, tgt in freq.items()
+            if (tgt or {}).get("min", 0) and cat in self._CATEGORY_DEFAULT_ITEMS
+        ]
+        if not wanted:
+            return
+
+        # Quante ricette DISTINTE servirebbero per categoria: quante volte la
+        # categoria compare nella sequenza proteica settimanale (cap 4).
+        sequence = self._build_protein_sequence(freq)
+        pool_counts: Dict[str, int] = {}
+        for r in self._get_all_recipes():
+            c = self._recipe_protein_cat(r)
+            if c:
+                pool_counts[c] = pool_counts.get(c, 0) + 1
+
+        deficits = {}
+        for cat in wanted:
+            needed = min(sequence.count(cat), 4)
+            deficit = needed - pool_counts.get(cat, 0)
+            if deficit > 0:
+                deficits[cat] = deficit
+        if not deficits:
+            return
+        missing = list(deficits.keys())
+        _LOGGER.info(f"[category-coverage] Ricette mancanti per categoria: {deficits}")
+
+        profile_A = self._get_user_profile(profile_id_A)
+        profile_B = self._get_user_profile(profile_id_B)
+        if not profile_A:
+            _LOGGER.warning(f"[category-coverage] Profilo {profile_id_A} non trovato, salto")
+            return
+        if not profile_B:
+            profile_B = schemas.UserProfile(id=profile_id_B, name="Dummy")
+
+        def _opt_name(opt):
+            return opt["name"] if isinstance(opt, dict) else str(opt)
+
+        carb_opts = (
+            (rules.carb_options or {}).get("pranzo")
+            or (rules.carb_options or {}).get("cena")
+            or ["pasta"]
+        )
+        carb_g = float((rules.carb_target or {}).get("pranzo", 80))
+        protein_g = float((rules.protein_target or {}).get("pranzo", 120))
+        _cat_to_fg = {"uova": "uova", "formaggio": "latticini"}
+
+        def _q(g):
+            return {"qty": float(g), "unit": "g", "grams_equiv": float(g)}
+
+        # Opzioni proteiche del PDF raggruppate per categoria: i template usano gli
+        # alimenti reali del piano (es. ceci/borlotti/cannellini/lenticchie), non
+        # sempre lo stesso ingrediente di default.
+        all_protein_opts = (
+            ((rules.protein_options or {}).get("pranzo") or [])
+            + ((rules.protein_options or {}).get("cena") or [])
+        )
+        opts_by_cat: Dict[str, List[str]] = {}
+        for opt in all_protein_opts:
+            opt_name = _opt_name(opt)
+            opt_cat = self._PROTEIN_CATEGORY_MAP.get(self._infer_protein_fg(opt_name))
+            if opt_cat and opt_name not in opts_by_cat.setdefault(opt_cat, []):
+                opts_by_cat[opt_cat].append(opt_name)
+
+        for idx, cat in enumerate(missing):
+            # Colma il deficit: ricette distinte finché la categoria può coprire
+            # i suoi slot nella sequenza settimanale senza ripetersi.
+            n_target = deficits[cat]
+            created = 0
+
+            # 1) Tentativo LLM: ricetta creativa vincolata alla categoria
+            if self.llm_gateway:
+                meal_plan_A = self._rules_to_planned_meal(rules, "pranzo", target_cat=cat)
+                meal_plan_B = schemas.PlannedMeal(meal_type="pranzo", items=[])
+                result = self._generate_llm_recipe_suggestion(
+                    meal_plan_A, meal_plan_B, profile_A, profile_B,
+                    pantry_items=[], consumed_entries_A=[], consumed_entries_B=[],
+                    used_recipe_names=[],
+                )
+                if result:
+                    cand = self.db.query(CandidateRecipe).filter(CandidateRecipe.id == result.recipe_id).first()
+                    if cand:
+                        cand.status = "approved"
+                        correct_fg = _cat_to_fg.get(cat, cat)
+                        import copy as _copy
+                        from sqlalchemy.orm.attributes import flag_modified
+                        updated_content = _copy.deepcopy(cand.recipe_data.get("content", []))
+                        for ing in updated_content:
+                            if isinstance(ing, dict) and (ing.get("food_group") or "").lower() in ("proteina", "proteine"):
+                                ing["food_group"] = correct_fg
+                                break
+                        cand.recipe_data = {**cand.recipe_data, "content": updated_content}
+                        flag_modified(cand, "recipe_data")
+                        self.db.commit()
+                        created += 1
+                        _LOGGER.info(f"[category-coverage] LLM: '{result.name}' per categoria '{cat}'")
+
+            # 2) Fallback deterministico: ricette-template (funziona anche senza LLM)
+            cat_proteins = opts_by_cat.get(cat) or [self._CATEGORY_DEFAULT_ITEMS[cat]]
+            j = 0
+            while created < n_target:
+                protein_name = cat_proteins[j % len(cat_proteins)]
+                carb_name = _opt_name(carb_opts[(idx + j) % len(carb_opts)])
+                fg = _cat_to_fg.get(cat, cat)
+
+                content = [
+                    {"name": carb_name, "food_group": "carboidrati",
+                     "quantities": {profile_A.id: _q(carb_g), profile_B.id: _q(carb_g)}},
+                    {"name": protein_name, "food_group": fg,
+                     "quantities": {profile_A.id: _q(protein_g), profile_B.id: _q(protein_g)}},
+                    {"name": "verdure", "food_group": "verdure",
+                     "quantities": {profile_A.id: _q(150), profile_B.id: _q(150)}},
+                ]
+                recipe_data = {
+                    "name": self._make_display_name(content),
+                    "description": f"Ricetta base generata automaticamente per coprire la categoria '{cat}'.",
+                    "is_composed_dish": False,
+                    "content": content,
+                    "steps": [],
+                    "total_time_minutes": 25,
+                    "difficulty": "facile",
+                    "tags": {"mood": ["normale"], "cooking_methods": ["tegame"],
+                             "cleanup": ["facile"], "auto_template": ["true"]},
+                }
+                self.db.add(CandidateRecipe(id=str(uuid.uuid4()), status="approved", recipe_data=recipe_data))
+                self.db.commit()
+                _LOGGER.info(f"[category-coverage] Template: '{recipe_data['name']}' per categoria '{cat}'")
+                created += 1
+                j += 1
+
     def _generate_from_plan_rules(
         self,
         rules: schemas.PlanRules,
@@ -719,6 +883,9 @@ class PlannerEngine:
             _LOGGER.info("[PlanRules] Catalog too sparse — pre-generating recipes from PDF constraints via LLM")
             self._pre_generate_catalog(rules, profile_id_A, profile_id_B or "persona_b")
 
+        # Garantisci che ogni categoria richiesta dal piano abbia almeno una ricetta
+        self._ensure_category_coverage(rules, profile_id_A, profile_id_B or "persona_b")
+
         protein_sequence = self._build_protein_sequence(rules.frequency_targets)
         _LOGGER.info(f"[PlanRules] protein_sequence={protein_sequence}")
 
@@ -734,7 +901,8 @@ class PlannerEngine:
         protein_cat_limits.setdefault("carne_rossa", 2)
         protein_cat_limits.setdefault("pesce", 4)
         protein_cat_limits.setdefault("legumi", 4)
-        protein_cat_limits.setdefault("proteina", 4)  # uova/tofu: max 4 slots / week
+        protein_cat_limits.setdefault("proteina", 4)  # generiche/tofu: max 4 slots / week
+        protein_cat_limits.setdefault("uova", 3)      # uova: max 3 slots / week
         protein_cat_limits.setdefault("formaggio", 2)  # latticini: max 2 slots / week
 
         protein_cat_counts: Dict[str, int] = {}
@@ -791,16 +959,30 @@ class PlannerEngine:
                         strict_target_protein=True,
                         **_common_kwargs,
                     )
-                # Fallback 2: rilassa tutto + LLM sempre ammesso (genera categoria mancante)
+                # Fallback 2: rilassa recipe_ids + LLM sempre ammesso (genera categoria mancante),
+                # ma mantiene i fingerprint per non ripetere pasti identici nella settimana
                 if not best_recipes:
                     _LOGGER.info(f"[fallback2] {current_date} {meal_type}: rilasso recipe_ids, LLM ammesso")
                     recent_ids = set(recently_selected[-2:]) if recently_selected else set()
                     best_recipes = self.suggest_recipes_for_meal(
                         meal_plan_A, meal_plan_B, profile_id_A, profile_id_B, current_date, {},
                         excluded_recipe_ids=recent_ids,
-                        excluded_fingerprints=set(),
+                        excluded_fingerprints=used_fingerprints,
                         allow_llm=True,
                         strict_target_protein=False,  # usa DB se LLM non disponibile
+                        **_common_kwargs,
+                    )
+                # Fallback 3 (ultima spiaggia): rilassa anche i fingerprint — meglio un
+                # pasto ripetuto che uno slot vuoto
+                if not best_recipes:
+                    _LOGGER.info(f"[fallback3] {current_date} {meal_type}: rilasso anche i fingerprint")
+                    recent_ids = set(recently_selected[-2:]) if recently_selected else set()
+                    best_recipes = self.suggest_recipes_for_meal(
+                        meal_plan_A, meal_plan_B, profile_id_A, profile_id_B, current_date, {},
+                        excluded_recipe_ids=recent_ids,
+                        excluded_fingerprints=set(),
+                        allow_llm=True,
+                        strict_target_protein=False,
                         **_common_kwargs,
                     )
 
@@ -1207,7 +1389,7 @@ class PlannerEngine:
         return generated_plan
 
     # Gruppi alimentari che contano come proteine
-    _PROTEIN_GROUPS = {"proteina", "pollo", "carne_bianca", "pesce", "carne_rossa", "legumi", "latticini", "formaggio"}
+    _PROTEIN_GROUPS = {"proteina", "proteine", "pollo", "carne_bianca", "pesce", "carne_rossa", "legumi", "uova", "latticini", "formaggio"}
 
     # Mappa food_group → categoria proteica canonica.
     # "pollo" è il food_group legacy nelle ricette esistenti; "carne_bianca" è il nome
@@ -1221,9 +1403,63 @@ class PlannerEngine:
         "legumi":       "legumi",
         "proteina":     "proteina",
         "proteine":     "proteina",
+        "uova":         "uova",
         "latticini":    "formaggio",
         "formaggio":    "formaggio",
     }
+
+    # Keyword → food_group canonico per l'ingrediente proteico, in ordine di
+    # specificità (chiave più specifica prima). Usata per normalizzare i
+    # food_group generici ("proteina") che altrimenti sfuggono a limiti di
+    # categoria, narrowing sul target ed esclusione same-day.
+    _FG_KEYWORDS = [
+        ("petto di pollo", "carne_bianca"), ("sovracoscio", "carne_bianca"),
+        ("prosciutto cotto", "carne_bianca"), ("prosciutto crudo", "carne_bianca"),
+        ("fesa di tacchino", "carne_bianca"), ("tacchino", "carne_bianca"), ("pollo", "carne_bianca"),
+        ("vitellone", "carne_rossa"), ("vitello", "carne_rossa"), ("manzo", "carne_rossa"),
+        ("bovino", "carne_rossa"), ("maiale", "carne_rossa"), ("agnello", "carne_rossa"),
+        ("cinghiale", "carne_rossa"), ("bresaola", "carne_rossa"),
+        ("salmone", "pesce"), ("tonno", "pesce"), ("merluzzo", "pesce"), ("orata", "pesce"),
+        ("spigola", "pesce"), ("branzino", "pesce"), ("sgombro", "pesce"),
+        ("gamber", "pesce"), ("pesce", "pesce"),
+        # uova di pesce (bottarga & co.) PRIMA della keyword generica "uova"
+        ("uova di cefalo", "pesce"), ("uova di muggine", "pesce"),
+        ("uova di lompo", "pesce"), ("bottarga", "pesce"),
+        ("ceci", "legumi"), ("fagioli", "legumi"), ("lenticchie", "legumi"),
+        ("piselli", "legumi"), ("fave", "legumi"), ("soia", "legumi"),
+        ("uova", "uova"), ("uovo", "uova"), ("albume", "uova"), ("frittata", "uova"),
+        ("mozzarella", "latticini"), ("ricotta", "latticini"), ("crescenza", "latticini"),
+        ("grana", "latticini"), ("parmigiano", "latticini"), ("fiocchi di latte", "latticini"),
+        ("stracchino", "latticini"), ("scamorza", "latticini"), ("pecorino", "latticini"),
+        ("feta", "latticini"), ("formagg", "latticini"),
+    ]
+
+    # Ingrediente proteico di default per categoria: usato quando una categoria
+    # richiesta dal piano non ha né opzioni nel PDF né ricette in catalogo.
+    _CATEGORY_DEFAULT_ITEMS = {
+        "uova":         "uova",
+        "formaggio":    "mozzarella",
+        "carne_bianca": "petto di pollo",
+        "carne_rossa":  "vitellone magro",
+        "pesce":        "merluzzo",
+        "legumi":       "ceci",
+    }
+
+    @classmethod
+    def _infer_protein_fg(cls, name: str, food_group: Optional[str] = None) -> str:
+        """Risolve il food_group proteico di un ingrediente.
+
+        Se il food_group è già specifico lo restituisce com'è; se è generico
+        ("proteina"/"proteine") lo deduce dal nome via _FG_KEYWORDS.
+        """
+        fg = (food_group or "").lower()
+        if fg and fg not in ("proteina", "proteine"):
+            return fg
+        n = (name or "").lower()
+        for kw, mapped in cls._FG_KEYWORDS:
+            if kw in n:
+                return mapped
+        return fg or "proteina"
 
     # Catalogo verdure specifiche con metodi cottura compatibili.
     # "griglia" è inclusa perché molte ricette LLM usano quel cooking_method.
@@ -1279,7 +1515,8 @@ class PlannerEngine:
         carb_name = None
         has_veg = False
 
-        protein_groups = {"proteina", "proteine", "pollo", "carne_bianca", "pesce", "carne_rossa", "legumi"}
+        protein_groups = {"proteina", "proteine", "pollo", "carne_bianca", "pesce", "carne_rossa",
+                          "legumi", "uova", "latticini", "formaggio"}
         carb_groups = {"carboidrati", "carboidrato"}
 
         for ing in content:
@@ -1347,7 +1584,10 @@ class PlannerEngine:
             total += grams / portion_size
         return total
 
-    _FINGERPRINT_GROUPS = {"proteina", "proteine", "pollo", "pesce", "carne_rossa", "legumi", "carboidrati", "carboidrato"}
+    _FINGERPRINT_GROUPS = {
+        "proteina", "proteine", "pollo", "carne_bianca", "pesce", "carne_rossa",
+        "legumi", "uova", "latticini", "formaggio", "carboidrati", "carboidrato",
+    }
 
     @staticmethod
     def _recipe_fingerprint(recipe: "schemas.Recipe") -> frozenset:
@@ -1366,10 +1606,18 @@ class PlannerEngine:
         return key_names
 
     def _get_main_protein_category(self, recipe_id: str) -> Optional[str]:
-        """Returns the protein category of the main protein ingredient in a recipe."""
+        """Returns the protein category of the main protein ingredient in a recipe.
+
+        I food_group generici ("proteina") vengono risolti dal nome dell'ingrediente,
+        così i conteggi settimanali per categoria sono corretti anche per ricette
+        salvate senza categoria specifica.
+        """
         ingredients, _ = self._get_recipe_content(recipe_id)
         for ing in ingredients:
+            name = ing.get("name") if isinstance(ing, dict) else ing.name
             fg = (ing.get("food_group") if isinstance(ing, dict) else ing.food_group or "").lower()
+            if fg in ("proteina", "proteine"):
+                fg = self._infer_protein_fg(name, fg)
             cat = self._PROTEIN_CATEGORY_MAP.get(fg)
             if cat:
                 return cat
@@ -2214,7 +2462,8 @@ class PlannerEngine:
         # If none exist BUT we still have ID exclusions → return empty to force fallback 2,
         #   where ID restrictions are lifted and composed options reappear.
         # If none exist AND no ID restrictions (already fallback 2) → accept whatever is left.
-        _prot_norm = {"proteina", "proteine", "pollo", "carne_bianca", "pesce", "carne_rossa", "legum", "latticini", "formaggio"}
+        _prot_norm = {"proteina", "proteine", "pollo", "carne_bianca", "pesce", "carne_rossa",
+                      "legum", "uova", "uov", "latticini", "latticin", "formaggio"}
         _carb_norm = {"carboidrat", "carboidrato"}
 
         def _is_composed(recipe):
