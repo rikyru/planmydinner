@@ -1,8 +1,10 @@
 import { defineComponent } from 'vue';
+import MensaModal from './mensa.js?v=1';
 
 const WeekView = defineComponent({
     name: 'WeekView',
     inject: ['toast'],
+    components: { MensaModal },
     template: `
         <div class="week-layout" @click="closeMealMenu">
 
@@ -126,6 +128,13 @@ const WeekView = defineComponent({
             </div>
 
             <!-- ── Modal pasto (click su meal-row__info) ─────────────── -->
+            <mensa-modal v-if="mensaFor"
+                         :profile-id="profiles[0]?.id"
+                         :meal-type="mensaFor.mealType"
+                         :meal-date="mensaFor.date"
+                         @close="mensaFor = null"
+                         @saved="mensaFor = null" />
+
             <div v-if="showMealModal" class="modal-overlay" @click.self="closeMealModal">
                 <div class="modal">
                     <h3>
@@ -189,6 +198,8 @@ const WeekView = defineComponent({
                                     {{ mealModalApplying ? '✨...' : '✨ ExtraFantasy' }}
                                 </button>
                                 <button @click="mealModalComponent = 'custom'" class="btn-secondary">✏️ Personalizzato</button>
+                                <button v-if="mealModalDate <= today" @click="openMensaFromMeal"
+                                        class="btn-secondary">📷 Da foto</button>
                             </div>
                             <div v-if="mealModalMeal?.items?.[0]?.recipe_id" style="margin-bottom:10px;">
                                 <button @click="loadRecipeDetail" :disabled="loadingRecipe" class="btn-secondary">
@@ -596,6 +607,7 @@ const WeekView = defineComponent({
         const mondayStr = monday.toISOString().slice(0, 10);
         return {
             profiles: [],
+            mensaFor: null,   // {mealType, date} -> apre il modal foto/mensa
             startDate: mondayStr,
             weekPlan: null,
             loading: false,
@@ -1141,6 +1153,11 @@ const WeekView = defineComponent({
         },
 
         // ── Utility ──────────────────────────────────────────────────────────
+        openMensaFromMeal() {
+            if (!this.mealModalMeal) return;
+            this.mensaFor = { mealType: this.mealModalMeal.meal_type, date: this.mealModalDate };
+            this.closeMealModal();
+        },
         isPast(dateStr)      { return dateStr < this.today; },
         isFree(meal)         { return meal?.items?.[0]?.food_group === 'free_meal'; },
         isNotEaten(meal)     { return meal?.items?.[0]?.food_group === 'not_eaten'; },

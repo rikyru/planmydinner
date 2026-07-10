@@ -743,26 +743,6 @@ class PlannerEngine:
         if not wanted:
             return
 
-        # Quante ricette DISTINTE servirebbero per categoria: quante volte la
-        # categoria compare nella sequenza proteica settimanale (cap 4).
-        sequence = self._build_protein_sequence(freq)
-        pool_counts: Dict[str, int] = {}
-        for r in self._get_all_recipes():
-            c = self._recipe_protein_cat(r)
-            if c:
-                pool_counts[c] = pool_counts.get(c, 0) + 1
-
-        deficits = {}
-        for cat in wanted:
-            needed = min(sequence.count(cat), 4)
-            deficit = needed - pool_counts.get(cat, 0)
-            if deficit > 0:
-                deficits[cat] = deficit
-        if not deficits:
-            return
-        missing = list(deficits.keys())
-        _LOGGER.info(f"[category-coverage] Ricette mancanti per categoria: {deficits}")
-
         profile_A = self._get_user_profile(profile_id_A)
         profile_B = self._get_user_profile(profile_id_B)
         if not profile_A:
@@ -770,6 +750,40 @@ class PlannerEngine:
             return
         if not profile_B:
             profile_B = schemas.UserProfile(id=profile_id_B, name="Dummy")
+
+        # Quante ricette DISTINTE servirebbero per categoria: quante volte la
+        # categoria compare nella sequenza proteica settimanale (cap 4).
+        # Conta solo le ricette REALMENTE SELEZIONABILI: complete (proteina+carbo)
+        # e che passano i vincoli di grammatura del piano — una ricetta con il
+        # carbo fuori tolleranza non coprirà mai i suoi slot.
+        sequence = self._build_protein_sequence(freq)
+        all_recipes = self._get_all_recipes()
+        empty_meal = schemas.PlannedMeal(meal_type="pranzo", items=[])
+
+        deficits = {}
+        for cat in wanted:
+            needed = min(sequence.count(cat), 4)
+            if needed <= 0:
+                continue
+            target_meal = self._rules_to_planned_meal(rules, "pranzo", cat)
+            selectable = 0
+            for r in all_recipes:
+                if self._recipe_protein_cat(r) != cat or not self._get_main_carb_item_from_recipe(r):
+                    continue
+                try:
+                    ok, _, _ = self._filter_hard_constraints(
+                        r, target_meal, empty_meal, profile_A, profile_B, [], [], {}, date.today()
+                    )
+                except Exception:
+                    ok = False
+                if ok:
+                    selectable += 1
+            if selectable < needed:
+                deficits[cat] = needed - selectable
+        if not deficits:
+            return
+        missing = list(deficits.keys())
+        _LOGGER.info(f"[category-coverage] Ricette selezionabili mancanti per categoria: {deficits}")
 
         def _opt_name(opt):
             return opt["name"] if isinstance(opt, dict) else str(opt)
@@ -806,32 +820,38 @@ class PlannerEngine:
             n_target = deficits[cat]
             created = 0
 
-            # 1) Tentativo LLM: ricetta creativa vincolata alla categoria
+            # 1) Tentativo LLM: fino a n_target ricette creative DISTINTE per la categoria
+            # (una sola ricetta riusata per tutti gli slot della categoria = settimana monotona)
             if self.llm_gateway:
-                meal_plan_A = self._rules_to_planned_meal(rules, "pranzo", target_cat=cat)
-                meal_plan_B = schemas.PlannedMeal(meal_type="pranzo", items=[])
-                result = self._generate_llm_recipe_suggestion(
-                    meal_plan_A, meal_plan_B, profile_A, profile_B,
-                    pantry_items=[], consumed_entries_A=[], consumed_entries_B=[],
-                    used_recipe_names=[],
-                )
-                if result:
+                llm_names: List[str] = []
+                for _attempt in range(n_target):
+                    meal_plan_A = self._rules_to_planned_meal(rules, "pranzo", target_cat=cat)
+                    meal_plan_B = schemas.PlannedMeal(meal_type="pranzo", items=[])
+                    result = self._generate_llm_recipe_suggestion(
+                        meal_plan_A, meal_plan_B, profile_A, profile_B,
+                        pantry_items=[], consumed_entries_A=[], consumed_entries_B=[],
+                        used_recipe_names=list(llm_names),
+                    )
+                    if not result:
+                        break
                     cand = self.db.query(CandidateRecipe).filter(CandidateRecipe.id == result.recipe_id).first()
-                    if cand:
-                        cand.status = "approved"
-                        correct_fg = _cat_to_fg.get(cat, cat)
-                        import copy as _copy
-                        from sqlalchemy.orm.attributes import flag_modified
-                        updated_content = _copy.deepcopy(cand.recipe_data.get("content", []))
-                        for ing in updated_content:
-                            if isinstance(ing, dict) and (ing.get("food_group") or "").lower() in ("proteina", "proteine"):
-                                ing["food_group"] = correct_fg
-                                break
-                        cand.recipe_data = {**cand.recipe_data, "content": updated_content}
-                        flag_modified(cand, "recipe_data")
-                        self.db.commit()
-                        created += 1
-                        _LOGGER.info(f"[category-coverage] LLM: '{result.name}' per categoria '{cat}'")
+                    if not cand:
+                        break
+                    cand.status = "approved"
+                    correct_fg = _cat_to_fg.get(cat, cat)
+                    import copy as _copy
+                    from sqlalchemy.orm.attributes import flag_modified
+                    updated_content = _copy.deepcopy(cand.recipe_data.get("content", []))
+                    for ing in updated_content:
+                        if isinstance(ing, dict) and (ing.get("food_group") or "").lower() in ("proteina", "proteine"):
+                            ing["food_group"] = correct_fg
+                            break
+                    cand.recipe_data = {**cand.recipe_data, "content": updated_content}
+                    flag_modified(cand, "recipe_data")
+                    self.db.commit()
+                    created += 1
+                    llm_names.append(result.name)
+                    _LOGGER.info(f"[category-coverage] LLM: '{result.name}' per categoria '{cat}'")
 
             # 2) Fallback deterministico: ricette-template (funziona anche senza LLM)
             cat_proteins = opts_by_cat.get(cat) or [self._CATEGORY_DEFAULT_ITEMS[cat]]
@@ -865,6 +885,53 @@ class PlannerEngine:
                 _LOGGER.info(f"[category-coverage] Template: '{recipe_data['name']}' per categoria '{cat}'")
                 created += 1
                 j += 1
+
+    def _get_recipe_name_and_tags(self, recipe_id: str):
+        """Returns (name, tags) from Recipe or CandidateRecipe by ID."""
+        rec = self.db.query(Recipe).filter(Recipe.id == recipe_id).first()
+        if rec:
+            return rec.name, rec.tags or {}
+        cand = self.db.query(CandidateRecipe).filter(CandidateRecipe.id == recipe_id).first()
+        if cand:
+            data = cand.recipe_data if isinstance(cand.recipe_data, dict) else {}
+            return data.get("name"), data.get("tags") or {}
+        return None, {}
+
+    def _slot_display_name(self, recipe_id: str, content_raw: list, specific_veg: Optional[str]) -> str:
+        """
+        Nome mostrato nello slot del piano. Preferisce il nome proprio della ricetta
+        quando è descrittivo (manuale o LLM, >= 4 parole): prima veniva sempre
+        appiattito in '<Proteina> con <Carbo>', rendendo la settimana monotona alla
+        vista anche con ricette diverse. Template e nomi corti usano il nome
+        costruito, che include la verdura a rotazione.
+        """
+        name, tags = self._get_recipe_name_and_tags(recipe_id)
+        name = (name or "").strip()
+        is_template = "true" in ((tags or {}).get("auto_template") or [])
+        if name and not is_template and len(name.split()) >= 4:
+            return name
+        if content_raw:
+            return self._make_display_name(content_raw, specific_veg)
+        return name or "Pasto"
+
+    _CARB_GROUPS = {"carboidrati", "carboidrato"}
+
+    def _get_main_carb_item(self, recipe_id: str) -> Optional[str]:
+        """Nome (lowercase) del carboidrato principale della ricetta, per ID."""
+        ingredients, _ = self._get_recipe_content(recipe_id)
+        for ing in ingredients:
+            fg = (ing.get("food_group") if isinstance(ing, dict) else ing.food_group or "").lower()
+            if fg in self._CARB_GROUPS:
+                return ((ing.get("name") if isinstance(ing, dict) else ing.name) or "").lower()
+        return None
+
+    def _get_main_carb_item_from_recipe(self, recipe: "schemas.Recipe") -> Optional[str]:
+        """Nome (lowercase) del carboidrato principale da una Recipe già caricata."""
+        ingredients = recipe.content.components if recipe.is_composed_dish else recipe.content
+        for ing in ingredients:
+            if (ing.food_group or "").lower() in self._CARB_GROUPS:
+                return (ing.name or "").lower()
+        return None
 
     def _generate_from_plan_rules(
         self,
@@ -908,6 +975,8 @@ class PlannerEngine:
         protein_cat_counts: Dict[str, int] = {}
         protein_item_counts: Dict[str, int] = {}
         recent_protein_items: List[str] = []
+        carb_item_counts: Dict[str, int] = {}
+        recent_carb_items: List[str] = []
         # Pre-popola con le ricette della settimana precedente per evitare ripetizioni cross-week
         used_recipe_ids: set = self._load_recent_plan_recipe_ids(profile_id_A, start_date)
         used_fingerprints: set = set()
@@ -937,6 +1006,8 @@ class PlannerEngine:
                     target_protein_category=target_cat,
                     protein_item_counts=protein_item_counts,
                     recent_protein_items=recent_protein_items,
+                    carb_item_counts=carb_item_counts,
+                    recent_carb_items=recent_carb_items,
                     day_slot=day_slot,
                     use_llm_fill=fantasy_mode,
                 )
@@ -1000,7 +1071,7 @@ class PlannerEngine:
                     used_vegs.append(specific_veg)
                     day_slot += 1
 
-                    display_name = self._make_display_name(content_raw, specific_veg) if content_raw else best_recipe.name
+                    display_name = self._slot_display_name(best_recipe.recipe_id, content_raw, specific_veg)
 
                     generated_day.meals.append(schemas.PlannedMeal(
                         meal_type=meal_type,
@@ -1015,6 +1086,12 @@ class PlannerEngine:
 
                     used_recipe_ids.add(best_recipe.recipe_id)
                     recently_selected.append(best_recipe.recipe_id)
+
+                    # Rotazione carboidrati: traccia il carbo usato per la varietà settimanale
+                    carb_item = self._get_main_carb_item(best_recipe.recipe_id)
+                    if carb_item:
+                        carb_item_counts[carb_item] = carb_item_counts.get(carb_item, 0) + 1
+                        recent_carb_items.append(carb_item)
 
                     # Track fingerprint to prevent visually identical meals
                     selected_recipe_obj = next(
@@ -2288,6 +2365,8 @@ class PlannerEngine:
                                  target_protein_category: Optional[str] = None,
                                  protein_item_counts: Optional[Dict[str, int]] = None,
                                  recent_protein_items: Optional[List[str]] = None,
+                                 carb_item_counts: Optional[Dict[str, int]] = None,
+                                 recent_carb_items: Optional[List[str]] = None,
                                  day_slot: int = 0,
                                  _debug_log: Optional[dict] = None,
                                  target_count: int = 3,
@@ -2456,6 +2535,22 @@ class PlannerEngine:
                     f"[protein-item-filter] Narrowed to {len(preferred)} recipe(s) "
                     f"excluding items used ≥2 times: {over_limit}"
                 )
+
+        # Varietà carboidrati (soft): evita lo stesso carbo per >= 3 slot a settimana
+        # e nello slot immediatamente precedente. Si applica solo se restano alternative.
+        if carb_item_counts is not None or recent_carb_items:
+            over_carbs = {k for k, v in (carb_item_counts or {}).items() if v >= 3}
+            over_carbs |= set((recent_carb_items or [])[-1:])
+            if over_carbs:
+                preferred = [
+                    r for r in valid_recipes
+                    if (self._get_main_carb_item_from_recipe(r["recipe"]) or "") not in over_carbs
+                ]
+                if preferred:
+                    valid_recipes = preferred
+                    _LOGGER.info(
+                        f"[carb-variety] Narrowed to {len(preferred)} recipe(s) excluding carbs: {over_carbs}"
+                    )
 
         # Soft filter: prefer balanced meals (protein + carb)
         # If composed (protein+carb) recipes exist in pool → keep only those.

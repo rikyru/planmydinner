@@ -170,6 +170,33 @@ class TestRotationFix:
         assert counts.get("formaggio", 0) >= 2, f"formaggio sotto il min: {counts}"
         assert counts.get("legumi", 0) >= 3, f"legumi sotto il min: {counts}"
 
+    def test_carb_variety_and_creative_names(self, server_like_db):
+        """La settimana non deve usare sempre lo stesso carboidrato e i nomi
+        descrittivi delle ricette (>= 4 parole) devono restare visibili."""
+        planner = PlannerEngine(server_like_db)
+        weekly_plan = planner.generate_weekly_plan("riccardo", "cristiana", START)
+        carbs = []
+        names = []
+        for day in weekly_plan:
+            for meal in day.meals:
+                for item in meal.items:
+                    if item.recipe_id:
+                        names.append(item.item_name)
+                        carb = planner._get_main_carb_item(item.recipe_id)
+                        if carb:
+                            carbs.append(carb)
+        # rotazione carbo: almeno 2 carboidrati diversi e nessuno oltre ~metà slot
+        distinct = set(carbs)
+        assert len(distinct) >= 2, f"carboidrati non ruotati: {carbs}"
+        for c in distinct:
+            assert carbs.count(c) <= max(4, len(carbs) // 2 + 1), f"'{c}' usato troppo: {carbs}"
+
+    def test_slot_display_name_keeps_creative_names(self, server_like_db):
+        planner = PlannerEngine(server_like_db)
+        by_name = {r.name: r for r in planner._get_all_recipes()}
+        rec = by_name["Pollo sovracoscio con pasta"]  # 4 parole → nome proprio
+        assert planner._slot_display_name(rec.id, [], None) == "Pollo sovracoscio con pasta"
+
     def test_no_same_protein_category_pranzo_and_cena(self, server_like_db):
         planner = PlannerEngine(server_like_db)
         weekly_plan = planner.generate_weekly_plan("riccardo", "cristiana", START)
