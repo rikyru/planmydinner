@@ -19,11 +19,13 @@ class LLMGateway:
                  base_url: Optional[str] = None,
                  model: str = "llama3",
                  temperature: float = 0.7,
-                 timeout: int = 180):
+                 timeout: int = 180,
+                 vision_model: Optional[str] = None):
         self.provider = provider.lower()
         self.api_key = api_key if api_key else os.getenv(f"{provider.upper()}_API_KEY")
         self.base_url = base_url if base_url else os.getenv(f"{provider.upper()}_BASE_URL")
         self.model = model
+        self.vision_model = vision_model  # modello dedicato per analisi foto (fallback: model)
         self.temperature = temperature
         self.timeout = timeout
         self._client = None
@@ -258,6 +260,79 @@ class LLMGateway:
 
         except Exception as e:
             _LOGGER.error(f"Error during LLM call for food group classification: {e}")
+            return None
+
+    def estimate_meal_from_photo(self, image_b64: str, mime_type: str = "image/jpeg") -> Optional[Dict[str, Any]]:
+        """
+        Analizza la foto di un pasto (es. vassoio mensa) e restituisce una stima strutturata:
+        {"name": str, "ingredients": [{"name": str, "food_group": str, "grams": float}]}.
+        Usa vision_model se impostato, altrimenti il modello principale. Nessuna cache
+        (ogni foto è diversa).
+        """
+        if not self._client:
+            _LOGGER.error("LLM client not initialized. Cannot analyze meal photo.")
+            return None
+
+        model = self.vision_model or self.model
+        food_groups = "carboidrati, carne_bianca, carne_rossa, pesce, legumi, uova, latticini, verdure, grassi, frutta, altro"
+        task = (
+            "Sei un nutrizionista esperto. Analizza la foto di questo pasto (es. vassoio della mensa). "
+            "Identifica le portate e per ciascuna stima gli ingredienti principali con i grammi della porzione visibile. "
+            f"Per ogni ingrediente scegli il food_group fra: {food_groups}. "
+            'Rispondi SOLO con JSON in questa forma esatta: '
+            '{"name": "<nome breve del pasto>", "ingredients": '
+            '[{"name": "<ingrediente>", "food_group": "<gruppo>", "grams": <numero>}]}. '
+            "Se l'immagine non contiene cibo rispondi: {\"name\": null, \"ingredients\": []}."
+        )
+
+        try:
+            if self.provider == "openai":
+                response = self._client.chat.completions.create(
+                    model=model,
+                    messages=[{
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": task},
+                            {"type": "image_url", "image_url": {
+                                "url": f"data:{mime_type};base64,{image_b64}",
+                                "detail": "high",
+                            }},
+                        ],
+                    }],
+                    response_format={"type": "json_object"},
+                )
+                raw = response.choices[0].message.content
+            elif self.provider == "ollama":
+                # Richiede un modello multimodale (es. llava)
+                response = self._client.chat(
+                    model=model,
+                    messages=[{"role": "user", "content": task, "images": [image_b64]}],
+                )
+                raw = response["message"]["content"]
+            else:
+                _LOGGER.error(f"Unsupported LLM provider for photo analysis: {self.provider}")
+                return None
+
+            data = json.loads(raw)
+            if not data.get("name") or not isinstance(data.get("ingredients"), list):
+                _LOGGER.warning(f"Photo analysis returned no usable meal: {str(raw)[:200]}")
+                return None
+            ingredients = []
+            for ing in data["ingredients"]:
+                try:
+                    ingredients.append({
+                        "name": str(ing["name"]),
+                        "food_group": str(ing.get("food_group") or "altro"),
+                        "grams": max(0.0, float(ing.get("grams") or 0)),
+                    })
+                except (KeyError, TypeError, ValueError):
+                    continue
+            if not ingredients:
+                return None
+            _LOGGER.info(f"Photo analysis ({model}): '{data['name']}' con {len(ingredients)} ingredienti")
+            return {"name": str(data["name"]), "ingredients": ingredients}
+        except Exception as e:
+            _LOGGER.error(f"Error during LLM photo analysis: {e}")
             return None
 
     def estimate_nutrition(self, item_name: str) -> Optional[Dict[str, float]]:

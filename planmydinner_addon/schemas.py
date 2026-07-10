@@ -252,6 +252,7 @@ class PlanRules(BaseModel):
 class AppSettings(BaseModel):
     llm_provider: Optional[str] = None
     llm_model: Optional[str] = None
+    llm_vision_model: Optional[str] = None  # modello per analisi foto pasti (vuoto = usa llm_model)
     llm_api_key: Optional[str] = None      # None on GET (masked), value on PUT
     llm_base_url: Optional[str] = None
     llm_temperature: Optional[float] = None

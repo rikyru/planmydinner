@@ -26,6 +26,15 @@ const SettingsView = defineComponent({
                     </div>
 
                     <div class="settings-field">
+                        <label>Modello vision (foto pasti)</label>
+                        <input v-model="config.llm_vision_model" type="text"
+                               :placeholder="config.llm_provider === 'openai' ? 'es. gpt-4o (vuoto = modello principale)' : 'es. llava (vuoto = modello principale)'">
+                        <span class="settings-hint">
+                            Usato solo per analizzare le foto dei pasti. Lascia vuoto per usare il modello principale.
+                        </span>
+                    </div>
+
+                    <div class="settings-field">
                         <label>Chiave API
                             <span v-if="hasApiKey" class="settings-key-badge">✓ Configurata</span>
                         </label>
@@ -130,6 +139,7 @@ const SettingsView = defineComponent({
             config: {
                 llm_provider: 'openai',
                 llm_model: '',
+                llm_vision_model: '',
                 llm_api_key: '',
                 llm_base_url: '',
                 llm_temperature: 0.7,
@@ -157,6 +167,7 @@ const SettingsView = defineComponent({
                 this.hasApiKey = data.has_api_key || false;
                 this.config.llm_provider = data.llm_provider || 'openai';
                 this.config.llm_model = data.llm_model || '';
+                this.config.llm_vision_model = data.llm_vision_model || '';
                 this.config.llm_base_url = data.llm_base_url || '';
                 this.config.llm_temperature = data.llm_temperature || 0.7;
                 this.config.llm_custom_rules = data.llm_custom_rules || '';
@@ -172,6 +183,7 @@ const SettingsView = defineComponent({
                 const body = {
                     llm_provider: this.config.llm_provider,
                     llm_model: this.config.llm_model,
+                    llm_vision_model: this.config.llm_vision_model,
                     llm_base_url: this.config.llm_base_url,
                     llm_temperature: this.config.llm_temperature,
                 };

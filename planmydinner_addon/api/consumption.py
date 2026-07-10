@@ -1,15 +1,19 @@
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional
+import base64
 import uuid
 from datetime import date
 import logging # Added import
 import json # Added import
 
+from pydantic import BaseModel as _BaseModel
+
 _LOGGER = logging.getLogger(__name__) # Added logger setup
 
 from .. import schemas
 from ..database import get_db, ConsumedEntry, Recipe, CandidateRecipe, consume_ingredients_from_pantry
+from ..nutrition import compute_recipe_nutrition
 
 router = APIRouter(
     prefix="/consumed-entries",
@@ -272,6 +276,200 @@ def mark_day_as_consumed(profile_id: str, day: str, db: Session = Depends(get_db
         marked += 1
 
     return {"marked": marked, "skipped": skipped}
+
+
+# ---------------------------------------------------------------------------
+# Pasti da foto (mensa): analizza la foto, salva nel catalogo mensa, riusa
+# ---------------------------------------------------------------------------
+
+_MAX_PHOTO_BYTES = 10 * 1024 * 1024  # 10 MB
+
+
+class PhotoIngredient(_BaseModel):
+    name: str
+    food_group: str = "altro"
+    grams: float
+
+
+class MensaMealSave(_BaseModel):
+    profile_id: str
+    date: str            # ISO YYYY-MM-DD
+    meal_type: str       # pranzo | cena
+    name: str
+    ingredients: List[PhotoIngredient]
+    register_consumption: bool = True
+
+
+def _mensa_content(ingredients: List[PhotoIngredient], profile_id: str) -> list:
+    return [
+        {
+            "name": ing.name,
+            "food_group": ing.food_group,
+            "quantities": {profile_id: {"qty": float(ing.grams), "unit": "g", "grams_equiv": float(ing.grams)}},
+        }
+        for ing in ingredients if ing.grams > 0
+    ]
+
+
+def _is_mensa_candidate(cand: CandidateRecipe) -> Optional[dict]:
+    """Restituisce recipe_data (dict) se il candidato è un pasto mensa, altrimenti None."""
+    data = cand.recipe_data
+    if isinstance(data, str):
+        try:
+            data = json.loads(data)
+        except Exception:
+            return None
+    if not isinstance(data, dict):
+        return None
+    tags = data.get("tags") or {}
+    return data if "true" in (tags.get("mensa") or []) else None
+
+
+def _register_mensa_consumption(db: Session, cand: CandidateRecipe, data: dict,
+                                profile_id: str, meal_date: str, meal_type: str) -> ConsumedEntry:
+    ingredients = [
+        {"name": ing.get("name"), "qty": (ing.get("quantities") or {}).get(profile_id, {}).get("qty", 0), "unit": "g"}
+        for ing in data.get("content", []) if isinstance(ing, dict)
+    ]
+    entry = ConsumedEntry(
+        id=str(uuid.uuid4()),
+        profile_id=profile_id,
+        date=meal_date,
+        meal_type=meal_type,
+        type="override",
+        consumed_recipe_id=cand.id,
+        override_details={"free_text_name": data.get("name"), "ingredients": ingredients, "notes": "mensa"},
+    )
+    db.add(entry)
+    cand.usage_count = (cand.usage_count or 0) + 1
+    db.add(cand)
+    db.commit()
+    db.refresh(entry)
+    return entry
+
+
+@router.post("/photo/analyze")
+async def analyze_meal_photo(request: Request, profile_id: str, file: UploadFile = File(...)):
+    """
+    Analizza la foto di un pasto con il modello vision e restituisce la proposta
+    strutturata (nome + ingredienti con grammi stimati + kcal/macro).
+    Non salva nulla: la conferma avviene con POST /consumed-entries/mensa.
+    """
+    gw = getattr(request.app.state, "llm_gateway", None)
+    if gw is None or gw._client is None:
+        raise HTTPException(status_code=503, detail="LLM non configurato: impossibile analizzare la foto.")
+
+    if not (file.content_type or "").startswith("image/"):
+        raise HTTPException(status_code=422, detail="Il file deve essere un'immagine.")
+    raw = await file.read()
+    if len(raw) > _MAX_PHOTO_BYTES:
+        raise HTTPException(status_code=413, detail="Immagine troppo grande (max 10 MB).")
+
+    result = gw.estimate_meal_from_photo(base64.b64encode(raw).decode(), file.content_type)
+    if not result:
+        raise HTTPException(status_code=422, detail="Impossibile riconoscere un pasto nella foto.")
+
+    ingredients = [PhotoIngredient(**ing) for ing in result["ingredients"]]
+    nutrition = None
+    try:
+        nutrition = compute_recipe_nutrition(_mensa_content(ingredients, profile_id), profile_id, llm_gateway=gw)
+    except Exception:
+        _LOGGER.exception("Nutrition estimate failed for photo meal")
+    return {"name": result["name"], "ingredients": [i.model_dump() for i in ingredients], "nutrition": nutrition}
+
+
+@router.get("/mensa")
+def list_mensa_meals(profile_id: Optional[str] = None, db: Session = Depends(get_db)):
+    """Catalogo dei pasti mensa già mappati (per riuso senza LLM), più usati prima."""
+    out = []
+    for cand in db.query(CandidateRecipe).filter(CandidateRecipe.status == "draft_structured").all():
+        data = _is_mensa_candidate(cand)
+        if not data:
+            continue
+        ingredients = []
+        any_profile = None
+        for ing in data.get("content", []):
+            if not isinstance(ing, dict):
+                continue
+            quantities = ing.get("quantities") or {}
+            any_profile = any_profile or next(iter(quantities), None)
+            qty = quantities.get(profile_id) or quantities.get(any_profile) or {}
+            ingredients.append({
+                "name": ing.get("name"),
+                "food_group": ing.get("food_group"),
+                "grams": qty.get("grams_equiv") or qty.get("qty") or 0,
+            })
+        nutrition = None
+        try:
+            # Solo tabella locale (niente LLM in una list view)
+            nutrition = compute_recipe_nutrition(data.get("content"), profile_id or any_profile or "")
+        except Exception:
+            pass
+        out.append({
+            "id": cand.id,
+            "name": data.get("name"),
+            "usage_count": cand.usage_count or 0,
+            "ingredients": ingredients,
+            "nutrition": nutrition,
+        })
+    out.sort(key=lambda m: (-m["usage_count"], (m["name"] or "").lower()))
+    return out
+
+
+@router.post("/mensa")
+def save_mensa_meal(body: MensaMealSave, db: Session = Depends(get_db)):
+    """
+    Salva (o aggiorna) un pasto mensa nel catalogo e, di default, lo registra
+    come consumato per la data/pasto indicati.
+    """
+    if not body.ingredients:
+        raise HTTPException(status_code=422, detail="Serve almeno un ingrediente.")
+
+    # Dedupe per nome: se esiste già un pasto mensa omonimo lo riusa (aggiornando le dosi)
+    cand = None
+    for existing in db.query(CandidateRecipe).filter(CandidateRecipe.status == "draft_structured").all():
+        data = _is_mensa_candidate(existing)
+        if data and (data.get("name") or "").strip().lower() == body.name.strip().lower():
+            cand = existing
+            break
+
+    recipe_data = {
+        "name": body.name.strip(),
+        "description": "Pasto mensa (mappato da foto)",
+        "is_composed_dish": False,
+        "content": _mensa_content(body.ingredients, body.profile_id),
+        "steps": [],
+        "total_time_minutes": 0,
+        "difficulty": "sconosciuto",
+        "tags": {"mensa": ["true"]},
+    }
+    if cand is None:
+        cand = CandidateRecipe(id=str(uuid.uuid4()), status="draft_structured", usage_count=0,
+                               recipe_data=recipe_data)
+    else:
+        cand.recipe_data = recipe_data
+    db.add(cand)
+    db.commit()
+    db.refresh(cand)
+
+    entry_id = None
+    if body.register_consumption:
+        entry = _register_mensa_consumption(db, cand, recipe_data, body.profile_id, body.date, body.meal_type)
+        entry_id = entry.id
+
+    return {"recipe_id": cand.id, "consumed_entry_id": entry_id}
+
+
+@router.post("/mensa/{candidate_id}/consume")
+def consume_mensa_meal(candidate_id: str, profile_id: str, meal_date: str, meal_type: str,
+                       db: Session = Depends(get_db)):
+    """Registra come consumato un pasto mensa già mappato (nessuna chiamata LLM)."""
+    cand = db.query(CandidateRecipe).filter(CandidateRecipe.id == candidate_id).first()
+    data = _is_mensa_candidate(cand) if cand else None
+    if not data:
+        raise HTTPException(status_code=404, detail="Pasto mensa non trovato.")
+    entry = _register_mensa_consumption(db, cand, data, profile_id, meal_date, meal_type)
+    return {"consumed_entry_id": entry.id, "name": data.get("name")}
 
 
 @router.get("/", response_model=List[schemas.ConsumedEntry])

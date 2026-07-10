@@ -26,6 +26,7 @@ def get_settings(db: Session = Depends(get_db)):
     return schemas.AppSettings(
         llm_provider=row.llm_provider,
         llm_model=row.llm_model,
+        llm_vision_model=row.llm_vision_model,
         llm_api_key=None,                        # never expose
         llm_base_url=row.llm_base_url,
         llm_temperature=row.llm_temperature,
@@ -43,6 +44,8 @@ def update_settings(body: schemas.AppSettings, request: Request, db: Session = D
         row.llm_provider = body.llm_provider
     if body.llm_model is not None:
         row.llm_model = body.llm_model
+    if body.llm_vision_model is not None:
+        row.llm_vision_model = body.llm_vision_model.strip() or None
     # Only update api_key if a non-empty value was sent
     if body.llm_api_key:
         row.llm_api_key = body.llm_api_key
@@ -65,6 +68,7 @@ def update_settings(body: schemas.AppSettings, request: Request, db: Session = D
         base_url=row.llm_base_url,
         model=row.llm_model or "llama3",
         temperature=row.llm_temperature or 0.7,
+        vision_model=row.llm_vision_model,
     )
     gw.custom_rules = row.llm_custom_rules or ""
     request.app.state.llm_gateway = gw
@@ -72,6 +76,7 @@ def update_settings(body: schemas.AppSettings, request: Request, db: Session = D
     return schemas.AppSettings(
         llm_provider=row.llm_provider,
         llm_model=row.llm_model,
+        llm_vision_model=row.llm_vision_model,
         llm_api_key=None,
         llm_base_url=row.llm_base_url,
         llm_temperature=row.llm_temperature,

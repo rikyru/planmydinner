@@ -90,6 +90,7 @@ async def lifespan(app: FastAPI):
                 base_url=_row.llm_base_url or llm_base_url,
                 model=_row.llm_model or llm_model,
                 temperature=_row.llm_temperature or 0.7,
+                vision_model=_row.llm_vision_model,
             )
         gw.custom_rules = _row.llm_custom_rules or ""
     finally:

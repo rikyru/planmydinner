@@ -142,6 +142,7 @@ class AppSettings(Base):
     id = Column(Integer, primary_key=True, default=1)
     llm_provider    = Column(String, nullable=True)   # "openai" | "ollama"
     llm_model       = Column(String, nullable=True)
+    llm_vision_model = Column(String, nullable=True)  # modello per analisi foto pasti (fallback: llm_model)
     llm_api_key     = Column(String, nullable=True)
     llm_base_url    = Column(String, nullable=True)
     llm_temperature = Column(Float, nullable=True)
@@ -192,6 +193,7 @@ def create_db_and_tables():
             ("plan_rules", "free_meal_quota", "INTEGER"),
             ("plan_rules", "meal_slots", "JSON"),
             ("app_settings", "llm_generation_mode", "TEXT"),
+            ("app_settings", "llm_vision_model", "TEXT"),
         ]:
             try:
                 conn.execute(__import__("sqlalchemy").text(

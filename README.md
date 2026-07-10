@@ -275,6 +275,18 @@ Nella vista **Oggi** il pulsante "✓✓ Segna tutta la giornata come consumata"
 con un tap tutti i pasti pianificati del giorno (salta pasti liberi, "non mangiato"
 e pasti già registrati). Endpoint: `POST /consumed-entries/mark-day?profile_id&day`.
 
+### Pasto da foto (mensa) 📷
+
+Nella vista **Oggi**, il pulsante "📷 Mensa" permette di fotografare il vassoio
+(es. mensa aziendale): il modello vision identifica le portate e stima grammature
+e macro, tu correggi e confermi. Il pasto viene salvato in un **catalogo mensa**
+riusabile: la prossima volta lo registri con un tap, senza chiamate LLM.
+
+- Modello dedicato configurabile in Impostazioni (`Modello vision`, consigliato
+  `gpt-4o`; vuoto = usa il modello principale). Costo: frazioni di centesimo a foto.
+- API: `POST /consumed-entries/photo/analyze` (multipart), `GET/POST /consumed-entries/mensa`,
+  `POST /consumed-entries/mensa/{id}/consume`
+
 ### Debug LLM (sviluppatori)
 
 Con almeno 2 profili configurati, appare il bottone **🐛 Debug** in sidebar. Mostra:
