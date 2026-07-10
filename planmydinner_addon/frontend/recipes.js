@@ -58,6 +58,53 @@ const Recipes = defineComponent({
                 </div>
             </div>
 
+            <!-- Catalogo pasti mensa (da foto) -->
+            <div class="card" style="margin-bottom:20px;">
+                <div style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;"
+                     @click="showMensa = !showMensa">
+                    <h3 style="margin:0;">🍱 Pasti mensa <span class="hint" v-if="mensaMeals.length">({{ mensaMeals.length }})</span></h3>
+                    <span style="font-size:18px;color:var(--text-3);">{{ showMensa ? '▲' : '▼' }}</span>
+                </div>
+
+                <div v-if="showMensa" style="margin-top:14px;">
+                    <p class="hint" style="margin:0 0 10px;">
+                        I pasti mappati con la foto del vassoio. Correggi qui nomi e grammature:
+                        le modifiche valgono anche per i macro dei consumi già registrati.
+                    </p>
+                    <div v-if="mensaMeals.length === 0" class="hint">Nessun pasto mensa ancora: fotografa il vassoio dalla vista Oggi.</div>
+
+                    <div v-for="m in mensaMeals" :key="m.id"
+                         style="border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:8px;">
+                        <!-- Riga compatta -->
+                        <div style="display:flex;align-items:center;gap:10px;cursor:pointer;" @click="toggleMensaEdit(m)">
+                            <strong style="flex:1;">{{ m.name }}</strong>
+                            <span class="hint" v-if="m.nutrition">~{{ Math.round(m.nutrition.kcal) }} kcal</span>
+                            <span class="hint">usato {{ m.usage_count }}×</span>
+                            <span style="color:var(--text-3);">{{ mensaEditId === m.id ? '▲' : '✏️' }}</span>
+                        </div>
+
+                        <!-- Editor espanso -->
+                        <div v-if="mensaEditId === m.id" style="margin-top:10px;display:flex;flex-direction:column;gap:8px;">
+                            <input v-model="mensaEdit.name" placeholder="Nome pasto">
+                            <div v-for="(ing, idx) in mensaEdit.ingredients" :key="idx"
+                                 style="display:grid;grid-template-columns:1fr 90px auto;gap:8px;align-items:center;">
+                                <input v-model="ing.name">
+                                <input v-model.number="ing.grams" type="number" min="0" step="10">
+                                <button @click="mensaEdit.ingredients.splice(idx, 1)" class="btn-secondary btn-sm">✕</button>
+                            </div>
+                            <div style="display:flex;gap:8px;margin-top:4px;">
+                                <button @click="saveMensaEdit" class="btn-primary btn-sm"
+                                        :disabled="mensaSaving || !mensaEdit.name || !mensaEdit.ingredients.length">
+                                    {{ mensaSaving ? 'Salvataggio...' : '💾 Salva' }}
+                                </button>
+                                <button @click="mensaEditId = null" class="btn-secondary btn-sm">Annulla</button>
+                                <button @click="deleteMensa(m)" class="btn-danger btn-sm" style="margin-left:auto;">🗑️ Elimina</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <div v-if="!loading && recipes.length === 0" class="empty-state">
                 <p>Nessuna ricetta nel catalogo. Aggiungine una!</p>
             </div>
@@ -193,6 +240,12 @@ const Recipes = defineComponent({
             loading: false,
             showModal: false,
             editedRecipe: this._emptyRecipe(),
+            // Catalogo pasti mensa
+            showMensa: false,
+            mensaMeals: [],
+            mensaEditId: null,
+            mensaEdit: { name: '', ingredients: [] },
+            mensaSaving: false,
             // Bulk import
             showBulk: false,
             bulkJson: '',
@@ -226,6 +279,58 @@ const Recipes = defineComponent({
         };
     },
     methods: {
+        // --- Catalogo pasti mensa ---
+        async fetchMensaMeals() {
+            try {
+                const resp = await window.apiFetch('/consumed-entries/mensa');
+                this.mensaMeals = resp.ok ? await resp.json() : [];
+            } catch (_) {
+                this.mensaMeals = [];
+            }
+        },
+        toggleMensaEdit(m) {
+            if (this.mensaEditId === m.id) { this.mensaEditId = null; return; }
+            this.mensaEditId = m.id;
+            this.mensaEdit = {
+                name: m.name,
+                ingredients: m.ingredients.map(i => ({ name: i.name, food_group: i.food_group || 'altro', grams: i.grams })),
+            };
+        },
+        async saveMensaEdit() {
+            this.mensaSaving = true;
+            try {
+                const body = {
+                    name: this.mensaEdit.name,
+                    ingredients: this.mensaEdit.ingredients.filter(i => i.name && i.grams > 0),
+                };
+                const resp = await window.apiFetch(`/consumed-entries/mensa/${this.mensaEditId}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body),
+                });
+                if (!resp.ok) throw new Error(await resp.text());
+                this.toast.add('Pasto mensa aggiornato!', 'success');
+                this.mensaEditId = null;
+                await this.fetchMensaMeals();
+            } catch (e) {
+                this.toast.add('Errore: ' + e.message, 'error');
+            } finally {
+                this.mensaSaving = false;
+            }
+        },
+        async deleteMensa(m) {
+            if (!confirm(`Eliminare "${m.name}" dal catalogo mensa?`)) return;
+            try {
+                const resp = await window.apiFetch(`/consumed-entries/mensa/${m.id}`, { method: 'DELETE' });
+                if (!resp.ok) throw new Error(await resp.text());
+                this.toast.add('Pasto mensa eliminato.', 'success');
+                this.mensaEditId = null;
+                await this.fetchMensaMeals();
+            } catch (e) {
+                this.toast.add('Errore: ' + e.message, 'error');
+            }
+        },
+
         _emptyRecipe() {
             return {
                 id: null,
@@ -392,6 +497,7 @@ const Recipes = defineComponent({
     },
     mounted() {
         this.fetchRecipes();
+        this.fetchMensaMeals();
     },
 });
 

@@ -133,7 +133,7 @@ const WeekView = defineComponent({
                          :meal-type="mensaFor.mealType"
                          :meal-date="mensaFor.date"
                          @close="mensaFor = null"
-                         @saved="mensaFor = null" />
+                         @saved="onMensaSaved" />
 
             <div v-if="showMealModal" class="modal-overlay" @click.self="closeMealModal">
                 <div class="modal">
@@ -1153,6 +1153,10 @@ const WeekView = defineComponent({
         },
 
         // ── Utility ──────────────────────────────────────────────────────────
+        async onMensaSaved() {
+            this.mensaFor = null;
+            await this.loadWeekPlan();   // lo slot ora mostra il pasto mensa consumato
+        },
         openMensaFromMeal() {
             if (!this.mealModalMeal) return;
             this.mensaFor = { mealType: this.mealModalMeal.meal_type, date: this.mealModalDate };

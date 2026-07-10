@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from sqlalchemy.orm import Session
 from typing import List, Optional
 import base64
+import copy
 import uuid
 from datetime import date
 import logging # Added import
@@ -325,6 +326,42 @@ def _is_mensa_candidate(cand: CandidateRecipe) -> Optional[dict]:
     return data if "true" in (tags.get("mensa") or []) else None
 
 
+def _apply_mensa_to_plan(db: Session, profile_id: str, meal_date: str, meal_type: str,
+                         name: str, recipe_id: str) -> bool:
+    """Sostituisce lo slot del piano con il pasto mensa realmente consumato,
+    così Oggi/Settimana (e i macro giornalieri) mostrano ciò che si è mangiato
+    e non la ricetta suggerita. Ritorna False se nessun piano copre la data."""
+    from .planner import _find_plan_covering_date
+    try:
+        target = date.fromisoformat(meal_date)
+    except ValueError:
+        return False
+    plan = _find_plan_covering_date(db, profile_id, target)
+    if not plan:
+        return False
+    updated = copy.deepcopy(plan.daily_plans)
+    changed = False
+    for day in updated:
+        if day.get("date") == meal_date:
+            for meal in day.get("meals", []):
+                if meal.get("meal_type") == meal_type:
+                    meal["items"] = [{
+                        "item_name": f"🍱 {name}",
+                        "food_group": "mensa",
+                        "quantity": 1,
+                        "unit": "recipe",
+                        "is_estimated_unit": False,
+                        "alternatives": [],
+                        "recipe_id": recipe_id,
+                    }]
+                    changed = True
+    if changed:
+        plan.daily_plans = updated
+        db.add(plan)
+        db.commit()
+    return changed
+
+
 def _register_mensa_consumption(db: Session, cand: CandidateRecipe, data: dict,
                                 profile_id: str, meal_date: str, meal_type: str) -> ConsumedEntry:
     ingredients = [
@@ -345,6 +382,8 @@ def _register_mensa_consumption(db: Session, cand: CandidateRecipe, data: dict,
     db.add(cand)
     db.commit()
     db.refresh(entry)
+    # Aggiorna anche lo slot del piano (se un piano copre la data)
+    _apply_mensa_to_plan(db, profile_id, meal_date, meal_type, data.get("name") or "Pasto mensa", cand.id)
     return entry
 
 
@@ -470,6 +509,57 @@ def consume_mensa_meal(candidate_id: str, profile_id: str, meal_date: str, meal_
         raise HTTPException(status_code=404, detail="Pasto mensa non trovato.")
     entry = _register_mensa_consumption(db, cand, data, profile_id, meal_date, meal_type)
     return {"consumed_entry_id": entry.id, "name": data.get("name")}
+
+
+class MensaMealUpdate(_BaseModel):
+    name: str
+    ingredients: List[PhotoIngredient]
+
+
+@router.put("/mensa/{candidate_id}")
+def update_mensa_meal(candidate_id: str, body: MensaMealUpdate, db: Session = Depends(get_db)):
+    """Modifica nome e ingredienti/grammature di un pasto mensa del catalogo."""
+    cand = db.query(CandidateRecipe).filter(CandidateRecipe.id == candidate_id).first()
+    data = _is_mensa_candidate(cand) if cand else None
+    if not data:
+        raise HTTPException(status_code=404, detail="Pasto mensa non trovato.")
+    if not body.ingredients:
+        raise HTTPException(status_code=422, detail="Serve almeno un ingrediente.")
+
+    # Mantiene le chiavi profilo già presenti nel content (di norma una sola)
+    profile_keys = set()
+    for ing in data.get("content", []):
+        if isinstance(ing, dict):
+            profile_keys.update((ing.get("quantities") or {}).keys())
+    if not profile_keys:
+        profile_keys = {"riccardo"}
+
+    content = []
+    for ing in body.ingredients:
+        if ing.grams <= 0:
+            continue
+        content.append({
+            "name": ing.name,
+            "food_group": ing.food_group,
+            "quantities": {pk: {"qty": float(ing.grams), "unit": "g", "grams_equiv": float(ing.grams)}
+                           for pk in profile_keys},
+        })
+    cand.recipe_data = {**data, "name": body.name.strip(), "content": content}
+    from sqlalchemy.orm.attributes import flag_modified
+    flag_modified(cand, "recipe_data")
+    db.commit()
+    return {"recipe_id": cand.id, "name": body.name.strip()}
+
+
+@router.delete("/mensa/{candidate_id}")
+def delete_mensa_meal(candidate_id: str, db: Session = Depends(get_db)):
+    """Elimina un pasto mensa dal catalogo (i consumi già registrati restano)."""
+    cand = db.query(CandidateRecipe).filter(CandidateRecipe.id == candidate_id).first()
+    if not (_is_mensa_candidate(cand) if cand else None):
+        raise HTTPException(status_code=404, detail="Pasto mensa non trovato.")
+    db.delete(cand)
+    db.commit()
+    return {"deleted": candidate_id}
 
 
 @router.get("/", response_model=List[schemas.ConsumedEntry])

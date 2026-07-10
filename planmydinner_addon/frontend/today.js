@@ -197,7 +197,7 @@ const TodayView = defineComponent({
                          :meal-type="mensaMealType"
                          :meal-date="today"
                          @close="closeMensaModal"
-                         @saved="loadAdherence" />
+                         @saved="onMensaSaved" />
 
             <!-- Custom meal modal -->
             <div v-if="showCustomModal" class="modal-overlay" @click.self="showCustomModal=false">
@@ -554,6 +554,11 @@ const TodayView = defineComponent({
         closeMensaModal() {
             this.showMensaModal = false;
             this.mensaMealType = null;
+        },
+        async onMensaSaved() {
+            // il backend ha sostituito lo slot del piano col pasto mensa: ricarica
+            await this.loadWeeklyPlan();
+            await this.loadAdherence();
         },
 
         // --- Custom meal ---

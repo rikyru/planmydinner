@@ -1,6 +1,9 @@
 """Test per il flusso 'pasto da foto' (mensa): analyze, salvataggio catalogo, riuso."""
+import uuid
+
 import pytest
 
+from planmydinner_addon.database import GeneratedWeeklyPlan
 from planmydinner_addon.main import app
 
 
@@ -117,6 +120,75 @@ class TestMensaCatalog:
         mensa_entries = [e for e in entries if e.get("consumed_recipe_id") == recipe_id]
         assert len(mensa_entries) == 3
         assert all(e["type"] == "override" for e in mensa_entries)
+
+    def test_register_replaces_plan_slot(self, client, setup_database):
+        """Registrare un pasto mensa deve sostituire lo slot del piano (non lasciare
+        la ricetta suggerita)."""
+        db = setup_database
+        db.add(GeneratedWeeklyPlan(
+            id=str(uuid.uuid4()), profile_id_A="persona_a", profile_id_B="persona_b",
+            week_start_date="2026-02-23", generated_at="2026-02-23",
+            daily_plans=[{"date": "2026-02-24", "meals": [
+                {"meal_type": "pranzo", "items": [{
+                    "item_name": "Ricetta suggerita", "food_group": "recipe",
+                    "quantity": 1, "unit": "recipe", "is_estimated_unit": False,
+                    "alternatives": [], "recipe_id": "pasta_pomodoro_recipe",
+                }]},
+                {"meal_type": "cena", "items": []},
+            ]}],
+        ))
+        db.commit()
+
+        resp = client.post("/consumed-entries/mensa", json={
+            "profile_id": "persona_a", "date": "2026-02-24", "meal_type": "pranzo",
+            "name": "Vassoio pasta e uova",
+            "ingredients": [{"name": "pasta", "food_group": "carboidrati", "grams": 80}],
+        })
+        assert resp.status_code == 200
+        recipe_id = resp.json()["recipe_id"]
+
+        db.expire_all()
+        plan = db.query(GeneratedWeeklyPlan).filter(
+            GeneratedWeeklyPlan.profile_id_A == "persona_a").first()
+        item = plan.daily_plans[0]["meals"][0]["items"][0]
+        assert item["food_group"] == "mensa"
+        assert item["recipe_id"] == recipe_id
+        assert "Vassoio pasta e uova" in item["item_name"]
+        # la cena non viene toccata
+        assert plan.daily_plans[0]["meals"][1]["items"] == []
+
+    def test_update_and_delete_mensa_meal(self, client, setup_database):
+        resp = client.post("/consumed-entries/mensa", json={
+            "profile_id": "persona_a", "date": "2026-02-24", "meal_type": "pranzo",
+            "name": "Pasta della mensa",
+            "ingredients": [{"name": "pasta", "food_group": "carboidrati", "grams": 80}],
+        })
+        recipe_id = resp.json()["recipe_id"]
+
+        # Modifica grammature e nome
+        resp = client.put(f"/consumed-entries/mensa/{recipe_id}", json={
+            "name": "Pasta della mensa (abbondante)",
+            "ingredients": [{"name": "pasta", "food_group": "carboidrati", "grams": 120}],
+        })
+        assert resp.status_code == 200
+        meals = client.get("/consumed-entries/mensa", params={"profile_id": "persona_a"}).json()
+        assert meals[0]["name"] == "Pasta della mensa (abbondante)"
+        assert meals[0]["ingredients"][0]["grams"] == 120
+        assert meals[0]["nutrition"]["kcal"] == pytest.approx(353 * 1.2, abs=0.2)
+
+        # Elimina dal catalogo
+        resp = client.delete(f"/consumed-entries/mensa/{recipe_id}")
+        assert resp.status_code == 200
+        assert client.get("/consumed-entries/mensa").json() == []
+        resp = client.post(f"/consumed-entries/mensa/{recipe_id}/consume",
+                           params={"profile_id": "persona_a", "meal_date": "2026-02-25", "meal_type": "pranzo"})
+        assert resp.status_code == 404
+
+    def test_update_unknown_404(self, client, setup_database):
+        resp = client.put("/consumed-entries/mensa/nope", json={
+            "name": "x", "ingredients": [{"name": "pasta", "food_group": "carboidrati", "grams": 80}],
+        })
+        assert resp.status_code == 404
 
     def test_consume_unknown_id_404(self, client, setup_database):
         resp = client.post(
