@@ -2,10 +2,24 @@
 <html lang="it">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>Plan My Dinner</title>
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🍽️</text></svg>">
-    <link rel="stylesheet" href="style.css?v=14">
+    <meta name="theme-color" content="#f6f5ef" media="(prefers-color-scheme: light)">
+    <meta name="theme-color" content="#131712" media="(prefers-color-scheme: dark)">
+    <script>
+        // Tema: applica subito la scelta salvata (prima del paint, evita flash).
+        // ?theme=light|dark forza e salva la scelta (utile per test/kiosk).
+        (() => {
+            try {
+                const q = new URLSearchParams(location.search).get('theme');
+                if (q === 'light' || q === 'dark') localStorage.setItem('pmd_theme', q);
+                const t = localStorage.getItem('pmd_theme');
+                if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
+            } catch {}
+        })();
+    </script>
+    <link rel="stylesheet" href="style.css?v=16">
     <script type="importmap">
       {
         "imports": {
@@ -13,63 +27,19 @@
         }
       }
     </script>
-    <style>
-        /* ---- Layout base ---- */
-        * { box-sizing: border-box; }
-        body { margin: 0; font-family: system-ui, sans-serif; background: #f8f9fa; color: #212529; }
-        nav { display: flex; gap: 4px; padding: 8px 12px; background: #fff; border-bottom: 1px solid #dee2e6; overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none; -ms-overflow-style: none; }
-        nav::-webkit-scrollbar { display: none; }
-        nav a { padding: 8px 14px; border-radius: 6px; cursor: pointer; font-size: 14px; color: #495057; user-select: none; white-space: nowrap; flex-shrink: 0; }
-        nav a:hover { background: #f1f3f5; }
-        nav a.active { background: #4263eb; color: #fff; font-weight: 600; }
-        main { padding: 16px; }
-        @media (max-width: 600px) { main { padding: 10px 12px; } }
-
-        /* ---- Stati comuni ---- */
-        .loading { padding: 24px; text-align: center; color: #868e96; font-style: italic; }
-        .loading::before { content: '⏳ '; }
-        .error-box { background: #fff5f5; border: 1px solid #ffc9c9; border-radius: 8px; padding: 14px 18px; color: #c92a2a; margin: 12px 0; }
-        .empty-box { background: #f8f9fa; border: 2px dashed #dee2e6; border-radius: 10px; padding: 32px; text-align: center; color: #868e96; }
-        .empty-box p { margin: 0 0 12px; font-size: 15px; }
-
-        /* ---- Bottoni ---- */
-        button { cursor: pointer; border: none; border-radius: 6px; padding: 8px 14px; font-size: 14px; }
-        button:disabled { opacity: 0.55; cursor: not-allowed; }
-        .btn-primary { background: #4263eb; color: #fff; }
-        .btn-primary:hover:not(:disabled) { background: #3451d1; }
-        .btn-secondary { background: #e9ecef; color: #495057; }
-        .btn-secondary:hover:not(:disabled) { background: #dee2e6; }
-        .btn-danger { background: #fa5252; color: #fff; }
-
-        /* ---- Modal ---- */
-        .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: flex; align-items: center; justify-content: center; z-index: 100; }
-        .modal { background: #fff; border-radius: 12px; padding: 24px; width: min(480px, 95vw); max-height: 85vh; overflow-y: auto; box-shadow: 0 8px 32px rgba(0,0,0,.2); }
-        .modal h3 { margin: 0 0 16px; font-size: 17px; }
-
-        /* ---- Toast ---- */
-        #toast-container { position: fixed; bottom: 20px; right: 20px; display: flex; flex-direction: column; gap: 8px; z-index: 200; }
-        .toast { padding: 12px 18px; border-radius: 8px; color: #fff; font-size: 14px; box-shadow: 0 4px 12px rgba(0,0,0,.15); animation: slideIn .2s ease; min-width: 220px; }
-        .toast.success { background: #2f9e44; }
-        .toast.error   { background: #c92a2a; }
-        .toast.info    { background: #1971c2; }
-        @keyframes slideIn { from { opacity:0; transform: translateY(12px); } to { opacity:1; transform: translateY(0); } }
-
-        /* ---- Misc ---- */
-        input, select { padding: 8px 10px; border: 1px solid #ced4da; border-radius: 6px; font-size: 14px; width: 100%; }
-        input:focus, select:focus { outline: none; border-color: #4263eb; box-shadow: 0 0 0 2px rgba(66,99,235,.2); }
-    </style>
 </head>
 <body>
     <div id="app">
-        <nav>
-            <a @click="page = 'today'" :class="{active: page === 'today'}">Oggi</a>
-            <a @click="page = 'dashboard'" :class="{active: page === 'dashboard'}">Settimana</a>
-            <a @click="page = 'import'" :class="{active: page === 'import'}">Importa</a>
-            <a @click="page = 'shopping'" :class="{active: page === 'shopping'}">Lista Spesa</a>
-            <a @click="page = 'pantry'" :class="{active: page === 'pantry'}">Dispensa</a>
-            <a @click="page = 'profiles'" :class="{active: page === 'profiles'}">Profili</a>
-            <a @click="page = 'recipes'" :class="{active: page === 'recipes'}">Ricette</a>
-            <a @click="page = 'settings'" :class="{active: page === 'settings'}">Impostazioni</a>
+        <nav class="top-nav">
+            <span class="brand">🍽️ <b class="brand-text">Plan My Dinner</b></span>
+            <div class="top-nav__links">
+                <a v-for="p in pages" :key="p.id" @click="page = p.id" :class="{active: page === p.id}">
+                    {{ p.icon }} {{ p.label }}
+                </a>
+            </div>
+            <button class="theme-toggle" @click="toggleTheme" :title="theme === 'dark' ? 'Tema chiaro' : 'Tema scuro'">
+                {{ theme === 'dark' ? '☀️' : '🌙' }}
+            </button>
         </nav>
 
         <main>
@@ -82,6 +52,26 @@
             <recipes v-if="page === 'recipes'"></recipes>
             <settings-view v-if="page === 'settings'"></settings-view>
         </main>
+
+        <!-- Bottom nav (solo mobile) -->
+        <nav class="bottom-nav">
+            <a v-for="p in mainPages" :key="p.id" @click="page = p.id" :class="{active: page === p.id}">
+                <span class="bn-icon">{{ p.icon }}</span><span class="bn-label">{{ p.label }}</span>
+            </a>
+            <a @click="moreOpen = true" :class="{active: isMorePage}">
+                <span class="bn-icon">☰</span><span class="bn-label">Altro</span>
+            </a>
+        </nav>
+
+        <!-- Sheet "Altro" (mobile) -->
+        <div v-if="moreOpen" class="modal-overlay" @click.self="moreOpen = false">
+            <div class="modal sheet-menu">
+                <a v-for="p in morePages" :key="p.id" @click="page = p.id; moreOpen = false"
+                   :class="{active: page === p.id}">
+                    <span style="font-size:18px">{{ p.icon }}</span> {{ p.label }}
+                </a>
+            </div>
+        </div>
 
         <!-- Toast container -->
         <div id="toast-container">
@@ -138,9 +128,51 @@
             }, duration);
         }
 
+        const PAGES = [
+            { id: 'today',     icon: '🍽️', label: 'Oggi',        main: true },
+            { id: 'dashboard', icon: '📅', label: 'Settimana',    main: true },
+            { id: 'shopping',  icon: '🛒', label: 'Spesa',        main: true },
+            { id: 'recipes',   icon: '📖', label: 'Ricette',      main: true },
+            { id: 'pantry',    icon: '🧺', label: 'Dispensa' },
+            { id: 'import',    icon: '📥', label: 'Importa' },
+            { id: 'profiles',  icon: '👥', label: 'Profili' },
+            { id: 'settings',  icon: '⚙️', label: 'Impostazioni' },
+        ];
+
         const app = createApp({
             data() {
-                return { page: 'today', toasts: toastState.items };
+                const stored = (() => { try { return localStorage.getItem('pmd_theme'); } catch { return null; } })();
+                const system = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+                // Deep-link: #dashboard, #shopping, ... aprono direttamente la vista
+                const hash = location.hash.replace('#', '');
+                return {
+                    page: PAGES.some(p => p.id === hash) ? hash : 'today',
+                    toasts: toastState.items,
+                    pages: PAGES,
+                    moreOpen: false,
+                    theme: stored || system,
+                };
+            },
+            watch: {
+                page(val) { try { history.replaceState(null, '', '#' + val); } catch {} },
+            },
+            mounted() {
+                window.addEventListener('hashchange', () => {
+                    const h = location.hash.replace('#', '');
+                    if (PAGES.some(p => p.id === h)) this.page = h;
+                });
+            },
+            computed: {
+                mainPages() { return this.pages.filter(p => p.main); },
+                morePages() { return this.pages.filter(p => !p.main); },
+                isMorePage() { return this.morePages.some(p => p.id === this.page); },
+            },
+            methods: {
+                toggleTheme() {
+                    this.theme = this.theme === 'dark' ? 'light' : 'dark';
+                    document.documentElement.dataset.theme = this.theme;
+                    try { localStorage.setItem('pmd_theme', this.theme); } catch {}
+                },
             },
             components: { TodayView, WeekView, 'import-wizard': ImportWizard, ShoppingList, Pantry, Profiles, Recipes, SettingsView },
         });

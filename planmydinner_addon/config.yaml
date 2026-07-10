@@ -1,6 +1,6 @@
 name: "Plan My Dinner"
 description: "Pianificatore di pasti settimanali con IA per chi segue un piano alimentare"
-version: "1.4.1"
+version: "1.5.0"
 slug: "planmydinner"
 homeassistant: "2024.1.0"
 url: "https://github.com/rikyru/planmydinner"
