@@ -2670,8 +2670,17 @@ class PlannerEngine:
             )
             _LOGGER.info(f"[LLM trigger] Reason: {reason}, needed={needed}")
 
-            # Build avoid list from recently used recipe IDs
+            # Build avoid list from recently used recipe IDs.
+            # Include anche le ricette LLM draft_structured (fuori da _get_all_recipes):
+            # senza, l'LLM non viene avvisato dei nomi appena generati e — con prompt
+            # identico — la cache restituisce la stessa ricetta in giorni consecutivi.
             recipe_name_by_id = {r.id: r.name for r in all_recipes}
+            missing_ids = [rid for rid in (excluded_recipe_ids or set()) if rid not in recipe_name_by_id]
+            if missing_ids:
+                for cand in self.db.query(CandidateRecipe).filter(CandidateRecipe.id.in_(missing_ids)).all():
+                    data = cand.recipe_data if isinstance(cand.recipe_data, dict) else {}
+                    if data.get("name"):
+                        recipe_name_by_id[cand.id] = data["name"]
             base_avoid = [
                 recipe_name_by_id[rid] for rid in (excluded_recipe_ids or set())
                 if rid in recipe_name_by_id
