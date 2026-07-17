@@ -73,6 +73,12 @@ class PlanMyDinnerApiClient:
         path = f"/consumed-entries/override?profile_id={profile_id}&meal_date={meal_date}&meal_type={meal_type}"
         return await self._request("POST", path, json=override_details)
 
+    async def get_today_status(self, profile_id: str) -> Dict[str, Any]:
+        """Stato dei pasti di oggi (registrati/da registrare)."""
+        return await self._request(
+            "GET", f"/integration/today-status?profile_id={profile_id}"
+        )
+
     async def get_plan_for_date(self, profile_id_A: str, profile_id_B: str, target_date: str) -> Optional[Dict[str, Any]]:
         """Get the saved plan that covers target_date (read-only, no generation)."""
         path = f"/planner/plan-for-date?profile_id_A={profile_id_A}&profile_id_B={profile_id_B}&target_date={target_date}"

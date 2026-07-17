@@ -313,6 +313,39 @@ Restituisce in una sola chiamata (payload versionato, `"version": 1`):
 Senza parametri data usa la settimana corrente (lunedì → domenica). Risponde
 sempre **200** anche su periodi senza dati (campi a 0/`null`).
 
+### Promemoria "segna il pasto" (Home Assistant)
+
+Il sensore `sensor.plan_my_dinner_pasti_da_registrare` espone quanti pasti di oggi
+non risultano ancora registrati (stato = numero; attributi `unlogged` e `meals`).
+Endpoint sottostante: `GET /integration/today-status?profile_id=...`.
+
+Esempio di automazione con notifica alla companion app (13:45 per il pranzo,
+20:45 per la cena):
+
+```yaml
+automation:
+  - alias: "Promemoria segna pasto"
+    trigger:
+      - platform: time
+        at: "13:45:00"
+      - platform: time
+        at: "20:45:00"
+    condition:
+      - condition: template
+        value_template: >
+          {% set meal = 'pranzo' if now().hour < 15 else 'cena' %}
+          {{ meal in state_attr('sensor.plan_my_dinner_pasti_da_registrare', 'unlogged') | default([]) }}
+    action:
+      - service: notify.mobile_app_TUO_TELEFONO
+        data:
+          title: "🍽️ Plan My Dinner"
+          message: >
+            {% set meal = 'pranzo' if now().hour < 15 else 'cena' %}
+            Hai registrato il {{ meal }}? Tocca per farlo ora.
+          data:
+            url: "https://dinner.rikyru.ovh/ui/"   # o l'URL locale
+```
+
 ### Auth opzionale (`API_KEY`)
 
 Di default l'API è aperta (LAN / rete Docker). Impostando la variabile d'ambiente

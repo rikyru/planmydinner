@@ -135,6 +135,36 @@ class TestIntegrationSummaryWithData:
         assert data["averages"] is None
 
 
+class TestTodayStatus:
+    def test_no_plan_returns_empty(self, client, setup_database):
+        resp = client.get("/integration/today-status", params={"profile_id": "nessuno"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["meals"] == []
+        assert data["unlogged_count"] == 0
+
+    def test_unlogged_and_logged_meals(self, client, setup_database):
+        _make_plan(setup_database)  # piano che copre TODAY (2026-02-24)
+        # Nessun consumo registrato: pranzo e cena di oggi da registrare
+        resp = client.get("/integration/today-status", params={"profile_id": "persona_a"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["date"] == TODAY
+        # martedì: pranzo normale + cena free_meal (già "gestita")
+        by_type = {m["meal_type"]: m for m in data["meals"]}
+        assert by_type["pranzo"]["logged"] is False
+        assert by_type["cena"]["logged"] is True       # free_meal = gestito
+        assert data["unlogged"] == ["pranzo"]
+
+        # Registro il pranzo → più nulla da registrare
+        client.post("/consumed-entries/", json={
+            "profile_id": "persona_a", "date": TODAY, "meal_type": "pranzo",
+            "type": "planned", "consumed_recipe_id": "pasta_pomodoro_recipe",
+        })
+        data = client.get("/integration/today-status", params={"profile_id": "persona_a"}).json()
+        assert data["unlogged_count"] == 0
+
+
 class TestRecipeDetailNutrition:
     def test_detail_includes_macros_per_portion(self, client, setup_database):
         resp = client.get("/recipes/detail/pasta_pomodoro_recipe")

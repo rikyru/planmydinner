@@ -28,6 +28,7 @@ async def async_setup_entry(
         MealPlanWeekSensor(coordinator, entry),
         ShoppingListSensor(coordinator, entry),
         PantrySensor(coordinator, entry),
+        MealsToLogSensor(coordinator, entry),
     ])
 
 
@@ -54,6 +55,32 @@ class _PlanMyDinnerSensor(CoordinatorEntity, SensorEntity):
     @property
     def _data(self):
         return (self.coordinator.data or {}).get(self._key)
+
+
+class MealsToLogSensor(_PlanMyDinnerSensor):
+    """Numero di pasti di oggi non ancora registrati (per notifiche promemoria)."""
+
+    def __init__(self, coordinator: PlanMyDinnerCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator, entry, "today_status")
+        self._attr_name = "Plan My Dinner Pasti Da Registrare"
+        self._attr_unique_id = f"{entry.entry_id}_meals_to_log"
+        self._attr_icon = "mdi:clipboard-alert-outline"
+
+    @property
+    def native_value(self) -> int | None:
+        data = self._data
+        if not data:
+            return None
+        return data.get("unlogged_count", 0)
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        data = self._data or {}
+        return {
+            "date": data.get("date"),
+            "unlogged": data.get("unlogged", []),
+            "meals": data.get("meals", []),
+        }
 
 
 class MealPlanTodaySensor(_PlanMyDinnerSensor):

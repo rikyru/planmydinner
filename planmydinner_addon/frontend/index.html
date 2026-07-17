@@ -19,7 +19,7 @@
             } catch {}
         })();
     </script>
-    <link rel="stylesheet" href="style.css?v=16">
+    <link rel="stylesheet" href="style.css?v=17">
     <script type="importmap">
       {
         "imports": {
@@ -51,6 +51,7 @@
             <profiles v-if="page === 'profiles'"></profiles>
             <recipes v-if="page === 'recipes'"></recipes>
             <settings-view v-if="page === 'settings'"></settings-view>
+            <history-view v-if="page === 'history'"></history-view>
         </main>
 
         <!-- Bottom nav (solo mobile) -->
@@ -108,14 +109,15 @@
     </script>
     <script type="module">
         import { createApp, reactive } from 'vue';
-        import TodayView from './today.js?v=10';
-        import WeekView from './planner.js?v=16';
+        import TodayView from './today.js?v=11';
+        import WeekView from './planner.js?v=17';
         import ImportWizard from './import.js?v=11';
         import ShoppingList from './shopping.js?v=7';
         import Pantry from './pantry.js?v=3';
         import Profiles from './profiles.js?v=6';
-        import Recipes from './recipes.js?v=5';
+        import Recipes from './recipes.js?v=6';
         import SettingsView from './settings.js?v=3';
+        import HistoryView from './history.js?v=1';
 
         const toastState = reactive({ items: [] });
 
@@ -133,6 +135,7 @@
             { id: 'dashboard', icon: '📅', label: 'Settimana',    main: true },
             { id: 'shopping',  icon: '🛒', label: 'Spesa',        main: true },
             { id: 'recipes',   icon: '📖', label: 'Ricette',      main: true },
+            { id: 'history',   icon: '📊', label: 'Storico' },
             { id: 'pantry',    icon: '🧺', label: 'Dispensa' },
             { id: 'import',    icon: '📥', label: 'Importa' },
             { id: 'profiles',  icon: '👥', label: 'Profili' },
@@ -174,7 +177,7 @@
                     try { localStorage.setItem('pmd_theme', this.theme); } catch {}
                 },
             },
-            components: { TodayView, WeekView, 'import-wizard': ImportWizard, ShoppingList, Pantry, Profiles, Recipes, SettingsView },
+            components: { TodayView, WeekView, 'import-wizard': ImportWizard, ShoppingList, Pantry, Profiles, Recipes, SettingsView, HistoryView },
         });
 
         app.provide('toast', { add: addToast });

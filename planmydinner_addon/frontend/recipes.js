@@ -1,4 +1,5 @@
 import { defineComponent } from 'vue';
+import { prepareImage } from './mensa.js?v=3';
 
 const Recipes = defineComponent({
     name: 'Recipes',
@@ -7,8 +8,13 @@ const Recipes = defineComponent({
         <div class="recipes-view">
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
                 <h2>Ricette</h2>
-                <div style="display:flex;gap:8px;">
+                <div style="display:flex;gap:8px;flex-wrap:wrap;">
                     <button @click="deleteAllRecipes" class="btn-danger" :disabled="recipes.length === 0">🗑️ Elimina tutte</button>
+                    <label class="btn-secondary" style="cursor:pointer;">
+                        {{ photoAnalyzing ? '🔎 Analisi...' : '📷 Da foto' }}
+                        <input type="file" accept="image/*" style="display:none"
+                               :disabled="photoAnalyzing" @change="recipeFromPhoto">
+                    </label>
                     <button @click="openAdd" class="btn-primary">+ Aggiungi ricetta</button>
                 </div>
             </div>
@@ -205,11 +211,17 @@ const Recipes = defineComponent({
                                     <td>
                                         <select v-model="ing.food_group" style="width:100%">
                                             <option value="carboidrati">Carboidrati</option>
-                                            <option value="proteina">Proteina</option>
-                                            <option value="verdure">Verdure</option>
+                                            <option value="proteina">Proteina (generica)</option>
+                                            <option value="carne_bianca">Carne bianca</option>
+                                            <option value="carne_rossa">Carne rossa</option>
+                                            <option value="pesce">Pesce</option>
+                                            <option value="uova">Uova</option>
                                             <option value="legumi">Legumi</option>
                                             <option value="latticini">Latticini</option>
+                                            <option value="verdure">Verdure</option>
+                                            <option value="grassi">Grassi</option>
                                             <option value="condimenti">Condimenti</option>
+                                            <option value="altro">Altro</option>
                                         </select>
                                     </td>
                                     <td><input v-model.number="ing.grams" type="number" min="0" step="5" style="width:70px"> g</td>
@@ -246,6 +258,8 @@ const Recipes = defineComponent({
             mensaEditId: null,
             mensaEdit: { name: '', ingredients: [] },
             mensaSaving: false,
+            photoAnalyzing: false,
+            profiles: [],
             // Bulk import
             showBulk: false,
             bulkJson: '',
@@ -279,6 +293,52 @@ const Recipes = defineComponent({
         };
     },
     methods: {
+        // --- Ricetta da foto ---
+        async fetchProfiles() {
+            try {
+                const resp = await window.apiFetch('/profiles/');
+                this.profiles = resp.ok ? await resp.json() : [];
+            } catch (_) { this.profiles = []; }
+        },
+        async recipeFromPhoto(ev) {
+            const file = ev.target.files?.[0];
+            if (!file) return;
+            this.photoAnalyzing = true;
+            try {
+                const prepared = await prepareImage(file);
+                const form = new FormData();
+                form.append('file', prepared, prepared.name || 'ricetta.jpg');
+                const pid = this.profiles[0]?.id || 'persona_a';
+                const resp = await window.apiFetch('/consumed-entries/photo/analyze?profile_id=' + encodeURIComponent(pid), {
+                    method: 'POST', body: form,
+                });
+                if (!resp.ok) {
+                    const err = await resp.json().catch(() => ({}));
+                    throw new Error(err.detail || 'Analisi fallita.');
+                }
+                const proposal = await resp.json();
+                // Pre-compila il modal di modifica: l'utente aggiusta e salva nel catalogo
+                this.editedRecipe = {
+                    id: null,
+                    name: proposal.name,
+                    total_time_minutes: 30,
+                    difficulty: 'facile',
+                    mood: 'normale',
+                    cooking_method: 'tegame',
+                    ingredients: proposal.ingredients.map(i => ({
+                        name: i.name, food_group: i.food_group || 'altro', grams: i.grams,
+                    })),
+                };
+                this.showModal = true;
+                this.toast.add('Ricetta riconosciuta: controlla e salva!', 'success');
+            } catch (e) {
+                this.toast.add('Errore: ' + e.message, 'error');
+            } finally {
+                this.photoAnalyzing = false;
+                ev.target.value = '';
+            }
+        },
+
         // --- Catalogo pasti mensa ---
         async fetchMensaMeals() {
             try {
@@ -498,6 +558,7 @@ const Recipes = defineComponent({
     mounted() {
         this.fetchRecipes();
         this.fetchMensaMeals();
+        this.fetchProfiles();
     },
 });
 

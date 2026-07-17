@@ -14,7 +14,7 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
-from ..database import get_db, CandidateRecipe, GeneratedWeeklyPlan, Recipe
+from ..database import get_db, CandidateRecipe, ConsumedEntry, GeneratedWeeklyPlan, Recipe
 from ..nutrition import NUTRITION_KEYS, compute_recipe_nutrition
 from .planner import compute_adherence_stats
 
@@ -45,6 +45,58 @@ def _get_recipe_content(db: Session, recipe_id: str) -> Optional[Any]:
         if isinstance(data, dict):
             return data.get("content")
     return None
+
+
+@router.get("/today-status")
+def get_today_status(
+    profile_id: str,
+    target_date: Optional[date] = None,
+    db: Session = Depends(get_db),
+):
+    """
+    Stato dei pasti del giorno: cosa è pianificato e cosa risulta già registrato.
+    Pensato per il sensore HA "pasti da registrare" (notifiche promemoria).
+    Un pasto è "registrato" se esiste un ConsumedEntry per (profilo, data, pasto)
+    oppure se lo slot è già marcato mensa / pasto libero / non mangiato.
+    """
+    d = target_date or date.today()
+    iso = d.isoformat()
+
+    from .planner import _find_plan_covering_date
+    plan = _find_plan_covering_date(db, profile_id, d)
+    meals = []
+    if plan:
+        daily = next((dp for dp in plan.daily_plans or [] if dp.get("date") == iso), None)
+        for meal in (daily or {}).get("meals", []):
+            items = meal.get("items", [])
+            if not items:
+                continue
+            fg = items[0].get("food_group")
+            meals.append({
+                "meal_type": meal.get("meal_type"),
+                "name": items[0].get("item_name"),
+                "slot_status": fg,
+                "logged": fg in ("mensa", "free_meal", "not_eaten"),
+            })
+
+    logged_types = {
+        e.meal_type
+        for e in db.query(ConsumedEntry).filter(
+            ConsumedEntry.profile_id == profile_id,
+            ConsumedEntry.date == iso,
+        ).all()
+    }
+    for m in meals:
+        if m["meal_type"] in logged_types:
+            m["logged"] = True
+
+    unlogged = [m["meal_type"] for m in meals if not m["logged"]]
+    return {
+        "date": iso,
+        "meals": meals,
+        "unlogged": unlogged,
+        "unlogged_count": len(unlogged),
+    }
 
 
 @router.get("/summary")

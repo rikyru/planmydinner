@@ -76,5 +76,12 @@ class PlanMyDinnerCoordinator(DataUpdateCoordinator):
             _LOGGER.warning("Could not fetch pantry: %s", e)
             results["pantry"] = []
 
+        # Pasti di oggi da registrare (per il sensore promemoria)
+        try:
+            results["today_status"] = await self.api_client.get_today_status(self.profile_id_A)
+        except Exception as e:
+            _LOGGER.warning("Could not fetch today status: %s", e)
+            results["today_status"] = None
+
 
         return results

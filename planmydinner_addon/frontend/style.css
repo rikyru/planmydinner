@@ -135,9 +135,11 @@ main h2 { font-size: 22px; letter-spacing: -0.02em; margin: 4px 0 16px; }
 .brand { font-size: 15px; white-space: nowrap; display: flex; align-items: center; gap: 6px; }
 .brand b { font-weight: 800; letter-spacing: -0.01em; }
 .top-nav__links {
-    display: flex; gap: 2px; flex: 1; justify-content: center;
+    display: flex; gap: 2px; flex: 1;
     overflow-x: auto; scrollbar-width: none; -ms-overflow-style: none;
 }
+/* Centra quando c'è spazio, senza tagliare a sinistra quando va in overflow */
+.top-nav__links::before, .top-nav__links::after { content: ''; margin: auto; }
 .top-nav__links::-webkit-scrollbar { display: none; }
 .top-nav__links a {
     padding: 8px 13px; border-radius: 99px; cursor: pointer;
@@ -592,3 +594,19 @@ input[type="checkbox"] { accent-color: var(--primary); }
 @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
 }
+
+/* ============ Storico ============ */
+.history-view { max-width: 720px; margin: 0 auto; }
+.hist-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap: 10px; margin-bottom: 16px; }
+.hist-stat { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow-1); padding: 12px 8px; display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.hist-stat__value { font-size: 19px; font-weight: 800; letter-spacing: -0.02em; }
+.hist-stat__label { font-size: 11px; color: var(--text-3); text-transform: uppercase; letter-spacing: .05em; }
+.hist-chart { display: flex; align-items: flex-end; gap: 8px; height: 130px; padding-top: 6px; border-bottom: 1px solid var(--border); }
+.hist-col { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; cursor: pointer; min-width: 0; }
+.hist-bar { width: 70%; max-width: 44px; background: var(--primary); border-radius: 4px 4px 0 0; transition: height .3s ease, opacity .15s; }
+.hist-col:hover .hist-bar { opacity: .8; }
+.hist-bar--empty { background: var(--surface-3); }
+.hist-bar--today { background: linear-gradient(180deg, var(--success), var(--primary)); }
+.hist-day { font-size: 11px; color: var(--text-3); margin-top: 6px; font-weight: 600; }
+.hist-day--today { color: var(--primary); font-weight: 800; }
+.hist-daycard { padding: 12px 16px; }
