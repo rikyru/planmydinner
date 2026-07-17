@@ -17,14 +17,14 @@ const MensaModal = defineComponent({
     template: `
         <div class="modal-overlay" @click.self="$emit('close')">
             <div class="modal">
-                <h3>📷 Pasto mensa — {{ mealType === 'pranzo' ? 'Pranzo' : 'Cena' }} {{ dateLabel }}</h3>
+                <h3>📷 Pasto da foto — {{ mealType === 'pranzo' ? 'Pranzo' : 'Cena' }} {{ dateLabel }}</h3>
 
-                <!-- Fase 1: catalogo + scatto foto -->
+                <!-- Fase 1: catalogo + scatto/caricamento foto -->
                 <div v-if="!proposal">
                     <div v-if="loading" class="loading">Caricamento catalogo...</div>
                     <template v-else>
                         <div v-if="meals.length" style="margin-bottom:10px;">
-                            <div style="font-size:13px;font-weight:600;margin-bottom:6px;">Già mappati — tap per registrare:</div>
+                            <div style="font-size:13px;font-weight:600;margin-bottom:6px;">Salvati — tap per registrare:</div>
                             <div v-for="m in meals" :key="m.id" class="recipe-option" @click="consume(m)">
                                 <strong>{{ m.name }}</strong>
                                 <span v-if="m.nutrition">
@@ -36,14 +36,21 @@ const MensaModal = defineComponent({
                                 <span>{{ m.ingredients.map(i => i.name).join(', ') }}</span>
                             </div>
                         </div>
-                        <div v-else style="font-size:13px;color:#6c757d;margin-bottom:10px;">
-                            Nessun pasto mensa mappato: fotografa il vassoio per iniziare il catalogo.
+                        <div v-else style="font-size:13px;color:var(--text-3);margin-bottom:10px;">
+                            Nessun pasto salvato: fotografa il piatto (mensa, ristorante, casa...) per iniziare il catalogo.
                         </div>
-                        <label class="btn-consumed" style="display:inline-block;cursor:pointer;">
-                            {{ analyzing ? '🔎 Analisi foto in corso...' : '📷 Scatta / carica foto' }}
-                            <input type="file" accept="image/*" capture="environment" style="display:none"
-                                   :disabled="analyzing" @change="analyzePhoto">
-                        </label>
+                        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                            <label class="btn-consumed" style="display:inline-block;cursor:pointer;">
+                                {{ analyzing ? '🔎 Analisi in corso...' : '📷 Scatta foto' }}
+                                <input type="file" accept="image/*" capture="environment" style="display:none"
+                                       :disabled="analyzing" @change="analyzePhoto">
+                            </label>
+                            <label class="btn-secondary" style="display:inline-block;cursor:pointer;">
+                                🖼️ Dalla galleria
+                                <input type="file" accept="image/*" style="display:none"
+                                       :disabled="analyzing" @change="analyzePhoto">
+                            </label>
+                        </div>
                     </template>
                     <div v-if="error" class="error">{{ error }}</div>
                 </div>
@@ -114,14 +121,32 @@ const MensaModal = defineComponent({
                 this.loading = false;
             }
         },
+        async _prepareImage(file) {
+            // Ridimensiona a max 1600px e ricodifica in JPEG: upload leggero anche
+            // con foto da 12MP (evita il limite 10MB) e normalizza i formati (HEIC).
+            try {
+                const bmp = await createImageBitmap(file);
+                const scale = Math.min(1, 1600 / Math.max(bmp.width, bmp.height));
+                if (scale === 1 && file.type === 'image/jpeg' && file.size < 2 * 1024 * 1024) return file;
+                const canvas = document.createElement('canvas');
+                canvas.width = Math.round(bmp.width * scale);
+                canvas.height = Math.round(bmp.height * scale);
+                canvas.getContext('2d').drawImage(bmp, 0, 0, canvas.width, canvas.height);
+                const blob = await new Promise(res => canvas.toBlob(res, 'image/jpeg', 0.85));
+                return blob ? new File([blob], 'pasto.jpg', { type: 'image/jpeg' }) : file;
+            } catch (_) {
+                return file;   // formato non decodificabile lato client: prova comunque
+            }
+        },
         async analyzePhoto(ev) {
             const file = ev.target.files?.[0];
             if (!file) return;
             this.analyzing = true;
             this.error = null;
             try {
+                const prepared = await this._prepareImage(file);
                 const form = new FormData();
-                form.append('file', file);
+                form.append('file', prepared, prepared.name || 'pasto.jpg');
                 const params = new URLSearchParams({ profile_id: this.profileId });
                 const resp = await window.apiFetch('/consumed-entries/photo/analyze?' + params, {
                     method: 'POST',

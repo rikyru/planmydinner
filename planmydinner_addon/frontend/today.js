@@ -1,5 +1,5 @@
 import { defineComponent } from 'vue';
-import MensaModal from './mensa.js?v=1';
+import MensaModal from './mensa.js?v=2';
 
 const TodayView = defineComponent({
     name: 'TodayView',
@@ -159,7 +159,7 @@ const TodayView = defineComponent({
                                 </button>
                                 <button @click="openFreeMealPrompt(meal.meal_type)" class="btn-free">🎉 Libero</button>
                                 <button @click="openCustomModal(meal.meal_type)" class="btn-secondary">✏️ Personalizzato</button>
-                                <button @click="openMensaModal(meal.meal_type)" class="btn-secondary">📷 Mensa</button>
+                                <button @click="openMensaModal(meal.meal_type)" class="btn-secondary">📷 Da foto</button>
                             </div>
                         </template>
                     </div>

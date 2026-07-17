@@ -1,5 +1,5 @@
 import { defineComponent } from 'vue';
-import MensaModal from './mensa.js?v=1';
+import MensaModal from './mensa.js?v=2';
 
 const WeekView = defineComponent({
     name: 'WeekView',

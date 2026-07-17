@@ -62,16 +62,16 @@ const Recipes = defineComponent({
             <div class="card" style="margin-bottom:20px;">
                 <div style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;"
                      @click="showMensa = !showMensa">
-                    <h3 style="margin:0;">🍱 Pasti mensa <span class="hint" v-if="mensaMeals.length">({{ mensaMeals.length }})</span></h3>
+                    <h3 style="margin:0;">🍱 Pasti da foto <span class="hint" v-if="mensaMeals.length">({{ mensaMeals.length }})</span></h3>
                     <span style="font-size:18px;color:var(--text-3);">{{ showMensa ? '▲' : '▼' }}</span>
                 </div>
 
                 <div v-if="showMensa" style="margin-top:14px;">
                     <p class="hint" style="margin:0 0 10px;">
-                        I pasti mappati con la foto del vassoio. Correggi qui nomi e grammature:
+                        I pasti mappati dalla foto (mensa, ristorante, casa...). Correggi qui nomi e grammature:
                         le modifiche valgono anche per i macro dei consumi già registrati.
                     </p>
-                    <div v-if="mensaMeals.length === 0" class="hint">Nessun pasto mensa ancora: fotografa il vassoio dalla vista Oggi.</div>
+                    <div v-if="mensaMeals.length === 0" class="hint">Nessun pasto ancora: usa "📷 Da foto" dalla vista Oggi o dal popup del giorno.</div>
 
                     <div v-for="m in mensaMeals" :key="m.id"
                          style="border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:8px;">
