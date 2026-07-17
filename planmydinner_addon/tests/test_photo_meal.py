@@ -184,6 +184,19 @@ class TestMensaCatalog:
                            params={"profile_id": "persona_a", "meal_date": "2026-02-25", "meal_type": "pranzo"})
         assert resp.status_code == 404
 
+    def test_ho_mangiato_is_idempotent(self, client, setup_database):
+        """Ripremere 'Ho mangiato' sullo stesso pasto non crea duplicati."""
+        body = {
+            "profile_id": "persona_a", "date": "2026-02-24", "meal_type": "pranzo",
+            "type": "planned", "consumed_recipe_id": "pasta_pomodoro_recipe",
+        }
+        id1 = client.post("/consumed-entries/", json=body).json()["id"]
+        id2 = client.post("/consumed-entries/", json=body).json()["id"]
+        assert id1 == id2
+        entries = client.get("/consumed-entries/", params={"profile_id": "persona_a"}).json()
+        planned = [e for e in entries if e["meal_type"] == "pranzo" and e["type"] == "planned"]
+        assert len(planned) == 1
+
     def test_update_unknown_404(self, client, setup_database):
         resp = client.put("/consumed-entries/mensa/nope", json={
             "name": "x", "ingredients": [{"name": "pasta", "food_group": "carboidrati", "grams": 80}],

@@ -59,17 +59,17 @@ const TodayView = defineComponent({
 
                             <!-- Componenti inline: protein / carb / verdure -->
                             <div v-if="recipeDetails[meal.meal_type]" class="meal-components">
-                                <div v-if="getProtein(meal.meal_type)" class="component component-protein">
+                                <div v-for="p in getProteins(meal.meal_type)" :key="'p-' + p.name" class="component component-protein">
                                     <span class="component-icon">🥩</span>
                                     <span class="component-label">Proteina</span>
-                                    <span class="component-name">{{ getProtein(meal.meal_type).name }}</span>
-                                    <span class="component-grams">{{ getGrams(meal.meal_type, getProtein(meal.meal_type)) }}g</span>
+                                    <span class="component-name">{{ p.name }}</span>
+                                    <span class="component-grams">{{ getGrams(meal.meal_type, p) }}g</span>
                                 </div>
-                                <div v-if="getCarb(meal.meal_type)" class="component component-carb">
+                                <div v-for="c in getCarbs(meal.meal_type)" :key="'c-' + c.name" class="component component-carb">
                                     <span class="component-icon">🌾</span>
                                     <span class="component-label">Carbo</span>
-                                    <span class="component-name">{{ getCarb(meal.meal_type).name }}</span>
-                                    <span class="component-grams">{{ getGrams(meal.meal_type, getCarb(meal.meal_type)) }}g</span>
+                                    <span class="component-name">{{ c.name }}</span>
+                                    <span class="component-grams">{{ getGrams(meal.meal_type, c) }}g</span>
                                 </div>
                                 <div v-for="veg in getVegetables(meal.meal_type)" :key="veg.name" class="component component-veg">
                                     <span class="component-icon">🥦</span>
@@ -136,8 +136,12 @@ const TodayView = defineComponent({
 
                         <!-- Normal meal actions -->
                         <template v-else>
-                            <!-- Primary: Ho mangiato -->
-                            <button @click="markConsumed(meal.meal_type)" class="btn-consumed btn-action-primary">✓ Ho mangiato</button>
+                            <!-- Primary: Ho mangiato / gia' registrato -->
+                            <div v-if="isLogged(meal.meal_type)" class="meal-logged-badge">
+                                ✓ Pasto registrato
+                                <button @click="markConsumed(meal.meal_type)" class="btn-sm btn-secondary" style="margin-left:auto;">↺ registra di nuovo</button>
+                            </div>
+                            <button v-else @click="markConsumed(meal.meal_type)" class="btn-consumed btn-action-primary">✓ Ho mangiato</button>
 
                             <!-- Swap row (solo se c'è una ricetta) -->
                             <div v-if="meal.items?.[0]?.recipe_id" class="action-row-swaps">
@@ -254,6 +258,7 @@ const TodayView = defineComponent({
             today: new Date().toISOString().slice(0, 10),
             // Adherence
             adherence: null,
+            todayStatus: null,
             // Free meal
             showFreeMealPrompt: null,
             freeMealTitle: '',
@@ -276,6 +281,7 @@ const TodayView = defineComponent({
         profileA() { return this.profiles[0] || null; },
         profileB() { return this.profiles[1] || null; },
         canMarkDay() {
+            if (this.todayStatus && this.todayStatus.unlogged_count === 0) return false;
             return (this.todayPlan?.meals || []).some(m =>
                 m.items?.[0]?.recipe_id && !['free_meal', 'not_eaten'].includes(m.items[0].food_group));
         },
@@ -356,6 +362,14 @@ const TodayView = defineComponent({
                 const resp = await window.apiFetch('/planner/adherence?' + params);
                 if (resp.ok) this.adherence = await resp.json();
             } catch (_) { /* non bloccare */ }
+            try {
+                const resp = await window.apiFetch('/integration/today-status?profile_id=' + encodeURIComponent(this.profileA.id));
+                if (resp.ok) this.todayStatus = await resp.json();
+            } catch (_) { /* non bloccare */ }
+        },
+        isLogged(mealType) {
+            const m = (this.todayStatus?.meals || []).find(x => x.meal_type === mealType);
+            return !!m?.logged;
         },
         async generateWeek() {
             this.generating = true;
@@ -592,15 +606,17 @@ const TodayView = defineComponent({
         },
 
         // --- Helper per i componenti del pasto ---
-        getProtein(mealType) {
+        getProteins(mealType) {
             const d = this.recipeDetails[mealType];
-            if (!d) return null;
-            return d.content.find(i => ['proteina', 'proteine', 'pollo', 'pesce', 'carne_rossa', 'legumi'].includes(i.food_group)) || null;
+            if (!d) return [];
+            const PROT = ['proteina', 'proteine', 'pollo', 'carne_bianca', 'carne_rossa', 'pesce',
+                          'legumi', 'uova', 'latticini', 'formaggio'];
+            return d.content.filter(i => PROT.includes((i.food_group || '').toLowerCase()));
         },
-        getCarb(mealType) {
+        getCarbs(mealType) {
             const d = this.recipeDetails[mealType];
-            if (!d) return null;
-            return d.content.find(i => ['carboidrati', 'carboidrato'].includes(i.food_group)) || null;
+            if (!d) return [];
+            return d.content.filter(i => ['carboidrati', 'carboidrato'].includes((i.food_group || '').toLowerCase()));
         },
         getVegetables(mealType) {
             const d = this.recipeDetails[mealType];

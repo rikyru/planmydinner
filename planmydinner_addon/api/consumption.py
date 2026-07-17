@@ -26,7 +26,23 @@ def create_consumed_entry(entry: schemas.ConsumedEntryCreate, db: Session = Depe
     """
     Create a new consumed entry. This is a generic endpoint.
     Specific endpoints for 'planned' and 'override' are likely more useful.
+
+    Idempotente per i pasti 'planned': ripremere "Ho mangiato" sullo stesso
+    slot aggiorna la registrazione esistente invece di creare un duplicato.
     """
+    if entry.type == "planned":
+        existing = db.query(ConsumedEntry).filter(
+            ConsumedEntry.profile_id == entry.profile_id,
+            ConsumedEntry.date == entry.date,
+            ConsumedEntry.meal_type == entry.meal_type,
+            ConsumedEntry.type == "planned",
+        ).first()
+        if existing:
+            existing.consumed_recipe_id = entry.consumed_recipe_id
+            db.commit()
+            db.refresh(existing)
+            return existing
+
     db_entry = ConsumedEntry(**entry.model_dump(), id=str(uuid.uuid4()))
     db.add(db_entry)
     db.commit()

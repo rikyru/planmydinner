@@ -610,3 +610,12 @@ input[type="checkbox"] { accent-color: var(--primary); }
 .hist-day { font-size: 11px; color: var(--text-3); margin-top: 6px; font-weight: 600; }
 .hist-day--today { color: var(--primary); font-weight: 800; }
 .hist-daycard { padding: 12px 16px; }
+
+/* Badge pasto già registrato (vista Oggi) */
+.meal-logged-badge {
+    display: flex; align-items: center; gap: 10px;
+    background: var(--success-soft); color: var(--success);
+    border: 1px solid color-mix(in srgb, var(--success) 30%, transparent);
+    border-radius: var(--radius-sm); padding: 10px 14px;
+    font-size: 14px; font-weight: 700;
+}
