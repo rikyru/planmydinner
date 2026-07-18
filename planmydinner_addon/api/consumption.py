@@ -433,6 +433,37 @@ async def analyze_meal_photo(request: Request, profile_id: str, file: UploadFile
     return {"name": result["name"], "ingredients": [i.model_dump() for i in ingredients], "nutrition": nutrition}
 
 
+class TextAnalyzeBody(_BaseModel):
+    description: str
+
+
+@router.post("/text/analyze")
+def analyze_meal_text(body: TextAnalyzeBody, request: Request, profile_id: str):
+    """
+    Spacchetta la descrizione libera di un pasto (es. "tramezzini tonno e maionese,
+    insalata a parte") in ingredienti con grammi stimati + kcal/macro.
+    Stessa risposta di /photo/analyze: la conferma passa da POST /consumed-entries/mensa.
+    """
+    gw = getattr(request.app.state, "llm_gateway", None)
+    if gw is None or gw._client is None:
+        raise HTTPException(status_code=503, detail="LLM non configurato: impossibile analizzare la descrizione.")
+    description = (body.description or "").strip()
+    if len(description) < 3:
+        raise HTTPException(status_code=422, detail="Descrizione troppo corta.")
+
+    result = gw.estimate_meal_from_text(description)
+    if not result:
+        raise HTTPException(status_code=422, detail="Impossibile riconoscere un pasto nella descrizione.")
+
+    ingredients = [PhotoIngredient(**ing) for ing in result["ingredients"]]
+    nutrition = None
+    try:
+        nutrition = compute_recipe_nutrition(_mensa_content(ingredients, profile_id), profile_id, llm_gateway=gw)
+    except Exception:
+        _LOGGER.exception("Nutrition estimate failed for text meal")
+    return {"name": result["name"], "ingredients": [i.model_dump() for i in ingredients], "nutrition": nutrition}
+
+
 @router.get("/mensa")
 def list_mensa_meals(profile_id: Optional[str] = None, db: Session = Depends(get_db)):
     """Catalogo dei pasti mensa già mappati (per riuso senza LLM), più usati prima."""

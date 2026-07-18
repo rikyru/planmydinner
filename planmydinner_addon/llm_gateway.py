@@ -335,6 +335,84 @@ class LLMGateway:
             _LOGGER.error(f"Error during LLM photo analysis: {e}")
             return None
 
+    def estimate_meal_from_text(self, description: str, use_cache: bool = True) -> Optional[Dict[str, Any]]:
+        """
+        Spacchetta la descrizione libera di un pasto (es. "tramezzini tonno e
+        maionese, insalata a parte") in ingredienti strutturati con grammi stimati.
+        Stesso contratto di estimate_meal_from_photo:
+        {"name": str, "ingredients": [{"name", "food_group", "grams"}]}.
+        Cache attiva: descrizioni identiche (pasti ricorrenti) non ripagano l'LLM.
+        """
+        description = (description or "").strip()
+        if not description:
+            return None
+        cache_key = self._cache_key("meal_text", description.lower())
+        if use_cache and cache_key in self._cache:
+            _LOGGER.info("LLM cache hit: estimate_meal_from_text")
+            return self._cache[cache_key]
+
+        if not self._client:
+            _LOGGER.error("LLM client not initialized. Cannot analyze meal description.")
+            return None
+
+        food_groups = "carboidrati, carne_bianca, carne_rossa, pesce, legumi, uova, latticini, verdure, grassi, frutta, altro"
+        task = (
+            "Sei un nutrizionista esperto. L'utente descrive a parole un pasto che ha mangiato. "
+            "Scomponilo negli ingredienti principali, stimando i grammi di una porzione tipica "
+            "per ogni ingrediente (se l'utente indica quantità, usale). "
+            f"Per ogni ingrediente scegli il food_group fra: {food_groups}. "
+            'Rispondi SOLO con JSON in questa forma esatta: '
+            '{"name": "<nome breve del pasto>", "ingredients": '
+            '[{"name": "<ingrediente>", "food_group": "<gruppo>", "grams": <numero>}]}. '
+            'Se la descrizione non riguarda cibo rispondi: {"name": null, "ingredients": []}.'
+        )
+        messages = [
+            {"role": "system", "content": task},
+            {"role": "user", "content": description},
+        ]
+
+        try:
+            if self.provider == "openai":
+                response = self._client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    temperature=0.3,
+                    response_format={"type": "json_object"},
+                )
+                raw = response.choices[0].message.content
+            elif self.provider == "ollama":
+                response = self._client.chat(model=self.model, messages=messages)
+                raw = response["message"]["content"]
+            else:
+                _LOGGER.error(f"Unsupported LLM provider for text meal analysis: {self.provider}")
+                return None
+
+            data = json.loads(raw)
+            if not data.get("name") or not isinstance(data.get("ingredients"), list):
+                _LOGGER.warning(f"Text meal analysis returned no usable meal: {str(raw)[:200]}")
+                return None
+            ingredients = []
+            for ing in data["ingredients"]:
+                try:
+                    ingredients.append({
+                        "name": str(ing["name"]),
+                        "food_group": str(ing.get("food_group") or "altro"),
+                        "grams": max(0.0, float(ing.get("grams") or 0)),
+                    })
+                except (KeyError, TypeError, ValueError):
+                    continue
+            if not ingredients:
+                return None
+            result = {"name": str(data["name"]), "ingredients": ingredients}
+            if use_cache:
+                self._cache[cache_key] = result
+                self._save_cache()
+            _LOGGER.info(f"Text meal analysis: '{result['name']}' con {len(ingredients)} ingredienti")
+            return result
+        except Exception as e:
+            _LOGGER.error(f"Error during LLM text meal analysis: {e}")
+            return None
+
     def estimate_nutrition(self, item_name: str) -> Optional[Dict[str, float]]:
         """
         Stima i valori nutrizionali per 100 g di un ingrediente:

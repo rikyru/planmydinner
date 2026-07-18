@@ -71,6 +71,21 @@ const MensaModal = defineComponent({
                                        :disabled="analyzing" @change="analyzePhoto">
                             </label>
                         </div>
+
+                        <!-- Oppure a parole -->
+                        <div style="margin-top:12px;">
+                            <div style="font-size:13px;font-weight:600;margin-bottom:6px;">…oppure descrivilo:</div>
+                            <div style="display:flex;gap:8px;">
+                                <input v-model="description"
+                                       placeholder="es. tramezzini tonno e maionese, insalata a parte"
+                                       :disabled="analyzing" @keyup.enter="analyzeText">
+                                <button @click="analyzeText" class="btn-primary"
+                                        :disabled="analyzing || description.trim().length < 3"
+                                        style="flex-shrink:0;">
+                                    {{ analyzing ? '…' : '✨ Analizza' }}
+                                </button>
+                            </div>
+                        </div>
                     </template>
                     <div v-if="error" class="error">{{ error }}</div>
                 </div>
@@ -115,6 +130,7 @@ const MensaModal = defineComponent({
             analyzing: false,
             proposal: null,
             saving: false,
+            description: '',
         };
     },
     computed: {
@@ -165,6 +181,30 @@ const MensaModal = defineComponent({
             } finally {
                 this.analyzing = false;
                 ev.target.value = '';   // permette di ricaricare lo stesso file
+            }
+        },
+        async analyzeText() {
+            const description = this.description.trim();
+            if (description.length < 3) return;
+            this.analyzing = true;
+            this.error = null;
+            try {
+                const params = new URLSearchParams({ profile_id: this.profileId });
+                const resp = await window.apiFetch('/consumed-entries/text/analyze?' + params, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ description }),
+                });
+                if (!resp.ok) {
+                    const err = await resp.json().catch(() => ({}));
+                    throw new Error(err.detail || 'Analisi fallita.');
+                }
+                this.proposal = await resp.json();
+                this.description = '';
+            } catch (e) {
+                this.error = e.message;
+            } finally {
+                this.analyzing = false;
             }
         },
         async save() {

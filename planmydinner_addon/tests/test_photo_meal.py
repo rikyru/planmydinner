@@ -26,6 +26,11 @@ class FakeVisionGateway:
         self.calls += 1
         return self.result
 
+    def estimate_meal_from_text(self, description, use_cache=True):
+        self.calls += 1
+        self.last_description = description
+        return self.result
+
     def estimate_nutrition(self, item_name):
         return None  # forza l'uso della sola tabella locale
 
@@ -74,6 +79,27 @@ class TestPhotoAnalyze:
             assert resp.status_code == 422
         finally:
             app.state.llm_gateway = original
+
+
+class TestTextAnalyze:
+    def test_text_analysis_returns_proposal(self, client, setup_database, fake_gateway):
+        resp = client.post(
+            "/consumed-entries/text/analyze?profile_id=persona_a",
+            json={"description": "tramezzini tonno e maionese, insalata a parte"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["name"]
+        assert len(data["ingredients"]) == 3
+        assert data["nutrition"]["kcal"] > 0
+        assert "tramezzini" in fake_gateway.last_description
+
+    def test_text_too_short_422(self, client, setup_database, fake_gateway):
+        resp = client.post(
+            "/consumed-entries/text/analyze?profile_id=persona_a",
+            json={"description": "ab"},
+        )
+        assert resp.status_code == 422
 
 
 class TestMensaCatalog:
