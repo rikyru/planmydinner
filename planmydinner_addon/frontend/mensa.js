@@ -32,12 +32,13 @@ const MensaModal = defineComponent({
         profileId: { type: String, required: true },
         mealType: { type: String, required: true },
         mealDate: { type: String, required: true },
+        mealLabel: { type: String, default: null },   // etichetta per slot non pranzo/cena
     },
     emits: ['close', 'saved'],
     template: `
         <div class="modal-overlay" @click.self="$emit('close')">
             <div class="modal">
-                <h3>📷 Pasto da foto — {{ mealType === 'pranzo' ? 'Pranzo' : 'Cena' }} {{ dateLabel }}</h3>
+                <h3>📷 Pasto da foto — {{ slotLabel }} {{ dateLabel }}</h3>
 
                 <!-- Fase 1: catalogo + scatto/caricamento foto -->
                 <div v-if="!proposal">
@@ -134,6 +135,10 @@ const MensaModal = defineComponent({
         };
     },
     computed: {
+        slotLabel() {
+            if (this.mealLabel) return this.mealLabel;
+            return { pranzo: 'Pranzo', cena: 'Cena' }[this.mealType] || this.mealType;
+        },
         dateLabel() {
             const todayIso = new Date().toISOString().slice(0, 10);
             if (this.mealDate === todayIso) return '';

@@ -1,10 +1,11 @@
 import { defineComponent } from 'vue';
-import MensaModal from './mensa.js?v=4';
+import MensaModal from './mensa.js?v=5';
+import RoutineStrip from './routine.js?v=1';
 
 const TodayView = defineComponent({
     name: 'TodayView',
     inject: ['toast'],
-    components: { MensaModal },
+    components: { MensaModal, RoutineStrip },
     template: `
         <div class="today-view">
             <h2>Oggi — {{ formattedDate }}</h2>
@@ -26,6 +27,10 @@ const TodayView = defineComponent({
                 </span>
                 <span v-if="freeMealMessage" class="free-meal-msg">{{ freeMealMessage }}</span>
             </div>
+
+            <!-- Pasti fissi: colazione & spuntini (opt-out) -->
+            <routine-strip v-if="profileA" :profile-id="profileA.id" :meal-date="today"
+                           @changed="loadAdherence" />
 
             <div v-if="loading" class="loading">Caricamento...</div>
             <div v-if="error" class="error">{{ error }}</div>

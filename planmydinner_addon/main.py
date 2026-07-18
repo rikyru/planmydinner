@@ -39,6 +39,7 @@ from .api import shopping_list as shopping_list_router
 from .api import seed as seed_router
 from .api import settings as settings_router
 from .api import integration as integration_router
+from .api import routine as routine_router
 
 # Fix for Windows MIME types
 mimetypes.add_type("application/javascript", ".js")
@@ -169,6 +170,7 @@ app.include_router(shopping_list_router.router)
 app.include_router(seed_router.router)
 app.include_router(settings_router.router)
 app.include_router(integration_router.router)
+app.include_router(routine_router.router)
 
 
 @app.get("/")

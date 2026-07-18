@@ -153,6 +153,48 @@ def get_integration_summary(
                 nutrition_cache[recipe_id] = None
         return nutrition_cache[recipe_id]
 
+    # Pasti fissi (colazione/spuntini): assunti nei giorni senza eccezioni,
+    # slot opt-in (es. dopo cena) contati solo se registrati.
+    from .routine import SLOTS as ROUTINE_SLOTS, get_routine_meals
+    routine_meals = get_routine_meals(db, profile_id)
+    routine_nutrition: Dict[str, Optional[Dict[str, Any]]] = {}
+    for slot, meal in routine_meals.items():
+        try:
+            routine_nutrition[slot] = compute_recipe_nutrition(
+                meal["content"], profile_id, llm_gateway=llm_gateway
+            )
+        except Exception:
+            routine_nutrition[slot] = None
+
+    slot_entries: Dict[tuple, list] = {}
+    for e in db.query(ConsumedEntry).filter(
+        ConsumedEntry.profile_id == profile_id,
+        ConsumedEntry.date >= start_date.isoformat(),
+        ConsumedEntry.date <= end_date.isoformat(),
+        ConsumedEntry.meal_type.in_(list(ROUTINE_SLOTS.keys())),
+    ).all():
+        slot_entries.setdefault((e.date, e.meal_type), []).append(e)
+
+    def _routine_for_day(iso: str) -> Optional[Dict[str, float]]:
+        total = None
+        for slot in ROUTINE_SLOTS:
+            meal = routine_meals.get(slot)
+            entries = slot_entries.get((iso, slot), [])
+            if any(e.type == "skipped" for e in entries):
+                continue
+            logged = [e for e in entries if e.type != "skipped" and e.consumed_recipe_id]
+            n = None
+            if logged:
+                n = _nutrition_for_recipe(logged[0].consumed_recipe_id)
+            elif meal and meal["default_on"]:
+                n = routine_nutrition.get(slot)
+            if n:
+                if total is None:
+                    total = {k: 0.0 for k in NUTRITION_KEYS}
+                for k in NUTRITION_KEYS:
+                    total[k] += n[k]
+        return total
+
     days = []
     totals = {k: 0.0 for k in NUTRITION_KEYS}
     days_with_data = 0
@@ -188,16 +230,25 @@ def get_integration_summary(
                     day_nutrition[k] += nutrition[k]
                 coverages.append(nutrition.get("coverage", 1.0))
 
+        # Aggiungi i pasti fissi del giorno (colazione/spuntini assunti + opt-in registrati)
+        routine_day = _routine_for_day(iso)
+        if routine_day is not None:
+            if day_nutrition is None:
+                day_nutrition = {k: 0.0 for k in NUTRITION_KEYS}
+            for k in NUTRITION_KEYS:
+                day_nutrition[k] += routine_day[k]
+
         day_entry: Dict[str, Any] = {
             "date": iso,
             "meals_planned": planned,
             "free_meals": free_meals,
             "not_eaten": not_eaten,
             "nutrition": None,
+            "routine_kcal": round(routine_day["kcal"], 1) if routine_day else 0,
         }
         if day_nutrition is not None:
             day_entry["nutrition"] = {k: round(day_nutrition[k], 1) for k in NUTRITION_KEYS}
-            day_entry["nutrition"]["coverage"] = round(sum(coverages) / len(coverages), 2)
+            day_entry["nutrition"]["coverage"] = round(sum(coverages) / len(coverages), 2) if coverages else 1.0
             for k in NUTRITION_KEYS:
                 totals[k] += day_nutrition[k]
             days_with_data += 1

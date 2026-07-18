@@ -619,3 +619,13 @@ input[type="checkbox"] { accent-color: var(--primary); }
     border-radius: var(--radius-sm); padding: 10px 14px;
     font-size: 14px; font-weight: 700;
 }
+
+/* ============ Routine (colazione & spuntini) ============ */
+.routine-strip { padding: 12px 14px; margin-bottom: 14px; }
+.routine-row { display: flex; align-items: center; gap: 8px; }
+.routine-row__name { flex: 1; font-size: 13.5px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chip { border: 1px solid var(--border); border-radius: 99px; padding: 4px 11px; font-size: 12px; font-weight: 700; cursor: pointer; background: var(--surface-2); color: var(--text-2); flex-shrink: 0; }
+.chip--on { background: var(--success-soft); color: var(--success); border-color: color-mix(in srgb, var(--success) 30%, transparent); }
+.chip--off { background: var(--danger-soft); color: var(--danger); border-color: color-mix(in srgb, var(--danger) 30%, transparent); }
+.chip--add { background: var(--primary-softer); color: var(--primary); border-color: color-mix(in srgb, var(--primary) 30%, transparent); }
+.chip--logged { background: var(--info-soft); color: var(--info); border-color: color-mix(in srgb, var(--info) 30%, transparent); cursor: default; }
