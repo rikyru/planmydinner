@@ -35,6 +35,7 @@ class PlanRulesUpdate(_BaseModel):
     frequency_targets: Optional[Dict[str, Any]] = None
     veg_target: Optional[Dict[str, Any]] = None
     free_meal_quota: Optional[int] = None
+    nutrition_targets: Optional[Dict[str, float]] = None
 
 
 class FreeMealBody(_BaseModel):
@@ -308,6 +309,7 @@ def get_plan_rules(
             "frequency_targets": plan_rules_db.frequency_targets,
             "veg_target": plan_rules_db.veg_target,
             "free_meal_quota": plan_rules_db.free_meal_quota,
+            "nutrition_targets": plan_rules_db.nutrition_targets,
             "imported_at": plan_rules_db.imported_at,
         }
 
@@ -464,6 +466,8 @@ def update_plan_rules(profile_id: str, body: PlanRulesUpdate, db: Session = Depe
         plan_rules.veg_target = body.veg_target
     if body.free_meal_quota is not None:
         plan_rules.free_meal_quota = body.free_meal_quota
+    if body.nutrition_targets is not None:
+        plan_rules.nutrition_targets = body.nutrition_targets
     plan_rules.imported_at = datetime.now().isoformat()
     db.add(plan_rules)
     db.commit()

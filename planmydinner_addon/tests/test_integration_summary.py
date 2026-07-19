@@ -165,6 +165,41 @@ class TestTodayStatus:
         assert data["unlogged_count"] == 0
 
 
+class TestNutritionTargets:
+    def test_targets_roundtrip_and_in_summary(self, client, setup_database):
+        resp = client.put("/planner/rules/persona_a", json={
+            "nutrition_targets": {"kcal": 2200, "protein_g": 120, "carbs_g": 250, "fat_g": 70},
+        })
+        assert resp.status_code == 200
+        rules = client.get("/planner/rules", params={"profile_id_A": "persona_a"}).json()
+        assert rules["plan_rules"]["nutrition_targets"]["kcal"] == 2200
+
+        data = client.get("/integration/summary", params={
+            "profile_id": "persona_a", "start_date": MONDAY, "end_date": "2026-03-01",
+        }).json()
+        assert data["targets"]["protein_g"] == 120
+
+    def test_summary_targets_none_when_unset(self, client, setup_database):
+        data = client.get("/integration/summary", params={"profile_id": "persona_a"}).json()
+        assert data["targets"] is None
+
+    def test_plan_targets_derived_from_plan(self, client, setup_database):
+        _make_plan(setup_database)
+        resp = client.get("/integration/plan-targets", params={"profile_id": "persona_a"})
+        assert resp.status_code == 200
+        targets = resp.json()["targets"]
+        # Ricetta seed: 389 kcal/pasto. 5 giorni pieni (778) + 2 giorni con 1 solo
+        # pasto pianificato (389, gli altri slot sono free/not_eaten) → media
+        expected = (5 * 2 * 389 + 2 * 389) / 7
+        assert targets["kcal"] == pytest.approx(expected, abs=1.5)
+        assert resp.json()["days_sampled"] == 7
+
+    def test_plan_targets_without_plan(self, client, setup_database):
+        resp = client.get("/integration/plan-targets", params={"profile_id": "nessuno"})
+        assert resp.status_code == 200
+        assert resp.json()["targets"] is None
+
+
 class TestRecipeDetailNutrition:
     def test_detail_includes_macros_per_portion(self, client, setup_database):
         resp = client.get("/recipes/detail/pasta_pomodoro_recipe")

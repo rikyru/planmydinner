@@ -14,7 +14,7 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
-from ..database import get_db, CandidateRecipe, ConsumedEntry, GeneratedWeeklyPlan, Recipe
+from ..database import get_db, CandidateRecipe, ConsumedEntry, GeneratedWeeklyPlan, PlanRules, Recipe
 from ..nutrition import NUTRITION_KEYS, compute_recipe_nutrition
 from .planner import compute_adherence_stats
 
@@ -97,6 +97,73 @@ def get_today_status(
         "unlogged": unlogged,
         "unlogged_count": len(unlogged),
     }
+
+
+@router.get("/plan-targets")
+def get_plan_targets(request: Request, profile_id: str, db: Session = Depends(get_db)):
+    """
+    Obiettivi giornalieri TEORICI derivati dal piano della nutrizionista:
+    media kcal/macro dei giorni del piano generato più recente (solo slot con
+    ricetta pianificata, escluse le deviazioni mensa/liberi/saltati) + pasti
+    fissi assunti (colazione/spuntini). Utile come base per i target.
+    """
+    llm_gateway = getattr(request.app.state, "llm_gateway", None)
+
+    plan = db.query(GeneratedWeeklyPlan).filter(
+        GeneratedWeeklyPlan.profile_id_A == profile_id,
+    ).order_by(GeneratedWeeklyPlan.generated_at.desc()).first()
+    if not plan:
+        return {"targets": None, "detail": "Nessun piano generato."}
+
+    def _recipe_nutrition(recipe_id: str):
+        content = _get_recipe_content(db, recipe_id)
+        if not content:
+            return None
+        try:
+            return compute_recipe_nutrition(content, profile_id, llm_gateway=llm_gateway)
+        except Exception:
+            return None
+
+    # Pasti fissi assunti ogni giorno
+    from .routine import get_routine_meals
+    routine_total = {k: 0.0 for k in NUTRITION_KEYS}
+    for slot, meal in get_routine_meals(db, profile_id).items():
+        if not meal["default_on"]:
+            continue
+        try:
+            n = compute_recipe_nutrition(meal["content"], profile_id, llm_gateway=llm_gateway)
+        except Exception:
+            n = None
+        if n:
+            for k in NUTRITION_KEYS:
+                routine_total[k] += n[k]
+
+    day_totals = []
+    for dp in plan.daily_plans or []:
+        day = None
+        for meal in dp.get("meals", []):
+            items = meal.get("items", [])
+            if not items or not items[0].get("recipe_id") or \
+                    items[0].get("food_group") in ("mensa", "free_meal", "not_eaten"):
+                continue   # solo il piano originale, non le deviazioni
+            n = _recipe_nutrition(items[0]["recipe_id"])
+            if n:
+                if day is None:
+                    day = {k: 0.0 for k in NUTRITION_KEYS}
+                for k in NUTRITION_KEYS:
+                    day[k] += n[k]
+        if day:
+            day_totals.append(day)
+
+    if not day_totals:
+        return {"targets": None, "detail": "Nessuna ricetta pianificata con dati nutrizionali."}
+
+    targets = {
+        k: round(sum(d[k] for d in day_totals) / len(day_totals) + routine_total[k], 1)
+        for k in NUTRITION_KEYS
+    }
+    return {"targets": targets, "days_sampled": len(day_totals),
+            "routine_included": any(v > 0 for v in routine_total.values())}
 
 
 @router.get("/summary")
@@ -260,6 +327,12 @@ def get_integration_summary(
         averages = {k: round(totals[k] / days_with_data, 1) for k in NUTRITION_KEYS}
         averages["days_with_data"] = days_with_data
 
+    # Obiettivi giornalieri (se impostati nelle PlanRules del profilo)
+    rules_row = db.query(PlanRules).filter(
+        PlanRules.profile_id == profile_id
+    ).order_by(PlanRules.imported_at.desc()).first()
+    targets = rules_row.nutrition_targets if rules_row else None
+
     return {
         "version": SUMMARY_VERSION,
         "profile_id": profile_id,
@@ -268,4 +341,5 @@ def get_integration_summary(
         "adherence": adherence,
         "days": days,
         "averages": averages,
+        "targets": targets,
     }

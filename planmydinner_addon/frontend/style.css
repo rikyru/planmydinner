@@ -629,3 +629,15 @@ input[type="checkbox"] { accent-color: var(--primary); }
 .chip--off { background: var(--danger-soft); color: var(--danger); border-color: color-mix(in srgb, var(--danger) 30%, transparent); }
 .chip--add { background: var(--primary-softer); color: var(--primary); border-color: color-mix(in srgb, var(--primary) 30%, transparent); }
 .chip--logged { background: var(--info-soft); color: var(--info); border-color: color-mix(in srgb, var(--info) 30%, transparent); cursor: default; }
+
+/* Obiettivi nello Storico */
+.hist-stat__target { font-size: 10px; color: var(--text-3); }
+.hist-stat__delta { font-size: 11px; font-weight: 800; }
+.delta-ok   { color: var(--success); }
+.delta-warn { color: var(--warning); }
+.delta-bad  { color: var(--danger); }
+.hist-target-line {
+    position: absolute; left: 0; right: 0; height: 0;
+    border-top: 2px dashed color-mix(in srgb, var(--text-3) 55%, transparent);
+    pointer-events: none; z-index: 1;
+}

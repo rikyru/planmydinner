@@ -134,6 +134,7 @@ class PlanRules(Base):
     veg_target = Column(JSON, nullable=True)  # {"min_grams": 150, "portion_grams": {"insalata mista": 80, ...}}
     free_meal_quota = Column(Integer, nullable=True)  # max pasti liberi a settimana
     meal_slots = Column(JSON, nullable=True)           # struttura giornaliera tipo (colazione, spuntini, ecc.)
+    nutrition_targets = Column(JSON, nullable=True)    # obiettivi giornalieri {"kcal", "protein_g", "carbs_g", "fat_g"}
 
 
 class AppSettings(Base):
@@ -194,6 +195,7 @@ def create_db_and_tables():
             ("plan_rules", "meal_slots", "JSON"),
             ("app_settings", "llm_generation_mode", "TEXT"),
             ("app_settings", "llm_vision_model", "TEXT"),
+            ("plan_rules", "nutrition_targets", "JSON"),
         ]:
             try:
                 conn.execute(__import__("sqlalchemy").text(

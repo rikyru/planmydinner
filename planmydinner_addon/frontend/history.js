@@ -16,28 +16,19 @@ const HistoryView = defineComponent({
                 <strong style="min-width:170px;text-align:center;">{{ rangeLabel }}</strong>
                 <button @click="shiftWeek(7)" class="btn-secondary" :disabled="isCurrentWeek">›</button>
                 <button v-if="!isCurrentWeek" @click="goToday" class="btn-today">Questa settimana</button>
+                <button @click="openTargets" class="btn-sm btn-secondary" style="margin-left:auto;">🎯 Obiettivi</button>
             </div>
 
             <div v-if="loading" class="loading">Caricamento...</div>
 
             <template v-if="!loading && summary">
-                <!-- Riepilogo periodo -->
+                <!-- Riepilogo periodo (vs obiettivo se impostato) -->
                 <div class="hist-stats">
-                    <div class="hist-stat">
-                        <span class="hist-stat__value">{{ summary.averages ? Math.round(summary.averages.kcal) : '—' }}</span>
-                        <span class="hist-stat__label">kcal / giorno</span>
-                    </div>
-                    <div class="hist-stat">
-                        <span class="hist-stat__value">{{ summary.averages ? Math.round(summary.averages.protein_g) + 'g' : '—' }}</span>
-                        <span class="hist-stat__label">proteine</span>
-                    </div>
-                    <div class="hist-stat">
-                        <span class="hist-stat__value">{{ summary.averages ? Math.round(summary.averages.carbs_g) + 'g' : '—' }}</span>
-                        <span class="hist-stat__label">carboidrati</span>
-                    </div>
-                    <div class="hist-stat">
-                        <span class="hist-stat__value">{{ summary.averages ? Math.round(summary.averages.fat_g) + 'g' : '—' }}</span>
-                        <span class="hist-stat__label">grassi</span>
+                    <div v-for="t in statTiles" :key="t.key" class="hist-stat">
+                        <span class="hist-stat__value">{{ t.value }}</span>
+                        <span class="hist-stat__label">{{ t.label }}</span>
+                        <span v-if="t.target" class="hist-stat__target">obiettivo {{ t.target }}</span>
+                        <span v-if="t.delta !== null" class="hist-stat__delta" :class="t.deltaClass">{{ t.delta }}</span>
                     </div>
                     <div class="hist-stat">
                         <span class="hist-stat__value">{{ Math.round((summary.adherence.adherence_score || 0) * 100) }}%</span>
@@ -48,7 +39,9 @@ const HistoryView = defineComponent({
                 <!-- Grafico kcal per giorno -->
                 <div class="card">
                     <div style="font-size:13px;font-weight:600;color:var(--text-2);margin-bottom:10px;">kcal per giorno</div>
-                    <div class="hist-chart">
+                    <div class="hist-chart" style="position:relative;">
+                        <div v-if="kcalTarget" class="hist-target-line" :style="{bottom: targetLinePct + '%'}"
+                             :title="'Obiettivo: ' + kcalTarget + ' kcal'"></div>
                         <div v-for="d in summary.days" :key="d.date" class="hist-col"
                              :title="barTitle(d)" @click="scrollToDay(d.date)">
                             <div class="hist-bar" :class="{'hist-bar--empty': !d.nutrition, 'hist-bar--today': d.date === today}"
@@ -82,6 +75,40 @@ const HistoryView = defineComponent({
                     <div v-else class="hint" style="margin-top:6px;">Nessun pasto pianificato.</div>
                 </div>
             </template>
+
+            <!-- Modal obiettivi giornalieri -->
+            <div v-if="targetsOpen" class="modal-overlay" @click.self="targetsOpen = false">
+                <div class="modal">
+                    <h3>🎯 Obiettivi giornalieri</h3>
+                    <p class="hint" style="margin:0 0 12px;">
+                        Valori indicativi al giorno. Compaiono nello Storico e nella API per OpenFit.
+                    </p>
+                    <div class="custom-form">
+                        <label>kcal / giorno</label>
+                        <input v-model.number="targetForm.kcal" type="number" min="0" step="50" placeholder="es. 2200">
+                        <label>Proteine (g)</label>
+                        <input v-model.number="targetForm.protein_g" type="number" min="0" step="5" placeholder="es. 120">
+                        <label>Carboidrati (g)</label>
+                        <input v-model.number="targetForm.carbs_g" type="number" min="0" step="10" placeholder="es. 250">
+                        <label>Grassi (g)</label>
+                        <input v-model.number="targetForm.fat_g" type="number" min="0" step="5" placeholder="es. 70">
+                    </div>
+                    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;">
+                        <button @click="suggestFromPlan" class="btn-secondary btn-sm" :disabled="suggesting">
+                            {{ suggesting ? '…' : '📋 Dal piano della nutrizionista' }}
+                        </button>
+                        <button v-if="summary?.averages" @click="suggestTargets" class="btn-secondary btn-sm">
+                            📈 Dalle medie di questo periodo
+                        </button>
+                    </div>
+                    <div style="display:flex;gap:10px;margin-top:14px;">
+                        <button @click="saveTargets" class="btn-primary" :disabled="savingTargets">
+                            {{ savingTargets ? 'Salvataggio…' : '💾 Salva' }}
+                        </button>
+                        <button @click="targetsOpen = false" class="btn-secondary">Annulla</button>
+                    </div>
+                </div>
+            </div>
         </div>
     `,
     data() {
@@ -96,6 +123,10 @@ const HistoryView = defineComponent({
             summary: null,
             planMeals: {},   // date -> [{meal_type, name}]
             loading: false,
+            targetsOpen: false,
+            targetForm: { kcal: null, protein_g: null, carbs_g: null, fat_g: null },
+            savingTargets: false,
+            suggesting: false,
         };
     },
     computed: {
@@ -111,7 +142,40 @@ const HistoryView = defineComponent({
         isCurrentWeek() { return this.start <= this.today && this.today <= this.end; },
         maxKcal() {
             const vals = (this.summary?.days || []).map(d => d.nutrition?.kcal || 0);
-            return Math.max(1, ...vals);
+            return Math.max(1, ...vals, this.kcalTarget || 0);
+        },
+        kcalTarget() { return this.summary?.targets?.kcal || null; },
+        targetLinePct() {
+            // il grafico riserva ~24px in basso alle etichette: riporto la quota
+            // della linea alla sola area delle barre (130px totali, ~106 utili)
+            return Math.min(96, Math.round((this.kcalTarget / this.maxKcal) * (106 / 130) * 100) + 18);
+        },
+        statTiles() {
+            const avg = this.summary?.averages;
+            const targets = this.summary?.targets || {};
+            const defs = [
+                { key: 'kcal',      label: 'kcal / giorno', unit: '' },
+                { key: 'protein_g', label: 'proteine',      unit: 'g' },
+                { key: 'carbs_g',   label: 'carboidrati',   unit: 'g' },
+                { key: 'fat_g',     label: 'grassi',        unit: 'g' },
+            ];
+            return defs.map(d => {
+                const value = avg ? Math.round(avg[d.key]) : null;
+                const target = targets[d.key] ? Math.round(targets[d.key]) : null;
+                let delta = null, deltaClass = '';
+                if (value !== null && target) {
+                    const pct = Math.round(((value - target) / target) * 100);
+                    delta = (pct > 0 ? '+' : '') + pct + '%';
+                    deltaClass = Math.abs(pct) <= 10 ? 'delta-ok' : (Math.abs(pct) <= 25 ? 'delta-warn' : 'delta-bad');
+                }
+                return {
+                    key: d.key,
+                    label: d.label,
+                    value: value !== null ? value + d.unit : '—',
+                    target: target ? target + d.unit : null,
+                    delta, deltaClass,
+                };
+            });
         },
     },
     mounted() { this.init(); },
@@ -189,6 +253,70 @@ const HistoryView = defineComponent({
             return new Date(dateStr + 'T12:00:00').toLocaleDateString('it-IT', { weekday: 'long', day: 'numeric', month: 'short' });
         },
         mealsFor(dateStr) { return this.planMeals[dateStr] || []; },
+        openTargets() {
+            const t = this.summary?.targets || {};
+            this.targetForm = {
+                kcal: t.kcal || null, protein_g: t.protein_g || null,
+                carbs_g: t.carbs_g || null, fat_g: t.fat_g || null,
+            };
+            this.targetsOpen = true;
+        },
+        suggestTargets() {
+            const a = this.summary.averages;
+            this.targetForm = {
+                kcal: Math.round(a.kcal / 50) * 50,
+                protein_g: Math.round(a.protein_g / 5) * 5,
+                carbs_g: Math.round(a.carbs_g / 5) * 5,
+                fat_g: Math.round(a.fat_g / 5) * 5,
+            };
+        },
+        async suggestFromPlan() {
+            this.suggesting = true;
+            try {
+                const params = new URLSearchParams({ profile_id: this.profiles[0].id });
+                const resp = await window.apiFetch('/integration/plan-targets?' + params);
+                const data = resp.ok ? await resp.json() : null;
+                if (!data?.targets) {
+                    this.toast.add(data?.detail || 'Nessun piano da cui derivare gli obiettivi.', 'info');
+                    return;
+                }
+                const t = data.targets;
+                this.targetForm = {
+                    kcal: Math.round(t.kcal / 50) * 50,
+                    protein_g: Math.round(t.protein_g / 5) * 5,
+                    carbs_g: Math.round(t.carbs_g / 5) * 5,
+                    fat_g: Math.round(t.fat_g / 5) * 5,
+                };
+                this.toast.add('Obiettivi derivati dal piano (media dei giorni pianificati).', 'success');
+            } catch (e) {
+                this.toast.add('Errore: ' + e.message, 'error');
+            } finally {
+                this.suggesting = false;
+            }
+        },
+        async saveTargets() {
+            this.savingTargets = true;
+            try {
+                const targets = {};
+                for (const k of ['kcal', 'protein_g', 'carbs_g', 'fat_g']) {
+                    if (this.targetForm[k] > 0) targets[k] = this.targetForm[k];
+                }
+                const pid = this.profiles[0].id;
+                const resp = await window.apiFetch('/planner/rules/' + encodeURIComponent(pid), {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ nutrition_targets: targets }),
+                });
+                if (!resp.ok) throw new Error(await resp.text());
+                this.toast.add('Obiettivi salvati!', 'success');
+                this.targetsOpen = false;
+                await this.load();
+            } catch (e) {
+                this.toast.add('Errore: ' + e.message, 'error');
+            } finally {
+                this.savingTargets = false;
+            }
+        },
         scrollToDay(dateStr) {
             document.getElementById('hist-' + dateStr)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
         },

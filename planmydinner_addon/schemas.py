@@ -244,6 +244,7 @@ class PlanRules(BaseModel):
     veg_target: Optional[Dict[str, Any]] = None
     free_meal_quota: Optional[int] = None
     meal_slots: Optional[Dict[str, Any]] = None      # colazione, spuntino_mattina, pranzo, merenda, cena, idratazione
+    nutrition_targets: Optional[Dict[str, float]] = None  # obiettivi giornalieri kcal/protein_g/carbs_g/fat_g
 
     class Config:
         from_attributes = True
