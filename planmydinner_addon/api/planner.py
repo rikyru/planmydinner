@@ -146,35 +146,35 @@ def get_weekly_plan(
 ):
     """
     Get the 7-day plan starting from start_date (rolling, no Monday-snapping).
-    Returns cached version if available; otherwise generates, saves, and returns.
+
+    READ-ONLY: never generates or saves anything. A GET must not have side
+    effects — auto-generating here used to silently delete any existing plan
+    overlapping the requested window (via _save_generated_plan's overlap
+    cleanup), wiping user edits (mensa entries, free meals...) the moment
+    someone viewed a date that didn't exactly match a stored week_start_date.
+    Use POST /planner/generate-week to explicitly generate a plan.
     """
     cached = db.query(GeneratedWeeklyPlan).filter(
         GeneratedWeeklyPlan.profile_id_A == profile_id_A,
         GeneratedWeeklyPlan.week_start_date == start_date.isoformat()
     ).first()
-    if cached:
-        try:
-            return [schemas.DailyPlannedMeals.model_validate(dp) for dp in cached.daily_plans]
-        except Exception:
-            # Piano salvato con dati non conformi: non rispondere 500, rigenera
-            _LOGGER.exception(
-                f"Stored weekly plan for '{profile_id_A}' ({start_date}) failed validation; regenerating."
-            )
-
-    planner = PlannerEngine(db, llm_gateway=request.app.state.llm_gateway)
-    try:
-        weekly_plan = planner.generate_weekly_plan(profile_id_A, profile_id_B, start_date)
-    except Exception:
-        # Qualsiasi errore interno di generazione diventa una risposta gestita, mai un 500
-        _LOGGER.exception(f"Weekly plan generation failed for '{profile_id_A}' ({start_date}).")
-        weekly_plan = None
-    if not weekly_plan:
+    if not cached:
+        # Nessuna finestra che parte esattamente da start_date: cerca un piano
+        # esistente la cui finestra copra comunque questa data (es. rolling
+        # window non Monday-aligned) prima di arrendersi con 404.
+        cached = _find_plan_covering_date(db, profile_id_A, start_date)
+    if not cached:
         raise HTTPException(
             status_code=404,
-            detail=f"Could not generate a weekly plan. Make sure an active meal plan exists for '{profile_id_A}'."
+            detail=f"No stored weekly plan covers {start_date.isoformat()} for '{profile_id_A}'."
         )
-    _save_generated_plan(db, profile_id_A, profile_id_B, start_date, weekly_plan)
-    return weekly_plan
+    try:
+        return [schemas.DailyPlannedMeals.model_validate(dp) for dp in cached.daily_plans]
+    except Exception:
+        _LOGGER.exception(
+            f"Stored weekly plan for '{profile_id_A}' ({start_date}) failed validation."
+        )
+        raise HTTPException(status_code=500, detail="Stored weekly plan is corrupted.")
 
 
 @router.get("/generated-week")

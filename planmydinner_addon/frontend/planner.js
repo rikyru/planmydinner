@@ -1166,6 +1166,15 @@ const WeekView = defineComponent({
         isFree(meal)         { return meal?.items?.[0]?.food_group === 'free_meal'; },
         isNotEaten(meal)     { return meal?.items?.[0]?.food_group === 'not_eaten'; },
         onStartDateChange() {
+            // Le settimane sono sempre lunedì-domenica: allinea qualunque data scelta
+            // dal date-picker al lunedì della sua settimana. Prima una data non
+            // allineata (es. "oggi" se oggi è domenica) faceva puntare la vista a una
+            // finestra diversa da quella salvata, la GET faceva cache-miss e
+            // rigenerava/sovrascriveva il piano esistente cancellando le modifiche.
+            const d = new Date(this.startDate + 'T12:00:00');
+            const daysToMonday = d.getDay() === 0 ? 6 : d.getDay() - 1;
+            d.setDate(d.getDate() - daysToMonday);
+            this.startDate = d.toISOString().slice(0, 10);   // v-model: aggiorna anche il date-picker
             this.weekPlan = null;
             this.error = null;
             this.loadWeekPlan();
