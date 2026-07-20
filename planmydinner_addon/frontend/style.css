@@ -641,3 +641,9 @@ input[type="checkbox"] { accent-color: var(--primary); }
     border-top: 2px dashed color-mix(in srgb, var(--text-3) 55%, transparent);
     pointer-events: none; z-index: 1;
 }
+
+/* Giorno con pasto libero: dati parziali, esclusi dalle medie */
+.hist-bar--partial {
+    background: repeating-linear-gradient(135deg, var(--warning), var(--warning) 5px, transparent 5px, transparent 10px);
+    opacity: .75;
+}

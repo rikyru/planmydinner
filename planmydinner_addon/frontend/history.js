@@ -44,7 +44,7 @@ const HistoryView = defineComponent({
                              :title="'Obiettivo: ' + kcalTarget + ' kcal'"></div>
                         <div v-for="d in summary.days" :key="d.date" class="hist-col"
                              :title="barTitle(d)" @click="scrollToDay(d.date)">
-                            <div class="hist-bar" :class="{'hist-bar--empty': !d.nutrition, 'hist-bar--today': d.date === today}"
+                            <div class="hist-bar" :class="{'hist-bar--empty': !d.nutrition, 'hist-bar--partial': d.nutrition && !d.complete, 'hist-bar--today': d.date === today}"
                                  :style="{height: barHeight(d) + '%'}"></div>
                             <span class="hist-day" :class="{'hist-day--today': d.date === today}">{{ dayInitial(d.date) }}</span>
                         </div>
@@ -60,8 +60,9 @@ const HistoryView = defineComponent({
                             P {{ Math.round(d.nutrition.protein_g) }}g ·
                             C {{ Math.round(d.nutrition.carbs_g) }}g ·
                             G {{ Math.round(d.nutrition.fat_g) }}g
+                            <template v-if="!d.complete">(parziale)</template>
                         </span>
-                        <span v-if="d.free_meals" class="meal-badge meal-badge--free">🎉 libero</span>
+                        <span v-if="d.free_meals" class="meal-badge meal-badge--free" title="Calorie sconosciute: giorno escluso dalle medie">🎉 libero</span>
                         <span v-if="d.not_eaten" class="meal-badge meal-badge--not-eaten">✗ saltato</span>
                     </div>
                     <div v-if="mealsFor(d.date).length" style="margin-top:8px;display:flex;flex-direction:column;gap:4px;">
@@ -244,7 +245,8 @@ const HistoryView = defineComponent({
             const label = this.dayLabel(d.date);
             if (!d.nutrition) return `${label}: nessun dato`;
             const n = d.nutrition;
-            return `${label}: ${Math.round(n.kcal)} kcal — P ${Math.round(n.protein_g)}g · C ${Math.round(n.carbs_g)}g · G ${Math.round(n.fat_g)}g`;
+            const base = `${Math.round(n.kcal)} kcal — P ${Math.round(n.protein_g)}g · C ${Math.round(n.carbs_g)}g · G ${Math.round(n.fat_g)}g`;
+            return d.complete ? `${label}: ${base}` : `${label}: ${base} (parziale — pasto libero non stimato, escluso dalle medie)`;
         },
         dayInitial(dateStr) {
             return new Date(dateStr + 'T12:00:00').toLocaleDateString('it-IT', { weekday: 'short' }).slice(0, 3);

@@ -305,20 +305,29 @@ def get_integration_summary(
             for k in NUTRITION_KEYS:
                 day_nutrition[k] += routine_day[k]
 
+        # Un pasto libero ha calorie sconosciute: sommare solo gli altri pasti
+        # del giorno lo farebbe apparire come se il libero valesse 0 kcal,
+        # abbassando artificialmente medie e confronto con l'obiettivo. Il
+        # giorno resta visibile (con i macro noti, per trasparenza) ma è
+        # marcato "incompleto" ed escluso dalle medie del periodo.
+        is_complete = free_meals == 0
+
         day_entry: Dict[str, Any] = {
             "date": iso,
             "meals_planned": planned,
             "free_meals": free_meals,
             "not_eaten": not_eaten,
             "nutrition": None,
+            "complete": is_complete,
             "routine_kcal": round(routine_day["kcal"], 1) if routine_day else 0,
         }
         if day_nutrition is not None:
             day_entry["nutrition"] = {k: round(day_nutrition[k], 1) for k in NUTRITION_KEYS}
             day_entry["nutrition"]["coverage"] = round(sum(coverages) / len(coverages), 2) if coverages else 1.0
-            for k in NUTRITION_KEYS:
-                totals[k] += day_nutrition[k]
-            days_with_data += 1
+            if is_complete:
+                for k in NUTRITION_KEYS:
+                    totals[k] += day_nutrition[k]
+                days_with_data += 1
         days.append(day_entry)
         current += timedelta(days=1)
 

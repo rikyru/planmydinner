@@ -98,28 +98,33 @@ class TestIntegrationSummaryWithData:
         assert data["adherence"]["free_meals"] == 1
         assert data["adherence"]["not_eaten_slots"] == 1
 
-        # Giorno pieno (lunedì): 2 pasti con la ricetta seed
+        # Giorno pieno (lunedì): 2 pasti con la ricetta seed, giornata "completa"
         monday = data["days"][0]
         assert monday["date"] == MONDAY
         assert monday["meals_planned"] == 2
+        assert monday["complete"] is True
         # Ricetta seed per persona_a: Pasta 100 g (353 kcal) + Pomodoro 200 g (36 kcal)
         expected_meal_kcal = 353 + 18 * 2
         assert monday["nutrition"]["kcal"] == pytest.approx(2 * expected_meal_kcal, abs=0.3)
         assert monday["nutrition"]["coverage"] == 1.0
 
-        # Martedì: cena libera → 1 pianificato, 1 libero, kcal di un solo pasto
+        # Martedì: cena libera → kcal note solo del pranzo, ma il giorno è
+        # "incompleto" (calorie del pasto libero ignote) e va escluso dalle medie
         tuesday = data["days"][1]
         assert tuesday["meals_planned"] == 1
         assert tuesday["free_meals"] == 1
+        assert tuesday["complete"] is False
         assert tuesday["nutrition"]["kcal"] == pytest.approx(expected_meal_kcal, abs=0.2)
 
-        # Mercoledì: pranzo non mangiato → conteggiato come not_eaten
+        # Mercoledì: pranzo non mangiato → conteggiato come not_eaten, giorno
+        # comunque "completo" (0 kcal per quello slot è un dato certo, non ignoto)
         wednesday = data["days"][2]
         assert wednesday["not_eaten"] == 1
+        assert wednesday["complete"] is True
 
-        # Medie sul periodo presenti
+        # Medie sul periodo presenti, il martedì (incompleto) è escluso
         assert data["averages"] is not None
-        assert data["averages"]["days_with_data"] == 7
+        assert data["averages"]["days_with_data"] == 6
         assert data["averages"]["kcal"] > 0
 
     def test_period_without_plan_days(self, client, setup_database):
@@ -133,6 +138,33 @@ class TestIntegrationSummaryWithData:
         data = resp.json()
         assert all(d["meals_planned"] == 0 and d["nutrition"] is None for d in data["days"])
         assert data["averages"] is None
+
+
+class TestFreeMealExcludedFromAverages:
+    def test_fully_free_day_has_no_nutrition_and_is_excluded(self, client, setup_database):
+        from planmydinner_addon.database import GeneratedWeeklyPlan
+        db = setup_database
+        db.add(GeneratedWeeklyPlan(
+            id="plan-full-free", profile_id_A="persona_a", profile_id_B="persona_b",
+            week_start_date=MONDAY, generated_at=MONDAY,
+            daily_plans=[{
+                "date": MONDAY,
+                "meals": [
+                    {"meal_type": "pranzo", "items": [_item(None, "free_meal", "Pizza")]},
+                    {"meal_type": "cena", "items": [_item(None, "free_meal", "Sushi")]},
+                ],
+            }],
+        ))
+        db.commit()
+
+        data = client.get("/integration/summary", params={
+            "profile_id": "persona_a", "start_date": MONDAY, "end_date": MONDAY,
+        }).json()
+        monday = data["days"][0]
+        assert monday["free_meals"] == 2
+        assert monday["complete"] is False
+        assert monday["nutrition"] is None  # nessun pasto noto: nulla da sommare
+        assert data["averages"] is None     # nessun giorno completo nel periodo
 
 
 class TestTodayStatus:
