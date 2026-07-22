@@ -268,15 +268,18 @@ class PlannerEngine:
         consumption_counts = {}
         for entry in all_consumed:
             if entry.consumed_recipe_id:
-                consumed_recipe = self.db.query(Recipe).filter(Recipe.id == entry.consumed_recipe_id).first()
-                if consumed_recipe:
-                    ingredients = consumed_recipe.content.components if consumed_recipe.is_composed_dish else consumed_recipe.content
-                    for ing in ingredients:
-                        food_group = self._normalize_food_group(ing.food_group)
-                        # Canonicalize: pollo → carne_bianca so rotation rules on carne_bianca fire correctly
-                        cat = self._PROTEIN_CATEGORY_MAP.get(food_group, food_group)
-                        consumption_counts[cat] = consumption_counts.get(cat, 0) + 1
-                        consumption_counts[ing.name.lower()] = consumption_counts.get(ing.name.lower(), 0) + 1
+                # _get_recipe_content restituisce RecipeIngredient validati (Recipe o
+                # CandidateRecipe): una query diretta su Recipe darebbe dict grezzi
+                # dalla colonna JSON, senza attributo .food_group.
+                ingredients, _ = self._get_recipe_content(entry.consumed_recipe_id)
+                for ing in ingredients:
+                    name = ing.get("name") if isinstance(ing, dict) else ing.name
+                    fg = ing.get("food_group") if isinstance(ing, dict) else ing.food_group
+                    food_group = self._normalize_food_group(fg)
+                    # Canonicalize: pollo → carne_bianca so rotation rules on carne_bianca fire correctly
+                    cat = self._PROTEIN_CATEGORY_MAP.get(food_group, food_group)
+                    consumption_counts[cat] = consumption_counts.get(cat, 0) + 1
+                    consumption_counts[(name or "").lower()] = consumption_counts.get((name or "").lower(), 0) + 1
             elif entry.override_details and entry.override_details.ingredients:
                 for ing in entry.override_details.ingredients:
                     food_group = self._get_food_group_for_item(ing.name)
@@ -396,12 +399,15 @@ class PlannerEngine:
 
         for entry in all_consumed:
             if entry.consumed_recipe_id:
-                consumed_recipe = self.db.query(Recipe).filter(Recipe.id == entry.consumed_recipe_id).first()
-                if consumed_recipe:
-                    ingredients = consumed_recipe.content.components if consumed_recipe.is_composed_dish else consumed_recipe.content
-                    for ing in ingredients:
-                        recent_food_groups.add(self._normalize_food_group(ing.food_group))
-                        recent_ingredients.add(ing.name.lower())
+                # _get_recipe_content restituisce RecipeIngredient validati (Recipe o
+                # CandidateRecipe): una query diretta su Recipe darebbe dict grezzi
+                # dalla colonna JSON, senza attributo .food_group.
+                ingredients, _ = self._get_recipe_content(entry.consumed_recipe_id)
+                for ing in ingredients:
+                    name = ing.get("name") if isinstance(ing, dict) else ing.name
+                    fg = ing.get("food_group") if isinstance(ing, dict) else ing.food_group
+                    recent_food_groups.add(self._normalize_food_group(fg))
+                    recent_ingredients.add((name or "").lower())
             elif entry.override_details and entry.override_details.ingredients:
                 for ing in entry.override_details.ingredients:
                     recent_ingredients.add(ing.name.lower())

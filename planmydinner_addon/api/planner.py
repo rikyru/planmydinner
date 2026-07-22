@@ -490,9 +490,20 @@ def change_recipe(
     mood: str = "",
     cleanup: str = "",
     max_time_minutes: int = 120,
+    use_llm_fill: bool = False,
+    target_count: int = 5,
     db: Session = Depends(get_db)
 ):
-    """Suggest up to 5 alternative recipes for a meal, with LLM creative option first."""
+    """Suggest alternative recipes for a meal.
+
+    Di default propone solo ricette dal catalogo (le proprie), senza chiamare
+    l'AI — veloce e senza costo. Passa use_llm_fill=true (con target_count
+    alzato di conseguenza) per aggiungere proposte generate dall'AI: usato dal
+    pulsante "Proponi N con AI" nella UI. Le opzioni generate dall'AI hanno
+    divergence_strategy == "llm_generated"; il resto è catalogo.
+    Se il catalogo non ha nessuna ricetta compatibile, l'AI scatta comunque
+    come rete di sicurezza (una sola proposta) anche a use_llm_fill=False.
+    """
     request_params = {"mood": mood, "cleanup": cleanup, "max_time_minutes": max_time_minutes}
     planner = PlannerEngine(db, llm_gateway=request.app.state.llm_gateway)
 
@@ -538,7 +549,7 @@ def change_recipe(
 
     options = planner.suggest_recipes_for_meal(
         meal_plan_A, meal_plan_B, profile_id_A, profile_id_B, current_date, request_params,
-        target_count=5, use_llm_fill=True,
+        target_count=target_count, use_llm_fill=use_llm_fill,
     )
     if not options:
         raise HTTPException(status_code=404, detail="No alternative recipes found.")

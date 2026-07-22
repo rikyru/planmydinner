@@ -581,7 +581,9 @@ const WeekView = defineComponent({
                     <div v-if="modalError" class="error-box">{{ modalError }}</div>
                     <div v-for="option in recipeOptions" :key="option.option_id"
                          class="recipe-option" @click="applyRecipe(option.recipe_id)">
-                        <strong>{{ option.name }}</strong>
+                        <strong>{{ option.name }}
+                            <span v-if="option.divergence_strategy === 'llm_generated'" class="ai-badge">✨ AI</span>
+                        </strong>
                         <span>{{ option.total_time_minutes }} min · {{ option.difficulty }}</span>
                         <span v-if="option.key_ingredients && option.key_ingredients.length">
                             {{ option.key_ingredients.join(', ') }}
@@ -590,7 +592,12 @@ const WeekView = defineComponent({
                     <div v-if="!loadingOptions && !modalError && recipeOptions.length === 0" class="hint">
                         Nessuna alternativa trovata per questo slot.
                     </div>
-                    <button @click="closeModal" class="btn-secondary" style="margin-top:12px">Annulla</button>
+                    <div v-if="!loadingOptions" style="display:flex;gap:10px;margin-top:12px;">
+                        <button @click="requestAiOptions" class="btn-fantasy btn-sm" :disabled="loadingAiOptions">
+                            {{ loadingAiOptions ? '✨ Genero...' : '✨ Proponi 3 con AI' }}
+                        </button>
+                        <button @click="closeModal" class="btn-secondary">Annulla</button>
+                    </div>
                 </div>
             </div>
 
@@ -622,6 +629,7 @@ const WeekView = defineComponent({
             currentMealType: null,
             recipeOptions: [],
             loadingOptions: false,
+            loadingAiOptions: false,
             modalError: null,
             // Modal pasto (click su meal-row__info)
             showMealModal: false,
@@ -807,11 +815,15 @@ const WeekView = defineComponent({
                 this.fantasyApplying = dateStr + '_' + mealType;
             }
             try {
+                // ExtraFantasy vuole sempre una proposta creativa dall'AI, non catalogo
+                // (che è invece il default di /change-recipe per "↺ Cambia ricetta").
                 const params = new URLSearchParams({
                     profile_id_A: this.profileA.id,
                     profile_id_B: this.profileB.id,
                     meal_type: mealType,
                     current_date: dateStr,
+                    use_llm_fill: 'true',
+                    target_count: 1,
                 });
                 const resp = await window.apiFetch('/planner/change-recipe?' + params, { method: 'POST' });
                 if (!resp.ok) throw new Error(await resp.text());
@@ -867,6 +879,31 @@ const WeekView = defineComponent({
                 this.modalError = 'Errore nel caricamento opzioni: ' + e.message;
             } finally {
                 this.loadingOptions = false;
+            }
+        },
+        async requestAiOptions() {
+            this.loadingAiOptions = true;
+            this.modalError = null;
+            try {
+                const params = new URLSearchParams({
+                    profile_id_A: this.profileA.id,
+                    profile_id_B: this.profileB.id,
+                    meal_type: this.currentMealType,
+                    current_date: this.currentDate,
+                    use_llm_fill: 'true',
+                    target_count: this.recipeOptions.length + 3,
+                });
+                const resp = await window.apiFetch('/planner/change-recipe?' + params, { method: 'POST' });
+                if (!resp.ok) throw new Error(await resp.text());
+                const all = await resp.json();
+                const known = new Set(this.recipeOptions.map(o => o.recipe_id));
+                const fresh = all.filter(o => o.divergence_strategy === 'llm_generated' && !known.has(o.recipe_id));
+                this.recipeOptions = [...this.recipeOptions, ...fresh];
+                if (!fresh.length) this.toast.add('Nessuna nuova proposta AI.', 'info');
+            } catch (e) {
+                this.modalError = 'Errore nella generazione AI: ' + e.message;
+            } finally {
+                this.loadingAiOptions = false;
             }
         },
         async applyRecipe(recipeId) {

@@ -647,3 +647,11 @@ input[type="checkbox"] { accent-color: var(--primary); }
     background: repeating-linear-gradient(135deg, var(--warning), var(--warning) 5px, transparent 5px, transparent 10px);
     opacity: .75;
 }
+
+/* Badge opzione generata dall'AI (modal cambio ricetta) */
+.ai-badge {
+    display: inline-block; font-size: 10px; font-weight: 800;
+    background: linear-gradient(135deg, var(--fantasy-a), var(--fantasy-b));
+    color: #fff; border-radius: 99px; padding: 1px 7px; margin-left: 6px;
+    vertical-align: middle;
+}
