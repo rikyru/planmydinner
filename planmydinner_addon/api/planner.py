@@ -681,19 +681,27 @@ def set_custom_meal(
         "tags": {"manual": ["true"], "cooking_methods": ["tegame"], "mood": ["normale"], "cleanup": ["facile"]},
     }
 
-    candidate_id = str(uuid.uuid4())
-    db_candidate = database.CandidateRecipe(
-        id=candidate_id,
-        status="approved",
-        recipe_data=recipe_data,
-    )
-    db.add(db_candidate)
+    # Ricetta vera (tabella recipes), non un candidato interno al motore:
+    # così compare nella pagina Ricette e resta modificabile/riusabile.
+    # Dedupe per nome (case-insensitive): registrare di nuovo lo stesso pasto
+    # personalizzato aggiorna la ricetta esistente invece di duplicarla.
+    existing = db.query(database.Recipe).filter(
+        func.lower(database.Recipe.name) == body.title.strip().lower()
+    ).first()
+    if existing:
+        for key, value in recipe_data.items():
+            setattr(existing, key, value)
+        recipe_id = existing.id
+        db.add(existing)
+    else:
+        recipe_id = str(uuid.uuid4())
+        db.add(database.Recipe(id=recipe_id, **recipe_data))
     db.commit()
 
-    success = planner.apply_recipe_to_plan(profile_id_A, profile_id_B, meal_type, current_date, candidate_id)
+    success = planner.apply_recipe_to_plan(profile_id_A, profile_id_B, meal_type, current_date, recipe_id)
     if not success:
         raise HTTPException(status_code=500, detail="Failed to apply custom meal to plan.")
-    return {"message": "Custom meal applied.", "recipe_id": candidate_id}
+    return {"message": "Custom meal applied.", "recipe_id": recipe_id}
 
 
 @router.post("/free-meal")
