@@ -357,14 +357,25 @@ class LLMGateway:
 
         food_groups = "carboidrati, carne_bianca, carne_rossa, pesce, legumi, uova, latticini, verdure, grassi, frutta, altro"
         task = (
-            "Sei un nutrizionista esperto. L'utente descrive a parole un pasto che ha mangiato. "
-            "Scomponilo negli ingredienti principali, stimando i grammi di una porzione tipica "
-            "per ogni ingrediente (se l'utente indica quantità, usale). "
+            "Sei un nutrizionista esperto. L'utente ti da' il titolo o la descrizione di un "
+            "pasto 'libero' (fuori dal piano alimentare) che ha mangiato. A volte è una "
+            "descrizione dettagliata ('tramezzini tonno e maionese, insalata a parte'), altre "
+            "volte solo un titolo breve o vago ('McDonalds', 'aperitivo', 'cena cinese', "
+            "'pasto in rifugio'). In OGNI caso fai la tua MIGLIORE IPOTESI plausibile sulla "
+            "composizione tipica di quel pasto e scomponila negli ingredienti principali con i "
+            "grammi di una porzione standard (se l'utente indica quantità, usale). Esempi di "
+            "ipotesi ragionevoli: 'McDonalds' -> hamburger, patatine fritte, bibita gassata; "
+            "'aperitivo' -> stuzzichini misti, spritz; 'cena cinese' -> riso o noodles, involtini "
+            "primavera, pollo in agrodolce; 'pasto in rifugio' -> polenta, formaggio, speck. "
+            "Non rifiutarti mai di stimare per genericità: una ipotesi plausibile è sempre "
+            "meglio di nessuna stima. "
             f"Per ogni ingrediente scegli il food_group fra: {food_groups}. "
             'Rispondi SOLO con JSON in questa forma esatta: '
             '{"name": "<nome breve del pasto>", "ingredients": '
             '[{"name": "<ingrediente>", "food_group": "<gruppo>", "grams": <numero>}]}. '
-            'Se la descrizione non riguarda cibo rispondi: {"name": null, "ingredients": []}.'
+            'Rispondi {"name": null, "ingredients": []} SOLO se il testo non ha alcuna '
+            "relazione con un pasto o un cibo (es. è vuoto o è chiaramente altro, tipo "
+            '"riunione di lavoro").'
         )
         messages = [
             {"role": "system", "content": task},
