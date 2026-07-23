@@ -793,6 +793,78 @@ def set_free_meal(
     return {"message": "Free meal set.", "estimated": recipe_id is not None}
 
 
+@router.post("/backfill-free-meal-estimates")
+def backfill_free_meal_estimates(request: Request, profile_id_A: str, db: Session = Depends(get_db)):
+    """
+    Stima retroattivamente kcal/macro dei pasti liberi già registrati prima che
+    /free-meal generasse la stima automaticamente. Aggiorna solo gli slot
+    free_meal ancora senza recipe_id; idempotente (rilanciarlo salta quelli
+    già stimati, quindi è sicuro riprovare se l'AI non fosse disponibile
+    per tutti alla prima esecuzione).
+    """
+    gw = getattr(request.app.state, "llm_gateway", None)
+    if gw is None or getattr(gw, "_client", None) is None:
+        raise HTTPException(status_code=503, detail="LLM non configurato: impossibile stimare.")
+
+    plans = db.query(GeneratedWeeklyPlan).filter(
+        GeneratedWeeklyPlan.profile_id_A == profile_id_A,
+    ).all()
+
+    estimated = 0
+    skipped = 0
+    for plan in plans:
+        changed = False
+        updated = copy.deepcopy(plan.daily_plans)
+        for day in updated:
+            for meal in day.get("meals", []):
+                items = meal.get("items", [])
+                if not items:
+                    continue
+                item = items[0]
+                if item.get("food_group") != "free_meal" or item.get("recipe_id"):
+                    continue
+                title = item.get("item_name") or ""
+                try:
+                    result = gw.estimate_meal_from_text(title)
+                except Exception:
+                    _LOGGER.exception(f"Backfill stima fallita per '{title}'")
+                    result = None
+                content = [
+                    {
+                        "name": ing["name"],
+                        "food_group": ing["food_group"],
+                        "quantities": {profile_id_A: {"qty": ing["grams"], "unit": "g", "grams_equiv": ing["grams"]}},
+                    }
+                    for ing in (result["ingredients"] if result else []) if ing.get("grams", 0) > 0
+                ] if result else []
+                if not content:
+                    skipped += 1
+                    continue
+                cand = database.CandidateRecipe(
+                    id=str(uuid.uuid4()),
+                    status="draft_structured",
+                    recipe_data={
+                        "name": result["name"],
+                        "description": f"Pasto libero (stima retroattiva): {title}",
+                        "is_composed_dish": False,
+                        "content": content,
+                        "steps": [],
+                        "total_time_minutes": 0,
+                        "difficulty": "sconosciuto",
+                        "tags": {"free_meal_estimate": ["true"]},
+                    },
+                )
+                db.add(cand)
+                item["recipe_id"] = cand.id
+                estimated += 1
+                changed = True
+        if changed:
+            plan.daily_plans = updated
+            db.add(plan)
+    db.commit()
+    return {"estimated": estimated, "skipped": skipped}
+
+
 @router.delete("/free-meal")
 def cancel_free_meal(
     profile_id_A: str,

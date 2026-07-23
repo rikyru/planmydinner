@@ -16,7 +16,10 @@ const HistoryView = defineComponent({
                 <strong style="min-width:170px;text-align:center;">{{ rangeLabel }}</strong>
                 <button @click="shiftWeek(7)" class="btn-secondary" :disabled="isCurrentWeek">›</button>
                 <button v-if="!isCurrentWeek" @click="goToday" class="btn-today">Questa settimana</button>
-                <button @click="openTargets" class="btn-sm btn-secondary" style="margin-left:auto;">🎯 Obiettivi</button>
+                <button @click="backfillFreeMeals" class="btn-sm btn-secondary" style="margin-left:auto;" :disabled="backfilling">
+                    {{ backfilling ? '🔄 Stima...' : '🔄 Stima pasti liberi passati' }}
+                </button>
+                <button @click="openTargets" class="btn-sm btn-secondary">🎯 Obiettivi</button>
             </div>
 
             <div v-if="loading" class="loading">Caricamento...</div>
@@ -132,6 +135,7 @@ const HistoryView = defineComponent({
             targetForm: { kcal: null, protein_g: null, carbs_g: null, fat_g: null },
             savingTargets: false,
             suggesting: false,
+            backfilling: false,
         };
     },
     computed: {
@@ -261,6 +265,26 @@ const HistoryView = defineComponent({
             return new Date(dateStr + 'T12:00:00').toLocaleDateString('it-IT', { weekday: 'long', day: 'numeric', month: 'short' });
         },
         mealsFor(dateStr) { return this.planMeals[dateStr] || []; },
+        async backfillFreeMeals() {
+            this.backfilling = true;
+            try {
+                const params = new URLSearchParams({ profile_id_A: this.profiles[0].id });
+                const resp = await window.apiFetch('/planner/backfill-free-meal-estimates?' + params, { method: 'POST' });
+                if (!resp.ok) throw new Error(await resp.text());
+                const r = await resp.json();
+                this.toast.add(
+                    r.estimated > 0
+                        ? `Stimati ${r.estimated} pasti liberi passati!`
+                        : 'Nessun nuovo pasto libero da stimare.',
+                    r.estimated > 0 ? 'success' : 'info'
+                );
+                await this.load();
+            } catch (e) {
+                this.toast.add('Errore: ' + e.message, 'error');
+            } finally {
+                this.backfilling = false;
+            }
+        },
         openTargets() {
             const t = this.summary?.targets || {};
             this.targetForm = {
