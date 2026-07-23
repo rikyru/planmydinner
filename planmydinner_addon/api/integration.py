@@ -272,6 +272,8 @@ def get_integration_summary(
         planned = 0
         free_meals = 0
         not_eaten = 0
+        unestimated_free_meal = False
+        has_estimated_meal = False
         day_nutrition: Optional[Dict[str, float]] = None
         coverages = []
         for meal in meals:
@@ -281,6 +283,21 @@ def get_integration_summary(
             fg = items[0].get("food_group")
             if fg == "free_meal":
                 free_meals += 1
+                # Se il pasto libero è stato stimato (recipe_id di una
+                # CandidateRecipe "free_meal_estimate"), lo si conta come un
+                # pasto qualsiasi; altrimenti resta ignoto e il giorno va
+                # escluso dalle medie (vedi is_complete più sotto).
+                recipe_id = items[0].get("recipe_id")
+                nutrition = _nutrition_for_recipe(recipe_id) if recipe_id else None
+                if nutrition:
+                    if day_nutrition is None:
+                        day_nutrition = {k: 0.0 for k in NUTRITION_KEYS}
+                    for k in NUTRITION_KEYS:
+                        day_nutrition[k] += nutrition[k]
+                    coverages.append(nutrition.get("coverage", 1.0))
+                    has_estimated_meal = True
+                else:
+                    unestimated_free_meal = True
                 continue
             if fg == "not_eaten":
                 not_eaten += 1
@@ -305,12 +322,13 @@ def get_integration_summary(
             for k in NUTRITION_KEYS:
                 day_nutrition[k] += routine_day[k]
 
-        # Un pasto libero ha calorie sconosciute: sommare solo gli altri pasti
-        # del giorno lo farebbe apparire come se il libero valesse 0 kcal,
+        # Un pasto libero SENZA stima ha calorie sconosciute: sommare solo gli
+        # altri pasti del giorno lo farebbe apparire come se valesse 0 kcal,
         # abbassando artificialmente medie e confronto con l'obiettivo. Il
         # giorno resta visibile (con i macro noti, per trasparenza) ma è
-        # marcato "incompleto" ed escluso dalle medie del periodo.
-        is_complete = free_meals == 0
+        # marcato "incompleto" ed escluso dalle medie. Un pasto libero CON
+        # stima (es. "kebab" via AI) viene invece sommato normalmente.
+        is_complete = not unestimated_free_meal
 
         day_entry: Dict[str, Any] = {
             "date": iso,
@@ -319,6 +337,7 @@ def get_integration_summary(
             "not_eaten": not_eaten,
             "nutrition": None,
             "complete": is_complete,
+            "has_estimated_meal": has_estimated_meal,
             "routine_kcal": round(routine_day["kcal"], 1) if routine_day else 0,
         }
         if day_nutrition is not None:

@@ -655,3 +655,6 @@ input[type="checkbox"] { accent-color: var(--primary); }
     color: #fff; border-radius: 99px; padding: 1px 7px; margin-left: 6px;
     vertical-align: middle;
 }
+
+/* Giorno con pasto libero stimato dall'AI: incluso nelle medie, marcato per trasparenza */
+.hist-bar--estimated:not(.hist-bar--partial) { border-top: 2px dashed color-mix(in srgb, var(--info) 60%, transparent); }

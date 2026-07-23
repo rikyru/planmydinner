@@ -717,6 +717,7 @@ def set_custom_meal(
 
 @router.post("/free-meal")
 def set_free_meal(
+    request: Request,
     profile_id_A: str,
     profile_id_B: str,
     meal_type: str,
@@ -724,10 +725,54 @@ def set_free_meal(
     body: FreeMealBody,
     db: Session = Depends(get_db)
 ):
-    """Mark a meal slot as a free meal (not tracked nutritionally)."""
+    """
+    Mark a meal slot as a free meal. Prova a stimare kcal/macro dalla
+    descrizione (best-effort, via LLM, es. "kebab" -> ingredienti + grammi
+    ipotizzati): se riesce, il pasto libero non viene più escluso dalle
+    medie del periodo in /integration/summary. Se la stima non è
+    disponibile (LLM spento) resta "ignoto" come prima.
+    """
     plan = _find_plan_covering_date(db, profile_id_A, current_date)
     if not plan:
         raise HTTPException(status_code=404, detail="No plan covers this date.")
+
+    recipe_id = None
+    gw = getattr(request.app.state, "llm_gateway", None)
+    if gw is not None and getattr(gw, "_client", None) is not None:
+        description = f"{body.title} {body.notes}".strip()
+        try:
+            result = gw.estimate_meal_from_text(description)
+        except Exception:
+            _LOGGER.exception(f"Stima pasto libero fallita per '{description}'")
+            result = None
+        if result:
+            content = [
+                {
+                    "name": ing["name"],
+                    "food_group": ing["food_group"],
+                    "quantities": {profile_id_A: {"qty": ing["grams"], "unit": "g", "grams_equiv": ing["grams"]}},
+                }
+                for ing in result["ingredients"] if ing.get("grams", 0) > 0
+            ]
+            if content:
+                cand = database.CandidateRecipe(
+                    id=str(uuid.uuid4()),
+                    status="draft_structured",
+                    recipe_data={
+                        "name": result["name"],
+                        "description": f"Pasto libero (stima automatica): {body.title}",
+                        "is_composed_dish": False,
+                        "content": content,
+                        "steps": [],
+                        "total_time_minutes": 0,
+                        "difficulty": "sconosciuto",
+                        "tags": {"free_meal_estimate": ["true"]},
+                    },
+                )
+                db.add(cand)
+                db.commit()
+                recipe_id = cand.id
+
     updated = copy.deepcopy(plan.daily_plans)
     for day in updated:
         if day["date"] == current_date.isoformat():
@@ -740,12 +785,12 @@ def set_free_meal(
                         "unit": "",
                         "is_estimated_unit": False,
                         "alternatives": [],
-                        "recipe_id": None,
+                        "recipe_id": recipe_id,
                     }]
     plan.daily_plans = updated
     db.add(plan)
     db.commit()
-    return {"message": "Free meal set."}
+    return {"message": "Free meal set.", "estimated": recipe_id is not None}
 
 
 @router.delete("/free-meal")

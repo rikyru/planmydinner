@@ -114,6 +114,7 @@ class TestIntegrationSummaryWithData:
         assert tuesday["meals_planned"] == 1
         assert tuesday["free_meals"] == 1
         assert tuesday["complete"] is False
+        assert tuesday["has_estimated_meal"] is False  # nessun LLM in questo test: resta ignoto
         assert tuesday["nutrition"]["kcal"] == pytest.approx(expected_meal_kcal, abs=0.2)
 
         # Mercoledì: pranzo non mangiato → conteggiato come not_eaten, giorno
