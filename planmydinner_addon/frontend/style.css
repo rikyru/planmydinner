@@ -658,3 +658,12 @@ input[type="checkbox"] { accent-color: var(--primary); }
 
 /* Giorno con pasto libero stimato dall'AI: incluso nelle medie, marcato per trasparenza */
 .hist-bar--estimated:not(.hist-bar--partial) { border-top: 2px dashed color-mix(in srgb, var(--info) 60%, transparent); }
+
+/* Box "pasti dimenticati" (Storico) */
+.unlogged-box { padding: 12px 14px; margin-bottom: 14px; border-color: color-mix(in srgb, var(--warning) 35%, var(--border)); }
+.unlogged-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-top: 1px solid var(--surface-2); font-size: 13.5px; }
+.unlogged-row__date { font-weight: 700; color: var(--text-2); min-width: 52px; }
+.unlogged-row__name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Modalità vacanza (Impostazioni) */
+.vacation-active { background: var(--info-soft); color: var(--info); border: 1px solid color-mix(in srgb, var(--info) 30%, transparent); border-radius: var(--radius-sm); padding: 10px 14px; font-size: 13.5px; margin-bottom: 12px; }

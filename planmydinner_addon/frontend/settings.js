@@ -132,6 +132,39 @@ const SettingsView = defineComponent({
                     </button>
                 </div>
             </div>
+
+            <!-- ── Sezione: Modalità vacanza ── -->
+            <div class="settings-section">
+                <h3 class="settings-section__title">🏖️ Modalità vacanza</h3>
+                <div class="settings-section__body">
+                    <p class="settings-hint">
+                        Nel periodo scelto, i promemoria "pasti da registrare" (sensore Home Assistant)
+                        e la box "pasti dimenticati" nello Storico restano silenti. Il piano continua a
+                        essere generato normalmente: puoi comunque registrare i pasti se vuoi.
+                    </p>
+                    <div v-if="vacationActive" class="vacation-active">
+                        🏖️ Attiva dal {{ vacation.vacation_start }} al {{ vacation.vacation_end }}
+                    </div>
+                    <div class="form-row">
+                        <div class="settings-field" style="flex:1">
+                            <label>Dal</label>
+                            <input type="date" v-model="vacationForm.start_date">
+                        </div>
+                        <div class="settings-field" style="flex:1">
+                            <label>Al</label>
+                            <input type="date" v-model="vacationForm.end_date">
+                        </div>
+                    </div>
+                    <div style="display:flex;gap:10px;">
+                        <button class="btn-primary" @click="saveVacation" :disabled="savingVacation || !vacationForm.start_date || !vacationForm.end_date">
+                            {{ savingVacation ? 'Salvataggio...' : '🏖️ Attiva vacanza' }}
+                        </button>
+                        <button v-if="vacationActive" class="btn-secondary" @click="clearVacation" :disabled="savingVacation">
+                            Disattiva
+                        </button>
+                    </div>
+                </div>
+            </div>
         </div>
     `,
     data() {
@@ -152,11 +185,21 @@ const SettingsView = defineComponent({
             savingMode: false,
             cacheEntries: null,
             clearingCache: false,
+            profileId: null,
+            vacation: {},
+            vacationForm: { start_date: '', end_date: '' },
+            savingVacation: false,
         };
+    },
+    computed: {
+        vacationActive() {
+            return !!(this.vacation.vacation_start && this.vacation.vacation_end);
+        },
     },
     mounted() {
         this.loadSettings();
         this.loadCacheStats();
+        this.loadVacation();
     },
     methods: {
         async loadSettings() {
@@ -259,6 +302,59 @@ const SettingsView = defineComponent({
                 this.toast.add('Errore: ' + e.message, 'error');
             } finally {
                 this.savingRules = false;
+            }
+        },
+        async loadVacation() {
+            try {
+                const resp = await window.apiFetch('/profiles/');
+                const profiles = resp.ok ? await resp.json() : [];
+                if (!profiles.length) return;
+                this.profileId = profiles[0].id;
+                const rulesResp = await window.apiFetch('/planner/rules?profile_id_A=' + encodeURIComponent(this.profileId));
+                if (!rulesResp.ok) return;
+                const data = await rulesResp.json();
+                const pr = data.plan_rules || {};
+                this.vacation = { vacation_start: pr.vacation_start || null, vacation_end: pr.vacation_end || null };
+                this.vacationForm = {
+                    start_date: pr.vacation_start || '',
+                    end_date: pr.vacation_end || '',
+                };
+            } catch (_) { /* non bloccare */ }
+        },
+        async saveVacation() {
+            if (!this.profileId) return;
+            this.savingVacation = true;
+            try {
+                const params = new URLSearchParams({ profile_id: this.profileId });
+                const resp = await window.apiFetch('/planner/vacation?' + params, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(this.vacationForm),
+                });
+                if (!resp.ok) throw new Error(await resp.text());
+                const data = await resp.json();
+                this.vacation = data;
+                this.toast.add('🏖️ Modalità vacanza attivata!', 'success');
+            } catch (e) {
+                this.toast.add('Errore: ' + e.message, 'error');
+            } finally {
+                this.savingVacation = false;
+            }
+        },
+        async clearVacation() {
+            if (!this.profileId) return;
+            this.savingVacation = true;
+            try {
+                const params = new URLSearchParams({ profile_id: this.profileId });
+                const resp = await window.apiFetch('/planner/vacation?' + params, { method: 'DELETE' });
+                if (!resp.ok) throw new Error(await resp.text());
+                this.vacation = {};
+                this.vacationForm = { start_date: '', end_date: '' };
+                this.toast.add('Modalità vacanza disattivata.', 'success');
+            } catch (e) {
+                this.toast.add('Errore: ' + e.message, 'error');
+            } finally {
+                this.savingVacation = false;
             }
         },
     },

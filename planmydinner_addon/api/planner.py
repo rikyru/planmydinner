@@ -42,6 +42,29 @@ class FreeMealBody(_BaseModel):
     title: str
     notes: str = ""
 
+
+class VacationBody(_BaseModel):
+    start_date: str  # ISO date
+    end_date: str    # ISO date
+
+
+def get_vacation_range(db: Session, profile_id: str):
+    """Ritorna (start, end) come date, o (None, None) se nessuna vacanza impostata."""
+    rules = db.query(database.PlanRules).filter(
+        database.PlanRules.profile_id == profile_id
+    ).order_by(database.PlanRules.imported_at.desc()).first()
+    if not rules or not rules.vacation_start or not rules.vacation_end:
+        return None, None
+    try:
+        return date.fromisoformat(rules.vacation_start), date.fromisoformat(rules.vacation_end)
+    except ValueError:
+        return None, None
+
+
+def is_on_vacation(db: Session, profile_id: str, day: date) -> bool:
+    start, end = get_vacation_range(db, profile_id)
+    return bool(start and end and start <= day <= end)
+
 router = APIRouter(
     prefix="/planner",
     tags=["planner"],
@@ -310,6 +333,8 @@ def get_plan_rules(
             "veg_target": plan_rules_db.veg_target,
             "free_meal_quota": plan_rules_db.free_meal_quota,
             "nutrition_targets": plan_rules_db.nutrition_targets,
+            "vacation_start": plan_rules_db.vacation_start,
+            "vacation_end": plan_rules_db.vacation_end,
             "imported_at": plan_rules_db.imported_at,
         }
 
@@ -791,6 +816,49 @@ def set_free_meal(
     db.add(plan)
     db.commit()
     return {"message": "Free meal set.", "estimated": recipe_id is not None}
+
+
+@router.put("/vacation")
+def set_vacation(profile_id: str, body: VacationBody, db: Session = Depends(get_db)):
+    """
+    Attiva la modalità vacanza per il profilo: nel periodo [start_date, end_date]
+    (incluso) i promemoria "pasti da registrare" (sensore HA) e la box "pasti
+    dimenticati" restano silenti, così non si viene disturbati in vacanza.
+    Non ha alcun effetto sulla generazione del piano o sui dati già registrati.
+    """
+    try:
+        start = date.fromisoformat(body.start_date)
+        end = date.fromisoformat(body.end_date)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Date non valide (formato atteso YYYY-MM-DD).")
+    if end < start:
+        raise HTTPException(status_code=422, detail="end_date deve essere >= start_date.")
+
+    from datetime import datetime as _dt
+    rules = db.query(database.PlanRules).filter(
+        database.PlanRules.profile_id == profile_id
+    ).order_by(database.PlanRules.imported_at.desc()).first()
+    if not rules:
+        rules = database.PlanRules(id=str(uuid.uuid4()), profile_id=profile_id, imported_at=_dt.now().isoformat())
+    rules.vacation_start = body.start_date
+    rules.vacation_end = body.end_date
+    db.add(rules)
+    db.commit()
+    return {"vacation_start": body.start_date, "vacation_end": body.end_date}
+
+
+@router.delete("/vacation")
+def clear_vacation(profile_id: str, db: Session = Depends(get_db)):
+    """Disattiva la modalità vacanza (i promemoria riprendono subito)."""
+    rules = db.query(database.PlanRules).filter(
+        database.PlanRules.profile_id == profile_id
+    ).order_by(database.PlanRules.imported_at.desc()).first()
+    if rules:
+        rules.vacation_start = None
+        rules.vacation_end = None
+        db.add(rules)
+        db.commit()
+    return {"message": "Modalità vacanza disattivata."}
 
 
 @router.post("/backfill-free-meal-estimates")

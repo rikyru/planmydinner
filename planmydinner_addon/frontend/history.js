@@ -1,4 +1,5 @@
 import { defineComponent } from 'vue';
+import MensaModal from './mensa.js?v=5';
 
 /**
  * Vista Storico: diario settimanale con kcal/macro per giorno
@@ -7,9 +8,32 @@ import { defineComponent } from 'vue';
 const HistoryView = defineComponent({
     name: 'HistoryView',
     inject: ['toast'],
+    components: { MensaModal },
     template: `
         <div class="history-view">
             <h2>Storico</h2>
+
+            <!-- Box pasti dimenticati -->
+            <div v-if="unlogged.length" class="card unlogged-box">
+                <div style="display:flex;align-items:center;gap:8px;">
+                    <strong>📋 Pasti da registrare ({{ unlogged.length }})</strong>
+                    <button @click="loadUnlogged" class="btn-sm btn-secondary" style="margin-left:auto;" title="Aggiorna">🔄</button>
+                </div>
+                <div v-for="m in unlogged" :key="m.date + m.meal_type" class="unlogged-row">
+                    <span class="unlogged-row__date">{{ shortDate(m.date) }}</span>
+                    <span title="pranzo/cena">{{ m.meal_type === 'pranzo' ? '☀️' : '🌙' }}</span>
+                    <span class="unlogged-row__name">{{ m.name }}</span>
+                    <button @click="markUnloggedEaten(m)" class="btn-sm btn-consumed" title="Mangiato come da piano" :disabled="!m.recipe_id">✓</button>
+                    <button @click="markUnloggedNotEaten(m)" class="btn-sm btn-secondary" title="Non mangiato">✗</button>
+                    <button @click="openUnloggedMensa(m)" class="btn-sm btn-secondary" title="Ho mangiato altro">✎</button>
+                </div>
+            </div>
+            <mensa-modal v-if="unloggedMensaFor"
+                         :profile-id="profiles[0]?.id"
+                         :meal-type="unloggedMensaFor.meal_type"
+                         :meal-date="unloggedMensaFor.date"
+                         @close="unloggedMensaFor = null"
+                         @saved="onUnloggedMensaSaved" />
 
             <div class="card" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
                 <button @click="shiftWeek(-7)" class="btn-secondary">‹</button>
@@ -136,6 +160,9 @@ const HistoryView = defineComponent({
             savingTargets: false,
             suggesting: false,
             backfilling: false,
+            unlogged: [],
+            unloggedMensaFor: null,
+            trackingStartDate: '2026-07-06',
         };
     },
     computed: {
@@ -194,6 +221,68 @@ const HistoryView = defineComponent({
                 const resp = await window.apiFetch('/profiles/');
                 this.profiles = resp.ok ? await resp.json() : [];
             } catch (_) { this.profiles = []; }
+            await this.load();
+            await this.loadUnlogged();
+        },
+        async loadUnlogged() {
+            if (!this.profiles.length) return;
+            try {
+                const params = new URLSearchParams({
+                    profile_id: this.profiles[0].id,
+                    start_date: this.trackingStartDate,
+                });
+                const resp = await window.apiFetch('/integration/unlogged-meals?' + params);
+                this.unlogged = resp.ok ? (await resp.json()).unlogged : [];
+            } catch (_) {
+                this.unlogged = [];
+            }
+        },
+        shortDate(dateStr) {
+            return new Date(dateStr + 'T12:00:00').toLocaleDateString('it-IT', { day: 'numeric', month: 'short' });
+        },
+        async markUnloggedEaten(m) {
+            if (!m.recipe_id) return;
+            try {
+                const resp = await window.apiFetch('/consumed-entries/', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        profile_id: this.profiles[0].id, date: m.date, meal_type: m.meal_type,
+                        type: 'planned', consumed_recipe_id: m.recipe_id,
+                    }),
+                });
+                if (!resp.ok) throw new Error(await resp.text());
+                this.unlogged = this.unlogged.filter(x => !(x.date === m.date && x.meal_type === m.meal_type));
+                this.toast.add('Registrato!', 'success');
+                if (this.summary) await this.load();
+            } catch (e) {
+                this.toast.add('Errore: ' + e.message, 'error');
+            }
+        },
+        async markUnloggedNotEaten(m) {
+            try {
+                const params = new URLSearchParams({
+                    profile_id_A: this.profiles[0].id,
+                    profile_id_B: this.profiles[1]?.id || this.profiles[0].id,
+                    meal_type: m.meal_type,
+                    current_date: m.date,
+                });
+                const resp = await window.apiFetch('/planner/not-eaten?' + params, { method: 'POST' });
+                if (!resp.ok) throw new Error(await resp.text());
+                this.unlogged = this.unlogged.filter(x => !(x.date === m.date && x.meal_type === m.meal_type));
+                this.toast.add('Segnato come non mangiato.', 'success');
+                if (this.summary) await this.load();
+            } catch (e) {
+                this.toast.add('Errore: ' + e.message, 'error');
+            }
+        },
+        openUnloggedMensa(m) {
+            this.unloggedMensaFor = { date: m.date, meal_type: m.meal_type };
+        },
+        async onUnloggedMensaSaved() {
+            const m = this.unloggedMensaFor;
+            this.unloggedMensaFor = null;
+            if (m) this.unlogged = this.unlogged.filter(x => !(x.date === m.date && x.meal_type === m.meal_type));
             await this.load();
         },
         async load() {

@@ -90,12 +90,86 @@ def get_today_status(
         if m["meal_type"] in logged_types:
             m["logged"] = True
 
-    unlogged = [m["meal_type"] for m in meals if not m["logged"]]
+    from .planner import is_on_vacation
+    on_vacation = is_on_vacation(db, profile_id, d)
+
+    # In vacanza i promemoria tacciono: "unlogged" resta vuoto anche se ci sono
+    # pasti pianificati non registrati (il sensore HA smette di notificare).
+    unlogged = [] if on_vacation else [m["meal_type"] for m in meals if not m["logged"]]
     return {
         "date": iso,
         "meals": meals,
         "unlogged": unlogged,
         "unlogged_count": len(unlogged),
+        "vacation": on_vacation,
+    }
+
+
+@router.get("/unlogged-meals")
+def get_unlogged_meals(
+    profile_id: str,
+    start_date: date = date(2026, 7, 6),
+    end_date: Optional[date] = None,
+    db: Session = Depends(get_db),
+):
+    """
+    Elenco dei pasti (pranzo/cena) passati non ancora registrati, da start_date
+    a oggi (default: 6 luglio 2026, l'inizio del tracciamento nutrizionale).
+    Pensato per una "box pasti dimenticati" nello Storico. Le date che
+    ricadono in un periodo di vacanza attivo vengono escluse: tornare da un
+    viaggio non deve scaricare un elenco di giorni da recuperare a forza.
+    """
+    from .planner import _find_plan_covering_date, is_on_vacation
+
+    today = date.today()
+    end = min(end_date or today, today)
+    if end < start_date:
+        return {"start_date": start_date.isoformat(), "end_date": end.isoformat(), "unlogged": [], "count": 0}
+    if (end - start_date).days + 1 > _MAX_RANGE_DAYS:
+        raise HTTPException(status_code=422, detail=f"Range too large (max {_MAX_RANGE_DAYS} days)")
+
+    logged_by_date_type = set()
+    for e in db.query(ConsumedEntry).filter(
+        ConsumedEntry.profile_id == profile_id,
+        ConsumedEntry.date >= start_date.isoformat(),
+        ConsumedEntry.date <= end.isoformat(),
+    ).all():
+        logged_by_date_type.add((e.date, e.meal_type))
+
+    unlogged = []
+    current = start_date
+    plan_cache: Dict[str, Any] = {}
+    while current <= end:
+        iso = current.isoformat()
+        if not is_on_vacation(db, profile_id, current):
+            if iso not in plan_cache:
+                plan = _find_plan_covering_date(db, profile_id, current)
+                daily = None
+                if plan:
+                    daily = next((dp for dp in plan.daily_plans or [] if dp.get("date") == iso), None)
+                plan_cache[iso] = daily
+            daily = plan_cache[iso]
+            for meal in (daily or {}).get("meals", []):
+                items = meal.get("items", [])
+                if not items:
+                    continue
+                fg = items[0].get("food_group")
+                meal_type = meal.get("meal_type")
+                logged = fg in ("mensa", "free_meal", "not_eaten") or (iso, meal_type) in logged_by_date_type
+                if not logged:
+                    unlogged.append({
+                        "date": iso,
+                        "meal_type": meal_type,
+                        "name": items[0].get("item_name"),
+                        "recipe_id": items[0].get("recipe_id"),
+                    })
+        current += timedelta(days=1)
+
+    return {
+        "start_date": start_date.isoformat(),
+        "end_date": end.isoformat(),
+        "unlogged": unlogged,
+        "count": len(unlogged),
     }
 
 

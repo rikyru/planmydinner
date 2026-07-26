@@ -80,6 +80,7 @@ class MealsToLogSensor(_PlanMyDinnerSensor):
             "date": data.get("date"),
             "unlogged": data.get("unlogged", []),
             "meals": data.get("meals", []),
+            "vacation": data.get("vacation", False),
         }
 
 

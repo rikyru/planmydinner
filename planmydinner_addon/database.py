@@ -135,6 +135,8 @@ class PlanRules(Base):
     free_meal_quota = Column(Integer, nullable=True)  # max pasti liberi a settimana
     meal_slots = Column(JSON, nullable=True)           # struttura giornaliera tipo (colazione, spuntini, ecc.)
     nutrition_targets = Column(JSON, nullable=True)    # obiettivi giornalieri {"kcal", "protein_g", "carbs_g", "fat_g"}
+    vacation_start = Column(String, nullable=True)     # ISO date: sospende promemoria/box pasti dimenticati
+    vacation_end = Column(String, nullable=True)
 
 
 class AppSettings(Base):
@@ -196,6 +198,8 @@ def create_db_and_tables():
             ("app_settings", "llm_generation_mode", "TEXT"),
             ("app_settings", "llm_vision_model", "TEXT"),
             ("plan_rules", "nutrition_targets", "JSON"),
+            ("plan_rules", "vacation_start", "TEXT"),
+            ("plan_rules", "vacation_end", "TEXT"),
         ]:
             try:
                 conn.execute(__import__("sqlalchemy").text(
