@@ -52,6 +52,25 @@ class TestVacationEndpoints:
         assert resp.status_code == 422
 
 
+class TestTrackingStartDate:
+    def test_set_and_read(self, client, setup_database):
+        resp = client.put("/planner/tracking-start-date", params={"profile_id": "persona_a"},
+                          json={"start_date": "2026-01-01"})
+        assert resp.status_code == 200
+        assert resp.json()["tracking_start_date"] == "2026-01-01"
+        rules = client.get("/planner/rules", params={"profile_id_A": "persona_a"}).json()
+        assert rules["plan_rules"]["tracking_start_date"] == "2026-01-01"
+
+    def test_default_when_unset(self, client, setup_database):
+        rules = client.get("/planner/rules", params={"profile_id_A": "persona_a"}).json()
+        assert rules["plan_rules"] is None
+
+    def test_invalid_date_422(self, client, setup_database):
+        resp = client.put("/planner/tracking-start-date", params={"profile_id": "persona_a"},
+                          json={"start_date": "non-una-data"})
+        assert resp.status_code == 422
+
+
 class TestTodayStatusRespectsVacation:
     def test_unlogged_suppressed_during_vacation(self, client, setup_database):
         _make_plan(setup_database)
@@ -134,3 +153,24 @@ class TestUnloggedMeals:
         })
         assert resp.status_code == 200
         assert resp.json()["unlogged"] == []
+
+    def test_start_date_defaults_to_configured_tracking_start(self, client, setup_database):
+        """Senza start_date esplicito usa la data configurata in Impostazioni
+        (PUT /planner/tracking-start-date), non il default hardcoded."""
+        _make_plan(setup_database)
+        # Sposta l'inizio tracciamento a martedì (un giorno dopo l'inizio del piano):
+        # il pranzo di lunedì non deve più comparire tra i dimenticati.
+        tuesday = (MONDAY + timedelta(days=1)).isoformat()
+        client.put("/planner/tracking-start-date", params={"profile_id": "persona_a"},
+                  json={"start_date": tuesday})
+
+        resp = client.get("/integration/unlogged-meals", params={"profile_id": "persona_a"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["start_date"] == tuesday
+        assert not any(u["date"] == MONDAY.isoformat() for u in data["unlogged"])
+
+    def test_start_date_defaults_to_hardcoded_default_when_unconfigured(self, client, setup_database):
+        resp = client.get("/integration/unlogged-meals", params={"profile_id": "persona_a"})
+        assert resp.status_code == 200
+        assert resp.json()["start_date"] == "2026-07-06"

@@ -108,18 +108,23 @@ def get_today_status(
 @router.get("/unlogged-meals")
 def get_unlogged_meals(
     profile_id: str,
-    start_date: date = date(2026, 7, 6),
+    start_date: Optional[date] = None,
     end_date: Optional[date] = None,
     db: Session = Depends(get_db),
 ):
     """
     Elenco dei pasti (pranzo/cena) passati non ancora registrati, da start_date
-    a oggi (default: 6 luglio 2026, l'inizio del tracciamento nutrizionale).
-    Pensato per una "box pasti dimenticati" nello Storico. Le date che
-    ricadono in un periodo di vacanza attivo vengono escluse: tornare da un
-    viaggio non deve scaricare un elenco di giorni da recuperare a forza.
+    a oggi. Se start_date non è indicata, usa la data di inizio tracciamento
+    configurata in Impostazioni (default: 6 luglio 2026, l'inizio del
+    tracciamento nutrizionale). Pensato per una "box pasti dimenticati" nello
+    Storico. Le date che ricadono in un periodo di vacanza attivo vengono
+    escluse: tornare da un viaggio non deve scaricare un elenco di giorni da
+    recuperare a forza.
     """
-    from .planner import _find_plan_covering_date, is_on_vacation
+    from .planner import _find_plan_covering_date, is_on_vacation, get_tracking_start_date
+
+    if start_date is None:
+        start_date = get_tracking_start_date(db, profile_id)
 
     today = date.today()
     end = min(end_date or today, today)

@@ -162,7 +162,6 @@ const HistoryView = defineComponent({
             backfilling: false,
             unlogged: [],
             unloggedMensaFor: null,
-            trackingStartDate: '2026-07-06',
         };
     },
     computed: {
@@ -227,10 +226,7 @@ const HistoryView = defineComponent({
         async loadUnlogged() {
             if (!this.profiles.length) return;
             try {
-                const params = new URLSearchParams({
-                    profile_id: this.profiles[0].id,
-                    start_date: this.trackingStartDate,
-                });
+                const params = new URLSearchParams({ profile_id: this.profiles[0].id });
                 const resp = await window.apiFetch('/integration/unlogged-meals?' + params);
                 this.unlogged = resp.ok ? (await resp.json()).unlogged : [];
             } catch (_) {

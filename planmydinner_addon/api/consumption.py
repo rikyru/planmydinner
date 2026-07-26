@@ -465,8 +465,9 @@ def analyze_meal_text(body: TextAnalyzeBody, request: Request, profile_id: str):
 
 
 @router.get("/mensa")
-def list_mensa_meals(profile_id: Optional[str] = None, db: Session = Depends(get_db)):
+def list_mensa_meals(request: Request, profile_id: Optional[str] = None, db: Session = Depends(get_db)):
     """Catalogo dei pasti mensa già mappati (per riuso senza LLM), più usati prima."""
+    gw = getattr(request.app.state, "llm_gateway", None)
     out = []
     for cand in db.query(CandidateRecipe).filter(CandidateRecipe.status == "draft_structured").all():
         data = _is_mensa_candidate(cand)
@@ -487,8 +488,9 @@ def list_mensa_meals(profile_id: Optional[str] = None, db: Session = Depends(get
             })
         nutrition = None
         try:
-            # Solo tabella locale (niente LLM in una list view)
-            nutrition = compute_recipe_nutrition(data.get("content"), profile_id or any_profile or "")
+            # Stima LLM cachata su disco: nessuna chiamata di rete se l'ingrediente
+            # è già stato risolto in precedenza (analisi foto/testo o vista precedente).
+            nutrition = compute_recipe_nutrition(data.get("content"), profile_id or any_profile or "", llm_gateway=gw)
         except Exception:
             pass
         out.append({

@@ -242,3 +242,40 @@ class TestMensaCatalog:
             "name": "Vuoto", "ingredients": [],
         })
         assert resp.status_code == 422
+
+    def test_list_uses_llm_fallback_for_unknown_ingredient(self, client, setup_database):
+        """
+        Ingredienti "esotici" (es. dalla stima AI di un pasto libero) che non sono
+        nella tabella locale devono comunque contribuire al totale kcal nella lista
+        del catalogo mensa, non essere silenziosamente scartati (bug: la lista
+        calcolava le kcal con la sola tabella locale, niente fallback LLM).
+        """
+        resp = client.post("/consumed-entries/mensa", json={
+            "profile_id": "persona_a", "date": "2026-02-24", "meal_type": "pranzo",
+            "name": "Kebab",
+            "ingredients": [
+                {"name": "pasta", "food_group": "carboidrati", "grams": 80},
+                {"name": "carne di agnello", "food_group": "carne_rossa", "grams": 100},
+            ],
+        })
+        assert resp.status_code == 200
+
+        class FakeLLM:
+            _client = object()
+
+            def estimate_nutrition(self, item_name):
+                if "agnello" in item_name:
+                    return {"kcal": 294, "protein_g": 25, "carbs_g": 0, "fat_g": 21}
+                return None
+
+        original = getattr(app.state, "llm_gateway", None)
+        app.state.llm_gateway = FakeLLM()
+        try:
+            meals = client.get("/consumed-entries/mensa", params={"profile_id": "persona_a"}).json()
+        finally:
+            app.state.llm_gateway = original
+
+        # pasta 80g (353/100g) + agnello 100g (294/100g, via LLM) — prima l'agnello
+        # veniva scartato (nutrition=None senza tabella locale) e il totale era ~282
+        expected = 353 * 0.8 + 294
+        assert meals[0]["nutrition"]["kcal"] == pytest.approx(expected, abs=0.3)

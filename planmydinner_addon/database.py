@@ -137,6 +137,7 @@ class PlanRules(Base):
     nutrition_targets = Column(JSON, nullable=True)    # obiettivi giornalieri {"kcal", "protein_g", "carbs_g", "fat_g"}
     vacation_start = Column(String, nullable=True)     # ISO date: sospende promemoria/box pasti dimenticati
     vacation_end = Column(String, nullable=True)
+    tracking_start_date = Column(String, nullable=True)  # ISO date: da quando la box "pasti dimenticati" cerca pasti
 
 
 class AppSettings(Base):
@@ -200,6 +201,7 @@ def create_db_and_tables():
             ("plan_rules", "nutrition_targets", "JSON"),
             ("plan_rules", "vacation_start", "TEXT"),
             ("plan_rules", "vacation_end", "TEXT"),
+            ("plan_rules", "tracking_start_date", "TEXT"),
         ]:
             try:
                 conn.execute(__import__("sqlalchemy").text(

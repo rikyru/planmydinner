@@ -165,6 +165,27 @@ const SettingsView = defineComponent({
                     </div>
                 </div>
             </div>
+
+            <!-- ── Sezione: Inizio tracciamento pasti ── -->
+            <div class="settings-section">
+                <h3 class="settings-section__title">📋 Inizio tracciamento pasti</h3>
+                <div class="settings-section__body">
+                    <p class="settings-hint">
+                        Da questa data lo Storico cerca i pasti passati non ancora registrati
+                        (box "pasti dimenticati"). Spostala in avanti o indietro per restringere
+                        o allargare il periodo controllato.
+                    </p>
+                    <div class="form-row">
+                        <div class="settings-field" style="flex:1">
+                            <label>Data di inizio</label>
+                            <input type="date" v-model="trackingStartDate">
+                        </div>
+                    </div>
+                    <button class="btn-primary" @click="saveTrackingStartDate" :disabled="savingTrackingStart || !trackingStartDate">
+                        {{ savingTrackingStart ? 'Salvataggio...' : '💾 Salva' }}
+                    </button>
+                </div>
+            </div>
         </div>
     `,
     data() {
@@ -189,6 +210,8 @@ const SettingsView = defineComponent({
             vacation: {},
             vacationForm: { start_date: '', end_date: '' },
             savingVacation: false,
+            trackingStartDate: '2026-07-06',
+            savingTrackingStart: false,
         };
     },
     computed: {
@@ -319,6 +342,7 @@ const SettingsView = defineComponent({
                     start_date: pr.vacation_start || '',
                     end_date: pr.vacation_end || '',
                 };
+                this.trackingStartDate = pr.tracking_start_date || '2026-07-06';
             } catch (_) { /* non bloccare */ }
         },
         async saveVacation() {
@@ -355,6 +379,24 @@ const SettingsView = defineComponent({
                 this.toast.add('Errore: ' + e.message, 'error');
             } finally {
                 this.savingVacation = false;
+            }
+        },
+        async saveTrackingStartDate() {
+            if (!this.profileId) return;
+            this.savingTrackingStart = true;
+            try {
+                const params = new URLSearchParams({ profile_id: this.profileId });
+                const resp = await window.apiFetch('/planner/tracking-start-date?' + params, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ start_date: this.trackingStartDate }),
+                });
+                if (!resp.ok) throw new Error(await resp.text());
+                this.toast.add('Data di inizio tracciamento salvata!', 'success');
+            } catch (e) {
+                this.toast.add('Errore: ' + e.message, 'error');
+            } finally {
+                this.savingTrackingStart = false;
             }
         },
     },

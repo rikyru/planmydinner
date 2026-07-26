@@ -48,6 +48,30 @@ class VacationBody(_BaseModel):
     end_date: str    # ISO date
 
 
+class TrackingStartDateBody(_BaseModel):
+    start_date: str  # ISO date
+
+
+DEFAULT_TRACKING_START_DATE = date(2026, 7, 6)
+
+
+def get_tracking_start_date(db: Session, profile_id: str) -> date:
+    """Da quando la box 'pasti dimenticati' cerca pasti non registrati.
+
+    Configurabile in Impostazioni; se non impostata usa il default storico
+    (inizio del tracciamento nutrizionale).
+    """
+    rules = db.query(database.PlanRules).filter(
+        database.PlanRules.profile_id == profile_id
+    ).order_by(database.PlanRules.imported_at.desc()).first()
+    if rules and rules.tracking_start_date:
+        try:
+            return date.fromisoformat(rules.tracking_start_date)
+        except ValueError:
+            pass
+    return DEFAULT_TRACKING_START_DATE
+
+
 def get_vacation_range(db: Session, profile_id: str):
     """Ritorna (start, end) come date, o (None, None) se nessuna vacanza impostata."""
     rules = db.query(database.PlanRules).filter(
@@ -335,6 +359,7 @@ def get_plan_rules(
             "nutrition_targets": plan_rules_db.nutrition_targets,
             "vacation_start": plan_rules_db.vacation_start,
             "vacation_end": plan_rules_db.vacation_end,
+            "tracking_start_date": plan_rules_db.tracking_start_date or DEFAULT_TRACKING_START_DATE.isoformat(),
             "imported_at": plan_rules_db.imported_at,
         }
 
@@ -859,6 +884,30 @@ def clear_vacation(profile_id: str, db: Session = Depends(get_db)):
         db.add(rules)
         db.commit()
     return {"message": "Modalità vacanza disattivata."}
+
+
+@router.put("/tracking-start-date")
+def set_tracking_start_date(profile_id: str, body: TrackingStartDateBody, db: Session = Depends(get_db)):
+    """
+    Da quando la box "pasti dimenticati" nello Storico (e GET /integration/unlogged-meals)
+    cerca pasti passati non registrati. Spostabile in avanti o indietro liberamente
+    (es. per escludere un periodo iniziale non tracciato, o recuperare pasti più vecchi).
+    """
+    try:
+        parsed = date.fromisoformat(body.start_date)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Data non valida (formato atteso YYYY-MM-DD).")
+
+    from datetime import datetime as _dt
+    rules = db.query(database.PlanRules).filter(
+        database.PlanRules.profile_id == profile_id
+    ).order_by(database.PlanRules.imported_at.desc()).first()
+    if not rules:
+        rules = database.PlanRules(id=str(uuid.uuid4()), profile_id=profile_id, imported_at=_dt.now().isoformat())
+    rules.tracking_start_date = parsed.isoformat()
+    db.add(rules)
+    db.commit()
+    return {"tracking_start_date": rules.tracking_start_date}
 
 
 @router.post("/backfill-free-meal-estimates")
