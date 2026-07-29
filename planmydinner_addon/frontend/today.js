@@ -198,11 +198,28 @@ const TodayView = defineComponent({
                             {{ option.key_ingredients.join(', ') }}
                         </span>
                     </div>
-                    <div v-if="!loadingOptions" style="display:flex;gap:10px;margin-top:6px;">
+                    <div v-if="!loadingOptions" style="display:flex;gap:10px;margin-top:6px;flex-wrap:wrap;">
                         <button @click="requestAiOptions" class="btn-fantasy btn-sm" :disabled="loadingAiOptions">
                             {{ loadingAiOptions ? '✨ Genero...' : '✨ Proponi 3 con AI' }}
                         </button>
+                        <button @click="toggleRecipeSearch" class="btn-secondary btn-sm">
+                            🔍 Cerca tra le tue ricette
+                        </button>
                         <button @click="closeModal" class="btn-secondary">Annulla</button>
+                    </div>
+
+                    <div v-if="showRecipeSearch" style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px;">
+                        <input v-model="recipeSearchQuery" type="text" placeholder="Cerca per nome..."
+                               style="width:100%;box-sizing:border-box;">
+                        <div v-if="loadingAllRecipes" class="hint" style="margin-top:6px;">Caricamento ricette...</div>
+                        <div v-else style="max-height:260px;overflow-y:auto;margin-top:6px;">
+                            <div v-for="r in filteredCatalogRecipes" :key="r.id" class="recipe-option"
+                                 @click="applyRecipe(r.id)">
+                                <strong>{{ r.name }}</strong>
+                                <span>{{ r.total_time_minutes ? r.total_time_minutes + ' min · ' : '' }}{{ r.difficulty }}</span>
+                            </div>
+                            <div v-if="!filteredCatalogRecipes.length" class="hint">Nessuna ricetta trovata.</div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -268,6 +285,11 @@ const TodayView = defineComponent({
             loadingOptions: false,
             loadingAiOptions: false,
             modalError: null,
+            // Ricerca libera tra le proprie ricette (modal cambio ricetta)
+            showRecipeSearch: false,
+            allRecipes: [],
+            loadingAllRecipes: false,
+            recipeSearchQuery: '',
             today: new Date().toISOString().slice(0, 10),
             // Adherence
             adherence: null,
@@ -293,6 +315,13 @@ const TodayView = defineComponent({
         },
         profileA() { return this.profiles[0] || null; },
         profileB() { return this.profiles[1] || null; },
+        filteredCatalogRecipes() {
+            const q = this.recipeSearchQuery.trim().toLowerCase();
+            const list = q
+                ? this.allRecipes.filter(r => (r.name || '').toLowerCase().includes(q))
+                : this.allRecipes;
+            return list.slice(0, 30);
+        },
         canMarkDay() {
             if (this.todayStatus && this.todayStatus.unlogged_count === 0) return false;
             return (this.todayPlan?.meals || []).some(m =>
@@ -549,6 +578,23 @@ const TodayView = defineComponent({
             this.currentMealType = null;
             this.recipeOptions = [];
             this.modalError = null;
+            this.showRecipeSearch = false;
+            this.recipeSearchQuery = '';
+        },
+        async toggleRecipeSearch() {
+            this.showRecipeSearch = !this.showRecipeSearch;
+            if (this.showRecipeSearch && !this.allRecipes.length) {
+                this.loadingAllRecipes = true;
+                try {
+                    const resp = await window.apiFetch('/recipes/');
+                    const data = resp.ok ? await resp.json() : [];
+                    this.allRecipes = [...data].sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+                } catch (_) {
+                    this.allRecipes = [];
+                } finally {
+                    this.loadingAllRecipes = false;
+                }
+            }
         },
 
         // --- Free meal ---
