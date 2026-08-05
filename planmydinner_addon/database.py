@@ -151,7 +151,7 @@ class AppSettings(Base):
     llm_base_url    = Column(String, nullable=True)
     llm_temperature = Column(Float, nullable=True)
     llm_custom_rules = Column(Text, nullable=True)
-    llm_generation_mode = Column(String, nullable=True, default="per_slot")  # "off" | "per_slot" | "full_week"
+    llm_generation_mode = Column(String, nullable=True, default="off")  # "off" | "per_slot" | "full_week"
 
 
 def consume_ingredients_from_pantry(db: Session, ingredients_data: List[Dict[str, Any]]):

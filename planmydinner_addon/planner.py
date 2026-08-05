@@ -4,7 +4,7 @@ import uuid
 import json
 import random
 from datetime import date, timedelta
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 import re
 
 from sqlalchemy.orm import Session
@@ -939,6 +939,221 @@ class PlannerEngine:
                 return (ing.name or "").lower()
         return None
 
+    @staticmethod
+    def _default_protein_cat_limits(rules: schemas.PlanRules) -> Dict[str, int]:
+        """Limiti settimanali per categoria proteica: dai frequency_targets del piano,
+        con default conservativi per le categorie non vincolate esplicitamente
+        (evita che una sola proteina riempia tutti gli slot liberi, es. uova ogni giorno)."""
+        limits: Dict[str, int] = {}
+        for cat, tgt in rules.frequency_targets.items():
+            hard_max = tgt.get("hard_max")
+            effective_max = hard_max if hard_max is not None else tgt.get("max", 7)
+            limits[cat] = int(effective_max)
+        limits.setdefault("carne_bianca", 3)
+        limits.setdefault("carne_rossa", 2)
+        limits.setdefault("pesce", 4)
+        limits.setdefault("legumi", 4)
+        limits.setdefault("proteina", 4)  # generiche/tofu: max 4 slots / week
+        limits.setdefault("uova", 3)      # uova: max 3 slots / week
+        limits.setdefault("formaggio", 2)  # latticini: max 2 slots / week
+        return limits
+
+    def _track_recipe_context(
+        self,
+        recipe_id: str,
+        protein_cat_counts: Dict[str, int],
+        protein_item_counts: Dict[str, int],
+        recent_protein_items: List[str],
+        carb_item_counts: Dict[str, int],
+        recent_carb_items: List[str],
+        used_fingerprints: set,
+    ) -> Optional[str]:
+        """
+        Aggiorna i contatori di rotazione (proteine/carboidrati/fingerprint) per una
+        ricetta selezionata — nuova o già presente altrove nel piano. Condiviso tra
+        la generazione settimanale e la ricostruzione del contesto per
+        regenerate_day_with_ai, così le due strade contano allo stesso modo.
+        Ritorna la categoria proteica principale della ricetta.
+        """
+        carb_item = self._get_main_carb_item(recipe_id)
+        if carb_item:
+            carb_item_counts[carb_item] = carb_item_counts.get(carb_item, 0) + 1
+            recent_carb_items.append(carb_item)
+
+        selected_recipe_obj = next((r for r in self._get_all_recipes() if r.id == recipe_id), None)
+        if selected_recipe_obj:
+            used_fingerprints.add(self._recipe_fingerprint(selected_recipe_obj))
+        else:
+            # LLM-generated recipes are saved as draft_structured (not approved),
+            # so _get_all_recipes() won't find them. Query directly by ID.
+            from .database import CandidateRecipe as _CR2
+            _llm_cand = self.db.query(_CR2).filter(_CR2.id == recipe_id).first()
+            if _llm_cand is not None and _llm_cand.recipe_data is not None:
+                _content2 = _llm_cand.recipe_data.get("content", [])
+                _fg2 = PlannerEngine._FINGERPRINT_GROUPS
+                _fp2 = frozenset(
+                    ing["name"].lower().strip()
+                    for ing in _content2
+                    if isinstance(ing, dict)
+                    and (ing.get("food_group") or "").lower() in _fg2
+                    and ing.get("name")
+                )
+                if _fp2:
+                    used_fingerprints.add(_fp2)
+
+        cat = self._get_main_protein_category(recipe_id)
+        if cat:
+            protein_cat_counts[cat] = protein_cat_counts.get(cat, 0) + 1
+
+        item = self._get_main_protein_item(recipe_id)
+        if item:
+            protein_item_counts[item] = protein_item_counts.get(item, 0) + 1
+            recent_protein_items.append(item)
+            if len(recent_protein_items) > 3:
+                recent_protein_items.pop(0)
+
+        return cat
+
+    def _generate_day_with_context(
+        self,
+        rules: schemas.PlanRules,
+        profile_id_A: str,
+        profile_id_B: Optional[str],
+        current_date: date,
+        day_slot: int,
+        seq_idx_base: int,
+        protein_sequence: List[Optional[str]],
+        protein_cat_counts: Dict[str, int],
+        protein_cat_limits: Dict[str, int],
+        protein_item_counts: Dict[str, int],
+        recent_protein_items: List[str],
+        carb_item_counts: Dict[str, int],
+        recent_carb_items: List[str],
+        used_recipe_ids: set,
+        used_fingerprints: set,
+        used_vegs: List[str],
+        recently_selected: List[str],
+        fantasy_mode: bool,
+    ) -> Tuple[schemas.DailyPlannedMeals, int]:
+        """
+        Genera pranzo+cena per un singolo giorno, aggiornando in place i contatori
+        di rotazione ricevuti. Condivisa dalla generazione settimanale completa
+        (_generate_from_plan_rules, un giorno alla volta) e dalla rigenerazione AI
+        di un solo giorno (regenerate_day_with_ai) — così quest'ultima rispetta la
+        stessa rotazione proteine/carboidrati e le stesse ricette già scelte nel
+        resto della settimana, invece di proporre alla cieca.
+        Ritorna (giorno generato, day_slot aggiornato).
+        """
+        generated_day = schemas.DailyPlannedMeals(date=current_date.isoformat(), meals=[])
+        pranzo_protein_category: Optional[str] = None
+
+        for meal_idx, meal_type in enumerate(["pranzo", "cena"]):
+            seq_idx = seq_idx_base + meal_idx
+            target_cat = protein_sequence[seq_idx] if seq_idx < len(protein_sequence) else None
+
+            meal_plan_A = self._rules_to_planned_meal(rules, meal_type, target_cat)
+            meal_plan_B = schemas.PlannedMeal(meal_type=meal_type, items=[])
+
+            excluded_protein = pranzo_protein_category if meal_type == "cena" else None
+
+            _common_kwargs = dict(
+                excluded_protein_category=excluded_protein,
+                protein_cat_counts=protein_cat_counts,
+                protein_cat_limits=protein_cat_limits,
+                target_protein_category=target_cat,
+                protein_item_counts=protein_item_counts,
+                recent_protein_items=recent_protein_items,
+                carb_item_counts=carb_item_counts,
+                recent_carb_items=recent_carb_items,
+                day_slot=day_slot,
+                use_llm_fill=fantasy_mode,
+            )
+            best_recipes = self.suggest_recipes_for_meal(
+                meal_plan_A, meal_plan_B, profile_id_A, profile_id_B, current_date, {},
+                excluded_recipe_ids=used_recipe_ids,
+                excluded_fingerprints=used_fingerprints,
+                allow_llm=fantasy_mode,          # ExtraFantasy: LLM proattivo su ogni slot
+                strict_target_protein=True,       # se categoria assente in DB → forza fallback
+                **_common_kwargs,
+            )
+            # Fallback 1: rilassa il vincolo fingerprint
+            if not best_recipes:
+                _LOGGER.info(f"[fallback1] {current_date} {meal_type}: rilasso fingerprint")
+                best_recipes = self.suggest_recipes_for_meal(
+                    meal_plan_A, meal_plan_B, profile_id_A, profile_id_B, current_date, {},
+                    excluded_recipe_ids=used_recipe_ids,
+                    excluded_fingerprints=set(),
+                    allow_llm=fantasy_mode,
+                    strict_target_protein=True,
+                    **_common_kwargs,
+                )
+            # Fallback 2: rilassa recipe_ids + LLM sempre ammesso (genera categoria mancante),
+            # ma mantiene i fingerprint per non ripetere pasti identici nella settimana
+            if not best_recipes:
+                _LOGGER.info(f"[fallback2] {current_date} {meal_type}: rilasso recipe_ids, LLM ammesso")
+                recent_ids = set(recently_selected[-2:]) if recently_selected else set()
+                best_recipes = self.suggest_recipes_for_meal(
+                    meal_plan_A, meal_plan_B, profile_id_A, profile_id_B, current_date, {},
+                    excluded_recipe_ids=recent_ids,
+                    excluded_fingerprints=used_fingerprints,
+                    allow_llm=True,
+                    strict_target_protein=False,  # usa DB se LLM non disponibile
+                    **_common_kwargs,
+                )
+            # Fallback 3 (ultima spiaggia): rilassa anche i fingerprint — meglio un
+            # pasto ripetuto che uno slot vuoto
+            if not best_recipes:
+                _LOGGER.info(f"[fallback3] {current_date} {meal_type}: rilasso anche i fingerprint")
+                recent_ids = set(recently_selected[-2:]) if recently_selected else set()
+                best_recipes = self.suggest_recipes_for_meal(
+                    meal_plan_A, meal_plan_B, profile_id_A, profile_id_B, current_date, {},
+                    excluded_recipe_ids=recent_ids,
+                    excluded_fingerprints=set(),
+                    allow_llm=True,
+                    strict_target_protein=False,
+                    **_common_kwargs,
+                )
+
+            if best_recipes:
+                best_recipe = best_recipes[0]
+                ingredients, _ = self._get_recipe_content(best_recipe.recipe_id)
+                content_raw = [
+                    {"name": ing.name, "food_group": ing.food_group}
+                    if not isinstance(ing, dict) else ing
+                    for ing in ingredients
+                ]
+
+                cooking = self._get_cooking_method(best_recipe.recipe_id)
+                specific_veg = self._pick_vegetable(day_slot, cooking, used_vegs)
+                used_vegs.append(specific_veg)
+                day_slot += 1
+
+                display_name = self._slot_display_name(best_recipe.recipe_id, content_raw, specific_veg)
+
+                generated_day.meals.append(schemas.PlannedMeal(
+                    meal_type=meal_type,
+                    items=[schemas.PlannedItem(
+                        item_name=display_name,
+                        food_group="recipe",
+                        quantity=1,
+                        unit="recipe",
+                        recipe_id=best_recipe.recipe_id,
+                    )]
+                ))
+
+                used_recipe_ids.add(best_recipe.recipe_id)
+                recently_selected.append(best_recipe.recipe_id)
+
+                cat = self._track_recipe_context(
+                    best_recipe.recipe_id,
+                    protein_cat_counts, protein_item_counts, recent_protein_items,
+                    carb_item_counts, recent_carb_items, used_fingerprints,
+                )
+                if meal_type == "pranzo":
+                    pranzo_protein_category = cat
+
+        return generated_day, day_slot
+
     def _generate_from_plan_rules(
         self,
         rules: schemas.PlanRules,
@@ -962,21 +1177,7 @@ class PlannerEngine:
         protein_sequence = self._build_protein_sequence(rules.frequency_targets)
         _LOGGER.info(f"[PlanRules] protein_sequence={protein_sequence}")
 
-        # Build protein category weekly limits for the variety filter in suggest_recipes_for_meal
-        protein_cat_limits: Dict[str, int] = {}
-        for cat, tgt in rules.frequency_targets.items():
-            hard_max = tgt.get("hard_max")
-            effective_max = hard_max if hard_max is not None else tgt.get("max", 7)
-            protein_cat_limits[cat] = int(effective_max)
-        # Conservative defaults for categories not in frequency_targets, to prevent
-        # a single protein type from filling all unconstrained slots (e.g. uova every day).
-        protein_cat_limits.setdefault("carne_bianca", 3)
-        protein_cat_limits.setdefault("carne_rossa", 2)
-        protein_cat_limits.setdefault("pesce", 4)
-        protein_cat_limits.setdefault("legumi", 4)
-        protein_cat_limits.setdefault("proteina", 4)  # generiche/tofu: max 4 slots / week
-        protein_cat_limits.setdefault("uova", 3)      # uova: max 3 slots / week
-        protein_cat_limits.setdefault("formaggio", 2)  # latticini: max 2 slots / week
+        protein_cat_limits = self._default_protein_cat_limits(rules)
 
         protein_cat_counts: Dict[str, int] = {}
         protein_item_counts: Dict[str, int] = {}
@@ -993,154 +1194,109 @@ class PlannerEngine:
 
         for i in range(7):
             current_date = start_date + timedelta(days=i)
-            generated_day = schemas.DailyPlannedMeals(date=current_date.isoformat(), meals=[])
-            pranzo_protein_category: Optional[str] = None
-
-            for meal_idx, meal_type in enumerate(["pranzo", "cena"]):
-                seq_idx = i * 2 + meal_idx
-                target_cat = protein_sequence[seq_idx] if seq_idx < len(protein_sequence) else None
-
-                meal_plan_A = self._rules_to_planned_meal(rules, meal_type, target_cat)
-                meal_plan_B = schemas.PlannedMeal(meal_type=meal_type, items=[])
-
-                excluded_protein = pranzo_protein_category if meal_type == "cena" else None
-
-                _common_kwargs = dict(
-                    excluded_protein_category=excluded_protein,
-                    protein_cat_counts=protein_cat_counts,
-                    protein_cat_limits=protein_cat_limits,
-                    target_protein_category=target_cat,
-                    protein_item_counts=protein_item_counts,
-                    recent_protein_items=recent_protein_items,
-                    carb_item_counts=carb_item_counts,
-                    recent_carb_items=recent_carb_items,
-                    day_slot=day_slot,
-                    use_llm_fill=fantasy_mode,
-                )
-                best_recipes = self.suggest_recipes_for_meal(
-                    meal_plan_A, meal_plan_B, profile_id_A, profile_id_B, current_date, {},
-                    excluded_recipe_ids=used_recipe_ids,
-                    excluded_fingerprints=used_fingerprints,
-                    allow_llm=fantasy_mode,          # ExtraFantasy: LLM proattivo su ogni slot
-                    strict_target_protein=True,       # se categoria assente in DB → forza fallback
-                    **_common_kwargs,
-                )
-                # Fallback 1: rilassa il vincolo fingerprint
-                if not best_recipes:
-                    _LOGGER.info(f"[fallback1] {current_date} {meal_type}: rilasso fingerprint")
-                    best_recipes = self.suggest_recipes_for_meal(
-                        meal_plan_A, meal_plan_B, profile_id_A, profile_id_B, current_date, {},
-                        excluded_recipe_ids=used_recipe_ids,
-                        excluded_fingerprints=set(),
-                        allow_llm=fantasy_mode,
-                        strict_target_protein=True,
-                        **_common_kwargs,
-                    )
-                # Fallback 2: rilassa recipe_ids + LLM sempre ammesso (genera categoria mancante),
-                # ma mantiene i fingerprint per non ripetere pasti identici nella settimana
-                if not best_recipes:
-                    _LOGGER.info(f"[fallback2] {current_date} {meal_type}: rilasso recipe_ids, LLM ammesso")
-                    recent_ids = set(recently_selected[-2:]) if recently_selected else set()
-                    best_recipes = self.suggest_recipes_for_meal(
-                        meal_plan_A, meal_plan_B, profile_id_A, profile_id_B, current_date, {},
-                        excluded_recipe_ids=recent_ids,
-                        excluded_fingerprints=used_fingerprints,
-                        allow_llm=True,
-                        strict_target_protein=False,  # usa DB se LLM non disponibile
-                        **_common_kwargs,
-                    )
-                # Fallback 3 (ultima spiaggia): rilassa anche i fingerprint — meglio un
-                # pasto ripetuto che uno slot vuoto
-                if not best_recipes:
-                    _LOGGER.info(f"[fallback3] {current_date} {meal_type}: rilasso anche i fingerprint")
-                    recent_ids = set(recently_selected[-2:]) if recently_selected else set()
-                    best_recipes = self.suggest_recipes_for_meal(
-                        meal_plan_A, meal_plan_B, profile_id_A, profile_id_B, current_date, {},
-                        excluded_recipe_ids=recent_ids,
-                        excluded_fingerprints=set(),
-                        allow_llm=True,
-                        strict_target_protein=False,
-                        **_common_kwargs,
-                    )
-
-                if best_recipes:
-                    best_recipe = best_recipes[0]
-                    ingredients, _ = self._get_recipe_content(best_recipe.recipe_id)
-                    content_raw = [
-                        {"name": ing.name, "food_group": ing.food_group}
-                        if not isinstance(ing, dict) else ing
-                        for ing in ingredients
-                    ]
-
-                    cooking = self._get_cooking_method(best_recipe.recipe_id)
-                    specific_veg = self._pick_vegetable(day_slot, cooking, used_vegs)
-                    used_vegs.append(specific_veg)
-                    day_slot += 1
-
-                    display_name = self._slot_display_name(best_recipe.recipe_id, content_raw, specific_veg)
-
-                    generated_day.meals.append(schemas.PlannedMeal(
-                        meal_type=meal_type,
-                        items=[schemas.PlannedItem(
-                            item_name=display_name,
-                            food_group="recipe",
-                            quantity=1,
-                            unit="recipe",
-                            recipe_id=best_recipe.recipe_id,
-                        )]
-                    ))
-
-                    used_recipe_ids.add(best_recipe.recipe_id)
-                    recently_selected.append(best_recipe.recipe_id)
-
-                    # Rotazione carboidrati: traccia il carbo usato per la varietà settimanale
-                    carb_item = self._get_main_carb_item(best_recipe.recipe_id)
-                    if carb_item:
-                        carb_item_counts[carb_item] = carb_item_counts.get(carb_item, 0) + 1
-                        recent_carb_items.append(carb_item)
-
-                    # Track fingerprint to prevent visually identical meals
-                    selected_recipe_obj = next(
-                        (r for r in self._get_all_recipes() if r.id == best_recipe.recipe_id), None
-                    )
-                    if selected_recipe_obj:
-                        used_fingerprints.add(self._recipe_fingerprint(selected_recipe_obj))
-                    else:
-                        # LLM-generated recipes are saved as draft_structured (not approved),
-                        # so _get_all_recipes() won't find them. Query directly by ID.
-                        from .database import CandidateRecipe as _CR2
-                        _llm_cand = self.db.query(_CR2).filter(_CR2.id == best_recipe.recipe_id).first()
-                        if _llm_cand is not None and _llm_cand.recipe_data is not None:
-                            _content2 = _llm_cand.recipe_data.get("content", [])
-                            _fg2 = PlannerEngine._FINGERPRINT_GROUPS
-                            _fp2 = frozenset(
-                                ing["name"].lower().strip()
-                                for ing in _content2
-                                if isinstance(ing, dict)
-                                and (ing.get("food_group") or "").lower() in _fg2
-                                and ing.get("name")
-                            )
-                            if _fp2:
-                                used_fingerprints.add(_fp2)
-
-                    cat = self._get_main_protein_category(best_recipe.recipe_id)
-                    if cat:
-                        protein_cat_counts[cat] = protein_cat_counts.get(cat, 0) + 1
-
-                    # Step B: track protein item for monotony avoidance
-                    item = self._get_main_protein_item(best_recipe.recipe_id)
-                    if item:
-                        protein_item_counts[item] = protein_item_counts.get(item, 0) + 1
-                        recent_protein_items.append(item)
-                        if len(recent_protein_items) > 3:
-                            recent_protein_items.pop(0)
-
-                    if meal_type == "pranzo":
-                        pranzo_protein_category = cat
-
+            generated_day, day_slot = self._generate_day_with_context(
+                rules, profile_id_A, profile_id_B, current_date,
+                day_slot=day_slot, seq_idx_base=i * 2, protein_sequence=protein_sequence,
+                protein_cat_counts=protein_cat_counts, protein_cat_limits=protein_cat_limits,
+                protein_item_counts=protein_item_counts, recent_protein_items=recent_protein_items,
+                carb_item_counts=carb_item_counts, recent_carb_items=recent_carb_items,
+                used_recipe_ids=used_recipe_ids, used_fingerprints=used_fingerprints,
+                used_vegs=used_vegs, recently_selected=recently_selected, fantasy_mode=fantasy_mode,
+            )
             generated_plan.append(generated_day)
 
         return generated_plan
+
+    def regenerate_day_with_ai(
+        self,
+        profile_id_A: str,
+        profile_id_B: Optional[str],
+        current_date: date,
+    ) -> Optional[schemas.DailyPlannedMeals]:
+        """
+        Rigenera con l'AI un solo giorno del piano (pranzo + cena). A differenza di
+        ExtraFantasy per singolo pasto (che chiama l'LLM senza sapere nulla del
+        resto della settimana), qui si ricostruisce prima il contesto dagli altri
+        giorni già salvati nel piano corrente — ricette già scelte, rotazione
+        proteine/carboidrati — così la proposta non ripete né stona con il resto
+        della settimana. Richiede PlanRules e un piano già generato che copra
+        current_date; ritorna None se manca uno dei due.
+        """
+        rules = self._get_latest_plan_rules(profile_id_A)
+        if not rules:
+            return None
+
+        plans = self.db.query(GeneratedWeeklyPlan).filter(
+            GeneratedWeeklyPlan.profile_id_A == profile_id_A,
+        ).all()
+        target_plan = None
+        plan_start_date = None
+        for p in plans:
+            plan_start = date.fromisoformat(p.week_start_date)
+            if plan_start <= current_date <= plan_start + timedelta(days=6):
+                target_plan = p
+                plan_start_date = plan_start
+                break
+        if not target_plan:
+            return None
+
+        protein_sequence = self._build_protein_sequence(rules.frequency_targets)
+        protein_cat_limits = self._default_protein_cat_limits(rules)
+
+        protein_cat_counts: Dict[str, int] = {}
+        protein_item_counts: Dict[str, int] = {}
+        recent_protein_items: List[str] = []
+        carb_item_counts: Dict[str, int] = {}
+        recent_carb_items: List[str] = []
+        used_recipe_ids: set = self._load_recent_plan_recipe_ids(profile_id_A, plan_start_date)
+        used_fingerprints: set = set()
+        used_vegs: List[str] = []
+        recently_selected: List[str] = []
+        day_slot = 0
+
+        # Ricostruisce il contesto dagli altri giorni della settimana già salvata,
+        # usando le ricette ATTUALMENTE nel piano (incluse eventuali modifiche
+        # manuali dell'utente), non una nuova simulazione da zero.
+        for dp in sorted(target_plan.daily_plans or [], key=lambda d: d.get("date", "")):
+            if dp.get("date") == current_date.isoformat():
+                continue
+            for meal in dp.get("meals", []):
+                items = meal.get("items") or []
+                if not items:
+                    continue
+                recipe_id = items[0].get("recipe_id")
+                food_group = items[0].get("food_group")
+                if food_group != "recipe" or not recipe_id:
+                    continue
+                used_recipe_ids.add(recipe_id)
+                recently_selected.append(recipe_id)
+                day_slot += 1
+                self._track_recipe_context(
+                    recipe_id,
+                    protein_cat_counts, protein_item_counts, recent_protein_items,
+                    carb_item_counts, recent_carb_items, used_fingerprints,
+                )
+
+        day_index = (current_date - plan_start_date).days
+        generated_day, _ = self._generate_day_with_context(
+            rules, profile_id_A, profile_id_B, current_date,
+            day_slot=day_slot, seq_idx_base=day_index * 2, protein_sequence=protein_sequence,
+            protein_cat_counts=protein_cat_counts, protein_cat_limits=protein_cat_limits,
+            protein_item_counts=protein_item_counts, recent_protein_items=recent_protein_items,
+            carb_item_counts=carb_item_counts, recent_carb_items=recent_carb_items,
+            used_recipe_ids=used_recipe_ids, used_fingerprints=used_fingerprints,
+            used_vegs=used_vegs, recently_selected=recently_selected, fantasy_mode=True,
+        )
+
+        import copy
+        updated = copy.deepcopy(target_plan.daily_plans)
+        for dp in updated:
+            if dp["date"] == current_date.isoformat():
+                dp["meals"] = [m.model_dump() for m in generated_day.meals]
+        target_plan.daily_plans = updated
+        self.db.add(target_plan)
+        self.db.commit()
+        return generated_day
 
     def _generate_full_week_with_llm(
         self,

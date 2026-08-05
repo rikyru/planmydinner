@@ -84,7 +84,14 @@ const WeekView = defineComponent({
                                 <span class="day-name">{{ formatDayName(day.date) }}</span>
                                 <span class="day-date">{{ formatShortDate(day.date) }}</span>
                             </div>
-                            <span v-if="isToday(day.date)" class="today-badge">Oggi</span>
+                            <div style="display:flex;align-items:center;gap:6px;">
+                                <span v-if="isToday(day.date)" class="today-badge">Oggi</span>
+                                <button class="btn-day-ai" :disabled="regeneratingDay === day.date"
+                                        @click="regenerateDayWithAI(day.date)"
+                                        title="Rigenera pranzo e cena di questo giorno con l'AI, tenendo conto del resto della settimana">
+                                    {{ regeneratingDay === day.date ? '🤖…' : '🤖 AI' }}
+                                </button>
+                            </div>
                         </header>
 
                         <div class="day-card__meals">
@@ -665,6 +672,8 @@ const WeekView = defineComponent({
             customMeal: { title: '', protein_name: '', protein_grams: 120, carb_name: '', carb_grams: 80, veg_name: '', veg_grams: 150, notes: '' },
             // ExtraFantasy per singolo slot
             fantasyApplying: null,
+            // Rigenerazione AI del singolo giorno (contesto-aware)
+            regeneratingDay: null,
             // Non mangiato / Pasto libero (pasti passati)
             freeMealModalTitle: '',
             showFreeMealInput: false,
@@ -882,6 +891,29 @@ const WeekView = defineComponent({
             } finally {
                 this.fantasyApplying = null;
                 if (fromModal) this.mealModalApplying = false;
+            }
+        },
+        async regenerateDayWithAI(dateStr) {
+            if (!this.profileA || !this.profileB) return;
+            if (!confirm('Rigenerare pranzo e cena di questo giorno con l\'AI? Sovrascrive quanto pianificato ora per questo giorno.')) return;
+            this.regeneratingDay = dateStr;
+            try {
+                // A differenza di ExtraFantasy per singolo pasto, il backend ricostruisce
+                // prima la rotazione proteine/carboidrati e le ricette già usate nel resto
+                // della settimana, così la proposta AI non ripete né stona con gli altri giorni.
+                const params = new URLSearchParams({
+                    profile_id_A: this.profileA.id,
+                    profile_id_B: this.profileB.id,
+                    current_date: dateStr,
+                });
+                const resp = await window.apiFetch('/planner/regenerate-day?' + params, { method: 'POST' });
+                if (!resp.ok) throw new Error(await resp.text());
+                await this.loadWeekPlan();
+                this.toast.add('🤖 Giorno rigenerato con AI!', 'success');
+            } catch (e) {
+                this.toast.add('Errore: ' + e.message, 'error');
+            } finally {
+                this.regeneratingDay = null;
             }
         },
 

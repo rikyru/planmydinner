@@ -183,6 +183,32 @@ def generate_weekly_plan(
     return weekly_plan
 
 
+@router.post("/regenerate-day", response_model=schemas.DailyPlannedMeals)
+def regenerate_day(
+    request: Request,
+    profile_id_A: str,
+    profile_id_B: str,
+    current_date: date,
+    db: Session = Depends(get_db)
+):
+    """
+    Rigenera con l'AI un solo giorno (pranzo + cena) di un piano già generato.
+    A differenza di "✨ ExtraFantasy" per singolo pasto — che propone senza sapere
+    nulla del resto della settimana — qui il contesto (rotazione proteine/
+    carboidrati, ricette già usate negli altri giorni) viene ricostruito dal
+    piano salvato prima di chiamare l'AI, così la proposta non ripete né stona
+    con gli altri giorni.
+    """
+    planner = PlannerEngine(db, llm_gateway=request.app.state.llm_gateway)
+    generated_day = planner.regenerate_day_with_ai(profile_id_A, profile_id_B, current_date)
+    if generated_day is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Nessuna regola del piano o nessun piano salvato copre questa data."
+        )
+    return generated_day
+
+
 @router.get("/weekly-plan", response_model=List[schemas.DailyPlannedMeals])
 def get_weekly_plan(
     request: Request,

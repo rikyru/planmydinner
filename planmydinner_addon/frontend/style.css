@@ -316,6 +316,13 @@ input[type="checkbox"] { accent-color: var(--primary); }
 .day-name { font-weight: 800; font-size: 14px; text-transform: capitalize; letter-spacing: -0.01em; }
 .day-date { font-size: 12px; color: var(--text-3); }
 .today-badge { font-size: 10.5px; background: var(--primary); color: var(--on-primary); border-radius: 99px; padding: 3px 9px; font-weight: 700; white-space: nowrap; }
+.btn-day-ai {
+    font-size: 10.5px; font-weight: 700; white-space: nowrap; border: none; cursor: pointer;
+    border-radius: 99px; padding: 3px 9px;
+    background: linear-gradient(135deg, var(--fantasy-a), var(--fantasy-b)); color: #fff;
+}
+.btn-day-ai:hover:not(:disabled) { filter: brightness(1.1); }
+.btn-day-ai:disabled { opacity: .6; cursor: default; }
 .day-card__meals { flex: 1; padding: 4px 0; }
 
 /* Meal row */
