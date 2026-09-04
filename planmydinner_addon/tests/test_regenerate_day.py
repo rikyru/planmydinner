@@ -181,10 +181,27 @@ class TestRegenerateDayWithAI:
 
 
 class TestRegenerateDayEndpoint:
-    def test_endpoint_404_without_plan(self, client, rotation_db):
+    def test_endpoint_generates_the_day_even_without_a_plan(self, client, rotation_db):
+        """Settimana senza piano: si genera solo quel giorno, gli altri restano liberi."""
         db, ids = rotation_db
         resp = client.post("/planner/regenerate-day", params={
             "profile_id_A": "aa", "profile_id_B": "bb", "current_date": MONDAY.isoformat(),
+        })
+        assert resp.status_code == 200
+        assert resp.json()["date"] == MONDAY.isoformat()
+
+        db.expire_all()
+        plan = db.query(GeneratedWeeklyPlan).filter(
+            GeneratedWeeklyPlan.profile_id_A == "aa"
+        ).first()
+        assert plan is not None
+        other = next(d for d in plan.daily_plans if d["date"] != MONDAY.isoformat())
+        assert all(not (m.get("items") or []) for m in other["meals"]),             "gli altri giorni devono restare vuoti"
+
+    def test_no_plan_rules_endpoint_404(self, client, setup_database):
+        resp = client.post("/planner/regenerate-day", params={
+            "profile_id_A": "senza-regole", "profile_id_B": "bb",
+            "current_date": MONDAY.isoformat(),
         })
         assert resp.status_code == 404
 

@@ -371,7 +371,11 @@ def regenerate_day(
     carboidrati, ricette già usate negli altri giorni) viene ricostruito dal
     piano salvato prima di chiamare l'AI, così la proposta non ripete né stona
     con gli altri giorni.
+
+    Funziona anche in una settimana senza piano: viene creato uno scheletro vuoto
+    e si genera solo quel giorno (gli altri restano liberi).
     """
+    ensure_plan_for_date(db, profile_id_A, current_date, profile_id_B)
     locked_meals = collect_locked_slots(db, profile_id_A, current_date, current_date).get(
         current_date.isoformat(), {}
     )

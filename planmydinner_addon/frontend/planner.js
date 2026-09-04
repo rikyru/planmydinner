@@ -56,9 +56,10 @@ const WeekView = defineComponent({
             <!-- ── Area principale ───────────────────────────────────── -->
             <div class="week-main">
 
-                <!-- Nessun piano -->
+                <!-- Nessun piano: la griglia resta comunque utilizzabile per registrare -->
                 <div v-if="!loading && profiles.length >= 2 && !weekPlan && !error" class="no-plan">
-                    <p>Nessun piano per questa settimana.</p>
+                    <p>Nessun piano per questa settimana: puoi comunque registrare cosa hai mangiato,
+                       e generando poi il piano gli slot già segnati resteranno intatti.</p>
                     <div style="display:flex; gap:8px; flex-wrap:wrap;">
                         <button @click.stop="generateWeek(false)" :disabled="generating" class="btn-primary">
                             {{ generating ? 'Generazione...' : 'Genera piano 7 giorni' }}
@@ -75,8 +76,8 @@ const WeekView = defineComponent({
                 </div>
 
                 <!-- Griglia giorni -->
-                <div v-if="weekPlan" class="week-grid">
-                    <article v-for="day in weekPlan" :key="day.date"
+                <div v-if="displayWeek" class="week-grid">
+                    <article v-for="day in displayWeek" :key="day.date"
                              class="day-card" :class="{ 'day-card--today': isToday(day.date) }">
 
                         <header class="day-card__header">
@@ -215,8 +216,8 @@ const WeekView = defineComponent({
                             </div>
                         </template>
 
-                        <!-- Azioni per pasti passati -->
-                        <template v-if="isPast(mealModalDate)">
+                        <!-- Azioni per pasti passati (e per oggi: si registra quel che si è mangiato) -->
+                        <template v-if="isPast(mealModalDate) || isToday(mealModalDate)">
                             <hr style="border:none; border-top:1px solid #dee2e6; margin:10px 0;">
 
                             <!-- Pasto già segnato come non mangiato -->
@@ -694,6 +695,25 @@ const WeekView = defineComponent({
     computed: {
         profileA() { return this.profiles[0] || null; },
         profileB() { return this.profiles[1] || null; },
+        displayWeek() {
+            // Senza piano si mostra comunque la griglia con gli slot vuoti: si può
+            // registrare cosa si è mangiato (il backend crea il piano al volo) e la
+            // generazione successiva riempirà solo gli slot rimasti liberi.
+            if (this.weekPlan) return this.weekPlan;
+            if (this.loading || this.error || this.profiles.length < 2) return null;
+            const start = new Date(this.startDate + 'T12:00:00');
+            return Array.from({ length: 7 }, (_, i) => {
+                const d = new Date(start);
+                d.setDate(start.getDate() + i);
+                return {
+                    date: d.toISOString().slice(0, 10),
+                    meals: [
+                        { meal_type: 'pranzo', items: [] },
+                        { meal_type: 'cena', items: [] },
+                    ],
+                };
+            });
+        },
         filteredCatalogRecipes() {
             const q = this.recipeSearchQuery.trim().toLowerCase();
             const list = q
