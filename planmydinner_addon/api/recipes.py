@@ -134,15 +134,21 @@ def bulk_import_recipes(
 
 
 @router.get("/")
-def read_recipes(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
+def read_recipes(request: Request, skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
     """
     Retrieve all recipes, skipping any with invalid data.
+
+    Include nutrition_per_portion (kcal + macro per profilo) quando calcolabile,
+    cosi' la lista Ricette puo' mostrare le calorie a porzione: le stime
+    sbagliate si notano subito invece di restare nascoste nel dettaglio.
     """
+    llm_gateway = getattr(request.app.state, "llm_gateway", None)
     db_recipes = db.query(Recipe).offset(skip).limit(limit).all()
     result = []
     for r in db_recipes:
         try:
             validated = schemas.Recipe.from_orm(r)
+            validated = _attach_nutrition_per_portion(validated, db, llm_gateway)
             result.append(validated.model_dump())
         except Exception:
             # Ricetta con dati non conformi: restituisce raw per permettere la visualizzazione/modifica

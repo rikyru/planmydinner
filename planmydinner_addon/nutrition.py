@@ -120,18 +120,76 @@ NUTRITION_TABLE: Dict[str, Dict[str, float]] = {
 # (es. "yogurt greco" prima di "yogurt").
 _TABLE_KEYS_BY_LENGTH = sorted(NUTRITION_TABLE.keys(), key=len, reverse=True)
 
+# Resa in cottura (peso cotto / peso a crudo) per gli alimenti che in tabella sono
+# a crudo o secco. In cottura assorbono acqua: 100 g di lenticchie COTTE valgono
+# molto meno di 100 g di lenticchie secche. Senza questa correzione una ricetta
+# con "lenticchie cotte 220 g" veniva contata al valore del secco, circa 2,6
+# volte le calorie reali.
+_COOKED_YIELD: Dict[str, float] = {
+    "pasta": 2.3,
+    "spaghetti": 2.3,
+    "penne": 2.3,
+    "fusilli": 2.3,
+    "trofie": 2.3,
+    "riso": 2.8,
+    "farro": 2.7,
+    "orzo": 2.6,
+    "couscous": 3.0,
+    "quinoa": 3.0,
+    "ceci": 2.4,
+    "lenticchie": 2.6,
+    "fagioli": 2.6,
+    "fagioli cannellini": 2.6,
+    "polenta": 4.0,
+}
+
+# Diciture che indicano il peso DA COTTO: "lenticchie cotte", "ceci in scatola",
+# "riso lessato". Le voci di tabella che contengono gia' una di queste parole
+# (es. "prosciutto cotto") non sono in _COOKED_YIELD, quindi restano invariate:
+# la conversione scatta solo su crudo/secco.
+_COOKED_RE = re.compile(
+    r"\b(cott[oaie]|lessat[oaie]|bollit[oaie]|precott[oaie]|scolat[oaie]|"
+    r"in scatola|in barattolo)\b",
+    re.IGNORECASE,
+)
+
+
+def _match_table_key(name: str) -> Optional[str]:
+    """Chiave di tabella corrispondente al nome (parola intera, la piu' lunga vince)."""
+    if name in NUTRITION_TABLE:
+        return name
+    for key in _TABLE_KEYS_BY_LENGTH:
+        if re.search(rf"\b{re.escape(key)}\b", name):
+            return key
+    return None
+
+
+def is_cooked_weight(item_name: str) -> bool:
+    """True se il nome indica un alimento pesato da cotto la cui voce e' a crudo."""
+    name = (item_name or "").strip().lower()
+    key = _match_table_key(name)
+    return bool(key and key in _COOKED_YIELD and _COOKED_RE.search(name))
+
+
 
 def lookup_nutrition_table(item_name: str) -> Optional[Dict[str, float]]:
-    """Cerca un ingrediente nella tabella locale (match per parola intera, chiave più lunga prima)."""
+    """
+    Cerca un ingrediente nella tabella locale (parola intera, chiave piu' lunga
+    prima). Se il nome indica il peso da cotto di un alimento che in tabella e'
+    a crudo o secco, i valori vengono riportati al peso cotto.
+    """
     if not item_name:
         return None
     name = item_name.strip().lower()
-    if name in NUTRITION_TABLE:
-        return dict(NUTRITION_TABLE[name])
-    for key in _TABLE_KEYS_BY_LENGTH:
-        if re.search(rf"\b{re.escape(key)}\b", name):
-            return dict(NUTRITION_TABLE[key])
-    return None
+    key = _match_table_key(name)
+    if key is None:
+        return None
+    values = dict(NUTRITION_TABLE[key])
+    if key in _COOKED_YIELD and _COOKED_RE.search(name):
+        # solo diluizione in acqua: kcal e macro scalano con lo stesso fattore
+        cooked_yield = _COOKED_YIELD[key]
+        values = {k: round(v / cooked_yield, 1) for k, v in values.items()}
+    return values
 
 
 def _valid_nutrition(data: Any) -> Optional[Dict[str, float]]:
@@ -166,7 +224,7 @@ def resolve_ingredient_nutrition(
     # 2. Tabella locale
     table = lookup_nutrition_table(name)
     if table:
-        table["source"] = "table"
+        table["source"] = "table_cooked" if is_cooked_weight(name) else "table"
         return table
 
     # 3. Stima LLM (cachata su disco dal gateway)

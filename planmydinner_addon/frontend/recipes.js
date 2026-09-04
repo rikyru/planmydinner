@@ -120,6 +120,7 @@ const Recipes = defineComponent({
                     <tr>
                         <th>Nome</th>
                         <th>Ingrediente principale</th>
+                        <th>kcal</th>
                         <th>Tempo</th>
                         <th>Difficoltà</th>
                         <th>Azioni</th>
@@ -133,6 +134,10 @@ const Recipes = defineComponent({
                             <span v-if="r.tags && r.tags.imported" class="badge-imported">📥 Importata</span>
                         </td>
                         <td>{{ mainIngredientLabel(r) }}</td>
+                        <td :title="recipeKcalTitle(r)">
+                            <span v-if="recipeKcal(r)">{{ recipeKcal(r) }}</span>
+                            <span v-else class="hint">—</span>
+                        </td>
                         <td>{{ r.total_time_minutes ? r.total_time_minutes + ' min' : '—' }}</td>
                         <td>{{ r.difficulty || '—' }}</td>
                         <td>
@@ -293,6 +298,28 @@ const Recipes = defineComponent({
         };
     },
     methods: {
+        // --- kcal per porzione (dal catalogo) ---
+        _portionNutrition(r) {
+            const per = r.nutrition_per_portion;
+            if (!per) return null;
+            const pid = this.profiles[0]?.id;
+            return (pid && per[pid]) || per[Object.keys(per)[0]] || null;
+        },
+        recipeKcal(r) {
+            const n = this._portionNutrition(r);
+            return n ? Math.round(n.kcal) : null;
+        },
+        recipeKcalTitle(r) {
+            const n = this._portionNutrition(r);
+            if (!n) return 'Nessuna stima disponibile per questa ricetta';
+            const src = Object.entries(n.sources || {})
+                .map(([k, v]) => `${v} ${k.replace('table_cooked', 'tabella (peso cotto)').replace('table', 'tabella')}`)
+                .join(', ');
+            return `A porzione: ${Math.round(n.kcal)} kcal · P ${Math.round(n.protein_g)}g · `
+                 + `C ${Math.round(n.carbs_g)}g · G ${Math.round(n.fat_g)}g`
+                 + (src ? ` — fonti: ${src}` : '');
+        },
+
         // --- Ricetta da foto ---
         async fetchProfiles() {
             try {
