@@ -13,7 +13,7 @@ from pydantic import BaseModel as _BaseModel
 from .. import schemas
 from .. import database
 from ..database import get_db, GeneratedWeeklyPlan
-from ..planner import PlannerEngine, _LLM_CALL_LOG, _LLM_CALL_LOG_MAX
+from ..planner import PlannerEngine, get_week_start, _LLM_CALL_LOG, _LLM_CALL_LOG_MAX
 
 
 class CustomMealBody(_BaseModel):
@@ -111,6 +111,139 @@ def _find_plan_covering_date(db: Session, profile_id_A: str, target_date: date) 
     return None
 
 
+# Slot "bloccati": pasti che l'utente ha già registrato o deciso e che una
+# nuova generazione non deve sovrascrivere (mensa/foto, pasto libero, non
+# mangiato, oppure uno slot con un ConsumedEntry già registrato).
+_USER_SET_FOOD_GROUPS = ("mensa", "free_meal", "not_eaten")
+
+
+def _empty_daily_plans(start_date: date) -> List[dict]:
+    """Scheletro di settimana: 7 giorni con pranzo e cena vuoti."""
+    return [
+        {
+            "date": (start_date + timedelta(days=i)).isoformat(),
+            "meals": [
+                {"meal_type": "pranzo", "items": []},
+                {"meal_type": "cena", "items": []},
+            ],
+        }
+        for i in range(7)
+    ]
+
+
+def ensure_plan_for_date(
+    db: Session,
+    profile_id_A: str,
+    target_date: date,
+    profile_id_B: Optional[str] = None,
+) -> GeneratedWeeklyPlan:
+    """
+    Restituisce il piano che copre `target_date`, creandone uno VUOTO se non
+    esiste. Serve a poter registrare pasti (mensa/foto, pasto libero, pasto
+    personalizzato) anche in una settimana per cui non è ancora stato generato
+    un piano: lo scheletro vuoto viene poi riempito dalla generazione, che
+    lascia intatti gli slot già registrati (vedi collect_locked_slots).
+    """
+    existing = _find_plan_covering_date(db, profile_id_A, target_date)
+    if existing:
+        return existing
+
+    if profile_id_B is None:
+        other = db.query(database.UserProfile).filter(
+            database.UserProfile.id != profile_id_A
+        ).first()
+        profile_id_B = other.id if other else profile_id_A
+
+    week_start = get_week_start(target_date)
+    plan = GeneratedWeeklyPlan(
+        id=str(uuid.uuid4()),
+        profile_id_A=profile_id_A,
+        profile_id_B=profile_id_B,
+        week_start_date=week_start.isoformat(),
+        generated_at=date.today().isoformat(),
+        daily_plans=_empty_daily_plans(week_start),
+    )
+    db.add(plan)
+    db.commit()
+    db.refresh(plan)
+    _LOGGER.info(
+        f"[ensure_plan] Creato piano vuoto per '{profile_id_A}' "
+        f"(settimana {week_start.isoformat()}) per ospitare un pasto registrato."
+    )
+    return plan
+
+
+def collect_locked_slots(
+    db: Session,
+    profile_id_A: str,
+    start_date: date,
+    end_date: date,
+) -> Dict[str, Dict[str, dict]]:
+    """
+    Slot già "decisi" dall'utente nell'intervallo: mappa data ISO → meal_type → item.
+
+    Uno slot è bloccato se contiene un pasto impostato dall'utente (mensa/foto,
+    pasto libero, non mangiato) oppure se per quel (giorno, pasto) esiste un
+    ConsumedEntry: rigenerare il piano non deve cancellare ciò che è già stato
+    mangiato e registrato.
+    """
+    logged_slots = {
+        (e.date, e.meal_type)
+        for e in db.query(database.ConsumedEntry).filter(
+            database.ConsumedEntry.profile_id == profile_id_A,
+            database.ConsumedEntry.date >= start_date.isoformat(),
+            database.ConsumedEntry.date <= end_date.isoformat(),
+        ).all()
+    }
+
+    locked: Dict[str, Dict[str, dict]] = {}
+    plans = db.query(GeneratedWeeklyPlan).filter(
+        GeneratedWeeklyPlan.profile_id_A == profile_id_A,
+    ).order_by(GeneratedWeeklyPlan.generated_at.desc()).all()
+    for plan in plans:
+        for day in plan.daily_plans or []:
+            iso = day.get("date")
+            if not iso or not (start_date.isoformat() <= iso <= end_date.isoformat()):
+                continue
+            for meal in day.get("meals", []):
+                meal_type = meal.get("meal_type")
+                items = meal.get("items") or []
+                if not meal_type or not items:
+                    continue
+                if meal_type in locked.get(iso, {}):
+                    continue  # il piano più recente vince
+                food_group = items[0].get("food_group")
+                if food_group in _USER_SET_FOOD_GROUPS or (iso, meal_type) in logged_slots:
+                    locked.setdefault(iso, {})[meal_type] = copy.deepcopy(items[0])
+    return locked
+
+
+def _restore_locked_slots(
+    weekly_plan: List[schemas.DailyPlannedMeals],
+    locked_slots: Dict[str, Dict[str, dict]],
+) -> List[schemas.DailyPlannedMeals]:
+    """Rimette negli slot generati i pasti gia' registrati dall'utente."""
+    if not locked_slots:
+        return weekly_plan
+    for day in weekly_plan:
+        locked_day = locked_slots.get(day.date)
+        if not locked_day:
+            continue
+        seen = set()
+        for meal in day.meals:
+            seen.add(meal.meal_type)
+            item = locked_day.get(meal.meal_type)
+            if item:
+                meal.items = [schemas.PlannedItem(**item)]
+        # Slot presente solo tra i bloccati (es. il giorno generato non lo prevede)
+        for meal_type, item in locked_day.items():
+            if meal_type not in seen:
+                day.meals.append(schemas.PlannedMeal(
+                    meal_type=meal_type, items=[schemas.PlannedItem(**item)]
+                ))
+    return weekly_plan
+
+
 def _save_generated_plan(db: Session, profile_id_A: str, profile_id_B: Optional[str],
                          start_date: date, daily_plans: List[schemas.DailyPlannedMeals]) -> GeneratedWeeklyPlan:
     """Persist a generated weekly plan, replacing any overlapping existing plans."""
@@ -120,12 +253,32 @@ def _save_generated_plan(db: Session, profile_id_A: str, profile_id_B: Optional[
     end_date = start_date + timedelta(days=6)
     overlap_min = (start_date - timedelta(days=6)).isoformat()
     overlap_max = end_date.isoformat()
+    window_dates = {(start_date + timedelta(days=i)).isoformat() for i in range(7)}
     old_plans = db.query(GeneratedWeeklyPlan).filter(
         GeneratedWeeklyPlan.profile_id_A == profile_id_A,
         GeneratedWeeklyPlan.week_start_date >= overlap_min,
         GeneratedWeeklyPlan.week_start_date <= overlap_max,
     ).all()
+    # Un piano che overlappa puo' contenere pasti gia' registrati per giorni FUORI
+    # dalla nuova finestra (es. si e' registrato lunedi' e martedi' senza piano, poi
+    # si genera una settimana che parte da mercoledi'): cancellarlo li perderebbe.
+    # In quel caso lo si tiene: per i giorni in comune vince comunque il piano nuovo,
+    # che e' piu' recente.
+    locked_all = collect_locked_slots(
+        db, profile_id_A,
+        date.fromisoformat(overlap_min), end_date + timedelta(days=6),
+    )
     for old in old_plans:
+        keeps_logged_days = any(
+            (day.get("date") or "") not in window_dates and locked_all.get(day.get("date"))
+            for day in (old.daily_plans or [])
+        )
+        if keeps_logged_days:
+            _LOGGER.info(
+                f"[generate] Piano {old.week_start_date} conservato: contiene pasti "
+                f"registrati fuori dalla nuova finestra."
+            )
+            continue
         db.delete(old)
 
     serialized = [dp.model_dump() for dp in daily_plans]
@@ -154,12 +307,18 @@ def generate_weekly_plan(
     current_date: date = date.today(),
     fantasy_mode: bool = False,
     ai_mode: Optional[str] = None,   # "off" | "per_slot" | "full_week" | None (use setting)
+    keep_logged: bool = True,
     db: Session = Depends(get_db)
 ):
     """Force-generate a 7-day plan from current_date and save it.
 
     ai_mode: if None, reads llm_generation_mode from AppSettings.
     Pass ai_mode explicitly to override the stored setting.
+
+    keep_logged (default true): i pasti gia' registrati nella finestra (mensa/foto,
+    pasto libero, non mangiato o slot con un ConsumedEntry) vengono conservati e la
+    generazione riempie solo gli slot rimanenti — rigenerare non cancella piu' cio'
+    che si e' gia' mangiato. Passa keep_logged=false per rigenerare tutto da zero.
     """
     # Resolve effective ai_mode: explicit param > stored setting
     effective_ai_mode = ai_mode
@@ -171,14 +330,28 @@ def generate_weekly_plan(
     # "off" means pure algorithmic (no ai_mode override)
     planner_ai_mode = None if effective_ai_mode == "off" else effective_ai_mode
 
+    locked_slots = (
+        collect_locked_slots(db, profile_id_A, current_date, current_date + timedelta(days=6))
+        if keep_logged else {}
+    )
+    if locked_slots:
+        _LOGGER.info(
+            f"[generate-week] {sum(len(v) for v in locked_slots.values())} slot gia' "
+            f"registrati verranno conservati per '{profile_id_A}'."
+        )
+
     planner = PlannerEngine(db, llm_gateway=request.app.state.llm_gateway)
     weekly_plan = planner.generate_weekly_plan(
         profile_id_A, profile_id_B, current_date,
         fantasy_mode=fantasy_mode,
         ai_mode=planner_ai_mode,
+        locked_slots=locked_slots,
     )
     if not weekly_plan:
         raise HTTPException(status_code=404, detail="Could not generate a weekly plan.")
+    # Rete di sicurezza: i path LLM "full_week" e legacy non conoscono locked_slots,
+    # quindi il ripristino degli slot registrati avviene comunque qui.
+    weekly_plan = _restore_locked_slots(weekly_plan, locked_slots)
     _save_generated_plan(db, profile_id_A, profile_id_B, current_date, weekly_plan)
     return weekly_plan
 
@@ -199,8 +372,13 @@ def regenerate_day(
     piano salvato prima di chiamare l'AI, così la proposta non ripete né stona
     con gli altri giorni.
     """
+    locked_meals = collect_locked_slots(db, profile_id_A, current_date, current_date).get(
+        current_date.isoformat(), {}
+    )
     planner = PlannerEngine(db, llm_gateway=request.app.state.llm_gateway)
-    generated_day = planner.regenerate_day_with_ai(profile_id_A, profile_id_B, current_date)
+    generated_day = planner.regenerate_day_with_ai(
+        profile_id_A, profile_id_B, current_date, locked_meals=locked_meals
+    )
     if generated_day is None:
         raise HTTPException(
             status_code=404,
@@ -686,6 +864,9 @@ def apply_recipe_option(
     db: Session = Depends(get_db)
 ):
     """Applies a chosen recipe to the meal plan for a specific date and meal type."""
+    # Nessun piano per quella settimana? Ne crea uno vuoto: si può assegnare un
+    # pasto anche prima di aver generato il piano.
+    ensure_plan_for_date(db, profile_id_A, current_date, profile_id_B)
     planner = PlannerEngine(db, llm_gateway=request.app.state.llm_gateway)
     success = planner.apply_recipe_to_plan(profile_id_A, profile_id_B, meal_type, current_date, recipe_id)
     if not success:
@@ -785,6 +966,7 @@ def set_custom_meal(
         db.add(database.Recipe(id=recipe_id, **recipe_data))
     db.commit()
 
+    ensure_plan_for_date(db, profile_id_A, current_date, profile_id_B)
     success = planner.apply_recipe_to_plan(profile_id_A, profile_id_B, meal_type, current_date, recipe_id)
     if not success:
         raise HTTPException(status_code=500, detail="Failed to apply custom meal to plan.")
@@ -808,9 +990,7 @@ def set_free_meal(
     medie del periodo in /integration/summary. Se la stima non è
     disponibile (LLM spento) resta "ignoto" come prima.
     """
-    plan = _find_plan_covering_date(db, profile_id_A, current_date)
-    if not plan:
-        raise HTTPException(status_code=404, detail="No plan covers this date.")
+    plan = ensure_plan_for_date(db, profile_id_A, current_date, profile_id_B)
 
     recipe_id = None
     gw = getattr(request.app.state, "llm_gateway", None)
@@ -1041,9 +1221,7 @@ def set_not_eaten(
     db: Session = Depends(get_db)
 ):
     """Mark a past meal slot as not eaten (reduces adherence score)."""
-    plan = _find_plan_covering_date(db, profile_id_A, current_date)
-    if not plan:
-        raise HTTPException(status_code=404, detail="No plan covers this date.")
+    plan = ensure_plan_for_date(db, profile_id_A, current_date, profile_id_B)
     updated = copy.deepcopy(plan.daily_plans)
     for day in updated:
         if day["date"] == current_date.isoformat():

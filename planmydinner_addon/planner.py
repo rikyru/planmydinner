@@ -1034,6 +1034,7 @@ class PlannerEngine:
         used_vegs: List[str],
         recently_selected: List[str],
         fantasy_mode: bool,
+        locked_meals: Optional[Dict[str, dict]] = None,
     ) -> Tuple[schemas.DailyPlannedMeals, int]:
         """
         Genera pranzo+cena per un singolo giorno, aggiornando in place i contatori
@@ -1042,14 +1043,40 @@ class PlannerEngine:
         di un solo giorno (regenerate_day_with_ai) — così quest'ultima rispetta la
         stessa rotazione proteine/carboidrati e le stesse ricette già scelte nel
         resto della settimana, invece di proporre alla cieca.
+        locked_meals: meal_type -> item gia' deciso dall'utente (pasto registrato,
+        mensa, libero, non mangiato). Lo slot viene riproposto tale e quale e conta
+        comunque per la rotazione, cosi' i pasti gia' segnati sopravvivono alla
+        (ri)generazione del piano e gli altri slot non li ripetono.
+
         Ritorna (giorno generato, day_slot aggiornato).
         """
         generated_day = schemas.DailyPlannedMeals(date=current_date.isoformat(), meals=[])
         pranzo_protein_category: Optional[str] = None
+        locked_meals = locked_meals or {}
 
         for meal_idx, meal_type in enumerate(["pranzo", "cena"]):
             seq_idx = seq_idx_base + meal_idx
             target_cat = protein_sequence[seq_idx] if seq_idx < len(protein_sequence) else None
+
+            locked_item = locked_meals.get(meal_type)
+            if locked_item:
+                generated_day.meals.append(schemas.PlannedMeal(
+                    meal_type=meal_type,
+                    items=[schemas.PlannedItem(**locked_item)],
+                ))
+                day_slot += 1
+                locked_recipe_id = locked_item.get("recipe_id")
+                if locked_recipe_id:
+                    used_recipe_ids.add(locked_recipe_id)
+                    recently_selected.append(locked_recipe_id)
+                    cat = self._track_recipe_context(
+                        locked_recipe_id,
+                        protein_cat_counts, protein_item_counts, recent_protein_items,
+                        carb_item_counts, recent_carb_items, used_fingerprints,
+                    )
+                    if meal_type == "pranzo":
+                        pranzo_protein_category = cat
+                continue
 
             meal_plan_A = self._rules_to_planned_meal(rules, meal_type, target_cat)
             meal_plan_B = schemas.PlannedMeal(meal_type=meal_type, items=[])
@@ -1161,10 +1188,14 @@ class PlannerEngine:
         profile_id_B: Optional[str],
         start_date: date,
         fantasy_mode: bool = False,
+        locked_slots: Optional[Dict[str, Dict[str, dict]]] = None,
     ) -> List[schemas.DailyPlannedMeals]:
         """
         New generation path when PlanRules are available.
         Builds protein sequence from frequency_targets, then suggests recipes slot-by-slot.
+
+        locked_slots: data ISO -> meal_type -> item gia' deciso dall'utente, che va
+        conservato invece di essere rigenerato (vedi _generate_day_with_context).
         """
         # Auto-populate catalog from PlanRules constraints if too sparse
         if len(self._get_all_recipes()) < 5:
@@ -1202,6 +1233,7 @@ class PlannerEngine:
                 carb_item_counts=carb_item_counts, recent_carb_items=recent_carb_items,
                 used_recipe_ids=used_recipe_ids, used_fingerprints=used_fingerprints,
                 used_vegs=used_vegs, recently_selected=recently_selected, fantasy_mode=fantasy_mode,
+                locked_meals=(locked_slots or {}).get(current_date.isoformat()),
             )
             generated_plan.append(generated_day)
 
@@ -1212,6 +1244,7 @@ class PlannerEngine:
         profile_id_A: str,
         profile_id_B: Optional[str],
         current_date: date,
+        locked_meals: Optional[Dict[str, dict]] = None,
     ) -> Optional[schemas.DailyPlannedMeals]:
         """
         Rigenera con l'AI un solo giorno del piano (pranzo + cena). A differenza di
@@ -1221,6 +1254,9 @@ class PlannerEngine:
         proteine/carboidrati — così la proposta non ripete né stona con il resto
         della settimana. Richiede PlanRules e un piano già generato che copra
         current_date; ritorna None se manca uno dei due.
+
+        locked_meals: pasti di quel giorno gia' registrati dall'utente, che
+        restano intatti (non si rigenera cio' che si e' gia' mangiato).
         """
         rules = self._get_latest_plan_rules(profile_id_A)
         if not rules:
@@ -1286,6 +1322,7 @@ class PlannerEngine:
             carb_item_counts=carb_item_counts, recent_carb_items=recent_carb_items,
             used_recipe_ids=used_recipe_ids, used_fingerprints=used_fingerprints,
             used_vegs=used_vegs, recently_selected=recently_selected, fantasy_mode=True,
+            locked_meals=locked_meals,
         )
 
         import copy
@@ -1410,7 +1447,7 @@ class PlannerEngine:
         _LOGGER.info(f"[full_week_llm] Piano generato: {len(result)} giorni.")
         return result
 
-    def generate_weekly_plan(self, profile_id_A: str, profile_id_B: Optional[str], start_date: date, fantasy_mode: bool = False, ai_mode: Optional[str] = None) -> List[schemas.DailyPlannedMeals]:
+    def generate_weekly_plan(self, profile_id_A: str, profile_id_B: Optional[str], start_date: date, fantasy_mode: bool = False, ai_mode: Optional[str] = None, locked_slots: Optional[Dict[str, Dict[str, dict]]] = None) -> List[schemas.DailyPlannedMeals]:
         """
         ai_mode override: "off" | "per_slot" | "full_week" | None.
         Se None, usa il valore salvato in AppSettings.
@@ -1428,7 +1465,10 @@ class PlannerEngine:
 
             use_llm_fill = (effective_mode == "per_slot") or fantasy_mode
             _LOGGER.info(f"[generate_weekly_plan] PlanRules path per '{profile_id_A}' (fantasy={fantasy_mode}, ai_mode={effective_mode})")
-            return self._generate_from_plan_rules(plan_rules, profile_id_A, profile_id_B, start_date, fantasy_mode=use_llm_fill)
+            return self._generate_from_plan_rules(
+                plan_rules, profile_id_A, profile_id_B, start_date,
+                fantasy_mode=use_llm_fill, locked_slots=locked_slots,
+            )
 
         # Legacy path: use StructuredMealPlan (day-of-week mapping)
         # Use the most recent imported plan (any date), so future start_dates work fine.

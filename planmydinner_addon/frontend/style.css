@@ -674,3 +674,11 @@ input[type="checkbox"] { accent-color: var(--primary); }
 
 /* Modalità vacanza (Impostazioni) */
 .vacation-active { background: var(--info-soft); color: var(--info); border: 1px solid color-mix(in srgb, var(--info) 30%, transparent); border-radius: var(--radius-sm); padding: 10px 14px; font-size: 13.5px; margin-bottom: 12px; }
+
+/* Banner "nessun piano": si può comunque registrare cosa si mangia */
+.no-plan-banner {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    background: var(--surface-2); border: 1px dashed var(--border);
+    border-radius: var(--radius-sm); padding: 10px 14px; margin-bottom: 12px;
+    font-size: 13.5px; color: var(--text-2);
+}

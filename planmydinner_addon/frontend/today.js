@@ -35,10 +35,10 @@ const TodayView = defineComponent({
             <div v-if="loading" class="loading">Caricamento...</div>
             <div v-if="error" class="error">{{ error }}</div>
 
-            <div v-if="!loading && !error && !todayPlan && profiles.length >= 2">
-                <p>Nessun piano trovato per questa settimana.</p>
-                <button @click="generateWeek" :disabled="generating">
-                    {{ generating ? 'Generazione...' : 'Genera piano questa settimana' }}
+            <div v-if="!loading && !error && !todayPlan && profiles.length >= 2" class="no-plan-banner">
+                <span>Nessun piano per questa settimana: puoi comunque registrare cosa mangi.</span>
+                <button @click="generateWeek" :disabled="generating" class="btn-sm btn-secondary">
+                    {{ generating ? 'Generazione...' : 'Genera piano' }}
                 </button>
             </div>
 
@@ -46,8 +46,8 @@ const TodayView = defineComponent({
                 <p>Crea almeno 2 profili nella sezione Profili per usare il pianificatore.</p>
             </div>
 
-            <div v-if="todayPlan">
-                <div v-for="meal in todayPlan.meals" :key="meal.meal_type" class="meal-box">
+            <div v-if="displayPlan">
+                <div v-for="meal in displayPlan.meals" :key="meal.meal_type" class="meal-box">
                     <div class="meal-header">
                         <h3>{{ meal.meal_type === 'pranzo' ? '🍽 Pranzo' : '🌙 Cena' }}</h3>
                     </div>
@@ -146,7 +146,11 @@ const TodayView = defineComponent({
                                 ✓ Pasto registrato
                                 <button @click="markConsumed(meal.meal_type)" class="btn-sm btn-secondary" style="margin-left:auto;">↺ registra di nuovo</button>
                             </div>
-                            <button v-else @click="markConsumed(meal.meal_type)" class="btn-consumed btn-action-primary">✓ Ho mangiato</button>
+                            <button v-else-if="meal.items?.[0]?.recipe_id"
+                                    @click="markConsumed(meal.meal_type)" class="btn-consumed btn-action-primary">✓ Ho mangiato</button>
+                            <div v-else class="components-hint">
+                                Registra cosa hai mangiato con "Libero", "Personalizzato" o "Da foto".
+                            </div>
 
                             <!-- Swap row (solo se c'è una ricetta) -->
                             <div v-if="meal.items?.[0]?.recipe_id" class="action-row-swaps">
@@ -315,6 +319,20 @@ const TodayView = defineComponent({
         },
         profileA() { return this.profiles[0] || null; },
         profileB() { return this.profiles[1] || null; },
+        displayPlan() {
+            // Senza piano si mostrano comunque pranzo e cena vuoti, così si può
+            // registrare cosa si è mangiato: il backend crea il piano al volo e la
+            // generazione successiva riempirà solo gli slot rimasti liberi.
+            if (this.todayPlan) return this.todayPlan;
+            if (!this.profiles.length || this.loading || this.error) return null;
+            return {
+                date: this.today,
+                meals: [
+                    { meal_type: 'pranzo', items: [] },
+                    { meal_type: 'cena', items: [] },
+                ],
+            };
+        },
         filteredCatalogRecipes() {
             const q = this.recipeSearchQuery.trim().toLowerCase();
             const list = q

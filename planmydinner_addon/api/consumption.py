@@ -346,15 +346,15 @@ def _apply_mensa_to_plan(db: Session, profile_id: str, meal_date: str, meal_type
                          name: str, recipe_id: str) -> bool:
     """Sostituisce lo slot del piano con il pasto mensa realmente consumato,
     così Oggi/Settimana (e i macro giornalieri) mostrano ciò che si è mangiato
-    e non la ricetta suggerita. Ritorna False se nessun piano copre la data."""
-    from .planner import _find_plan_covering_date
+    e non la ricetta suggerita. Se la settimana non ha ancora un piano ne crea
+    uno vuoto, così si può registrare un pasto anche senza aver generato nulla.
+    Ritorna False se la data non è valida."""
+    from .planner import ensure_plan_for_date
     try:
         target = date.fromisoformat(meal_date)
     except ValueError:
         return False
-    plan = _find_plan_covering_date(db, profile_id, target)
-    if not plan:
-        return False
+    plan = ensure_plan_for_date(db, profile_id, target)
     updated = copy.deepcopy(plan.daily_plans)
     changed = False
     for day in updated:
