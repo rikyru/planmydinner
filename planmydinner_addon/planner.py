@@ -30,6 +30,71 @@ def get_week_start(d: date) -> date:
     return d - timedelta(days=d.weekday())
 
 
+MEAL_TYPES = ["pranzo", "cena"]
+
+# Quali giorni della settimana (0=lunedi ... 6=domenica) la generazione riempie,
+# per tipo di pasto. Default storico: tutti — la generazione produce 14 slot.
+DEFAULT_GENERATION_SLOTS: Dict[str, List[int]] = {mt: list(range(7)) for mt in MEAL_TYPES}
+
+# I pasti importati da foto il cui nome contiene questa parola non finiscono nel
+# piano: sono i pasti della mensa, che l'utente registra a pranzo ma non vuole
+# vedersi proporre a cena.
+PHOTO_MEAL_EXCLUDED_KEYWORD = "mensa"
+
+
+def photo_meal_data(candidate: "CandidateRecipe") -> Optional[dict]:
+    """recipe_data (dict) se il candidato e' un pasto importato da foto, altrimenti None."""
+    data = getattr(candidate, "recipe_data", None)
+    if isinstance(data, str):
+        try:
+            data = json.loads(data)
+        except Exception:
+            return None
+    if not isinstance(data, dict):
+        return None
+    tags = data.get("tags") or {}
+    return data if "true" in (tags.get("mensa") or []) else None
+
+
+def photo_meal_plan_eligible(recipe_data: dict) -> bool:
+    """
+    Se un pasto importato da foto puo' essere pescato dalla generazione del piano.
+
+    Vale il flag esplicito `plan_eligible` quando l'utente l'ha impostato dalla UI;
+    altrimenti il default e' sul nome: i pasti "mensa" sono esclusi, gli altri
+    (ristorante, casa, piatti mappati da foto) sono ammessi.
+    """
+    if not isinstance(recipe_data, dict):
+        return False
+    explicit = recipe_data.get("plan_eligible")
+    if isinstance(explicit, bool):
+        return explicit
+    return PHOTO_MEAL_EXCLUDED_KEYWORD not in (recipe_data.get("name") or "").lower()
+
+
+def generation_slots_for(rules: Optional["schemas.PlanRules"]) -> Dict[str, List[int]]:
+    """
+    Giorni da generare per tipo di pasto, dalle PlanRules; default: tutti.
+    Tollera valori sporchi (indici fuori range, tipi errati) senza far fallire
+    la generazione: una configurazione illeggibile equivale al default.
+    """
+    raw = getattr(rules, "generation_slots", None) if rules is not None else None
+    if not isinstance(raw, dict):
+        return {mt: list(days) for mt, days in DEFAULT_GENERATION_SLOTS.items()}
+    slots: Dict[str, List[int]] = {}
+    for meal_type in MEAL_TYPES:
+        days = raw.get(meal_type)
+        if days is None:
+            slots[meal_type] = list(DEFAULT_GENERATION_SLOTS[meal_type])
+            continue
+        if not isinstance(days, (list, tuple, set)):
+            # Valore illeggibile: meglio generare tutto che lasciare il piano vuoto.
+            slots[meal_type] = list(DEFAULT_GENERATION_SLOTS[meal_type])
+            continue
+        slots[meal_type] = sorted({int(d) for d in days if isinstance(d, int) and 0 <= int(d) <= 6})
+    return slots
+
+
 class PlannerEngine:
     """
     Core logic for filtering, dosing, and ranking recipes based on meal plans, profiles,
@@ -120,9 +185,58 @@ class PlannerEngine:
                 all_recipes.append(rec)
             except Exception as e:
                 _LOGGER.warning(f"CandidateRecipe {cand.id} non valida, saltata: {e}")
+        all_recipes.extend(self._get_photo_meal_recipes())
         for rec in all_recipes:
             self._normalize_recipe_protein_groups(rec)
         return all_recipes
+
+    def _get_photo_meal_recipes(self) -> List[schemas.Recipe]:
+        """
+        Pasti importati da foto (catalogo "Pasti da foto") utilizzabili dal planner.
+
+        Sono CandidateRecipe con status draft_structured: non entrano nel pool per
+        via dello status, ma un piatto gia' mangiato e mappato e' materiale valido
+        per il piano quanto una ricetta scritta a mano. Esclusi quelli marcati come
+        non utilizzabili (vedi photo_meal_plan_eligible) — in pratica i pasti mensa.
+        """
+        out: List[schemas.Recipe] = []
+        for cand in self.db.query(CandidateRecipe).filter(
+            CandidateRecipe.status == "draft_structured"
+        ).all():
+            data = photo_meal_data(cand)
+            if not data or not photo_meal_plan_eligible(data):
+                continue
+            try:
+                rec = schemas.Recipe(**{**data, "steps": data.get("steps") or []}, id=cand.id)
+            except Exception as e:
+                _LOGGER.warning(f"Pasto da foto {cand.id} non valido, saltato: {e}")
+                continue
+            rec._is_candidate = True
+            rec._is_photo_meal = True
+            self._mirror_quantities_across_profiles(rec)
+            out.append(rec)
+        return out
+
+    def _mirror_quantities_across_profiles(self, rec: schemas.Recipe) -> None:
+        """
+        I pasti da foto nascono con le quantita' di UN solo profilo (chi ha scattato
+        la foto). Senza questa copia in memoria il secondo profilo si ritroverebbe
+        lo slot senza grammature — quindi senza macro nel riepilogo e senza voci
+        nella lista della spesa. Non tocca il DB: vale solo per la selezione.
+        """
+        try:
+            profile_ids = [p.id for p in self.db.query(UserProfile).all()]
+            if len(profile_ids) < 2:
+                return
+            ingredients = rec.content.components if rec.is_composed_dish else rec.content
+            for ing in ingredients:
+                if not ing.quantities:
+                    continue
+                source = next(iter(ing.quantities.values()))
+                for pid in profile_ids:
+                    ing.quantities.setdefault(pid, source.model_copy())
+        except Exception:
+            pass  # pasto con content anomalo: resta com'e'
 
     def _normalize_recipe_protein_groups(self, rec: schemas.Recipe) -> None:
         """Sostituisce in-memory i food_group proteici generici ("proteina") con la
@@ -523,13 +637,40 @@ class PlannerEngine:
         return schemas.PlannedMeal(meal_type=meal_type, items=items)
 
     @staticmethod
-    def _build_protein_sequence(frequency_targets: Dict[str, Any], n_slots: int = 14) -> List[Optional[str]]:
+    def _default_slot_plan(n_slots: int = 14) -> List[Tuple[int, str]]:
+        """Slot (giorno, pasto) della settimana piena: 7 giorni × pranzo+cena."""
+        return [
+            (day, meal_type)
+            for day in range(n_slots // 2)
+            for meal_type in MEAL_TYPES
+        ]
+
+    @staticmethod
+    def _build_protein_sequence(
+        frequency_targets: Dict[str, Any],
+        n_slots: int = 14,
+        slot_plan: Optional[List[Tuple[int, str]]] = None,
+        initial_counts: Optional[Dict[str, int]] = None,
+    ) -> Dict[Tuple[int, str], Optional[str]]:
         """
-        Greedy 'most needed' algorithm to fill n_slots with protein categories.
-        n_slots = 14 = 7 days × 2 meals (pranzo then cena).
-        Returns a list where each entry is a protein category str or None.
+        Greedy 'most needed' algorithm: assegna una categoria proteica a ogni slot.
+
+        slot_plan: lista ordinata di (indice giorno, meal_type) da riempire. Se non
+        passata vale la settimana piena (7 giorni × pranzo+cena). Serve quando la
+        generazione copre solo una parte degli slot — es. le sole cene, con i pranzi
+        lasciati all'utente: le frequenze del piano vanno distribuite sugli slot che
+        si generano davvero, non su 14 caselle di cui metà non verranno mai usate.
+
+        initial_counts: categorie già "spese" in slot bloccati (pasti registrati dall'
+        utente). Contano subito nel budget settimanale, così la generazione non
+        riassegna quello che è già stato mangiato.
+
+        Ritorna una mappa (giorno, meal_type) → categoria (o None).
         Deterministic: no randomness, sorted iteration.
         """
+        if slot_plan is None:
+            slot_plan = PlannerEngine._default_slot_plan(n_slots)
+
         # Build state per category
         state: Dict[str, Dict[str, Any]] = {}
         for cat, tgt in sorted(frequency_targets.items()):
@@ -537,46 +678,43 @@ class PlannerEngine:
                 "min": int(tgt.get("min", 0)),
                 "max": int(tgt.get("max", 7)),
                 "hard_max": tgt.get("hard_max"),
-                "count": 0,
+                "count": int((initial_counts or {}).get(cat, 0)),
             }
 
-        sequence: List[Optional[str]] = []
-        n_days = n_slots // 2
+        sequence: Dict[Tuple[int, str], Optional[str]] = {}
+        assigned_by_day: Dict[int, List[Optional[str]]] = {}
 
-        for day in range(n_days):
-            day_cats: List[Optional[str]] = []
-            for meal_idx, meal_type in enumerate(["pranzo", "cena"]):
-                exclude_cat = day_cats[0] if (meal_idx == 1 and day_cats) else None
+        for day, meal_type in slot_plan:
+            same_day = [c for c in assigned_by_day.get(day, []) if c]
 
-                def _score(cat: str) -> tuple:
-                    s = state[cat]
-                    hard_max = s["hard_max"]
-                    effective_max = hard_max if hard_max is not None else s["max"]
-                    if s["count"] >= effective_max:
-                        return (-999, 0)  # exhausted
-                    remaining_slots = n_slots - len(sequence) - meal_idx
-                    # Priority: deficit from min first, then remaining room
-                    deficit = max(0, s["min"] - s["count"])
-                    room = effective_max - s["count"]
-                    return (deficit, room)
+            def _score(cat: str) -> tuple:
+                s = state[cat]
+                hard_max = s["hard_max"]
+                effective_max = hard_max if hard_max is not None else s["max"]
+                if s["count"] >= effective_max:
+                    return (-999, 0)  # exhausted
+                # Priority: deficit from min first, then remaining room
+                deficit = max(0, s["min"] - s["count"])
+                room = effective_max - s["count"]
+                return (deficit, room)
 
-                # Pick category with highest score, excluding same-day cat
-                candidates = [c for c in sorted(state.keys()) if c != exclude_cat]
-                best = max(candidates, key=_score, default=None)
+            # Pick category with highest score, excluding categories already used
+            # in the same day (no repeated protein at pranzo and cena)
+            candidates = [c for c in sorted(state.keys()) if c not in same_day]
+            best = max(candidates, key=_score, default=None)
 
-                # Check if best is still valid (not exhausted)
-                if best:
-                    s = state[best]
-                    hard_max = s["hard_max"]
-                    effective_max = hard_max if hard_max is not None else s["max"]
-                    if s["count"] >= effective_max:
-                        best = None
+            # Check if best is still valid (not exhausted)
+            if best:
+                s = state[best]
+                hard_max = s["hard_max"]
+                effective_max = hard_max if hard_max is not None else s["max"]
+                if s["count"] >= effective_max:
+                    best = None
 
-                if best:
-                    state[best]["count"] += 1
-                day_cats.append(best)
-
-            sequence.extend(day_cats)
+            if best:
+                state[best]["count"] += 1
+            sequence[(day, meal_type)] = best
+            assigned_by_day.setdefault(day, []).append(best)
 
         return sequence
 
@@ -762,7 +900,7 @@ class PlannerEngine:
         # Conta solo le ricette REALMENTE SELEZIONABILI: complete (proteina+carbo)
         # e che passano i vincoli di grammatura del piano — una ricetta con il
         # carbo fuori tolleranza non coprirà mai i suoi slot.
-        sequence = self._build_protein_sequence(freq)
+        sequence = list(self._build_protein_sequence(freq).values())
         all_recipes = self._get_all_recipes()
         empty_meal = schemas.PlannedMeal(meal_type="pranzo", items=[])
 
@@ -1014,6 +1152,27 @@ class PlannerEngine:
 
         return cat
 
+    def _track_recent_items(
+        self,
+        recipe_id: str,
+        recent_protein_items: List[str],
+        recent_carb_items: List[str],
+    ) -> Optional[str]:
+        """
+        Aggiorna solo le liste "ultimi usati" (che dipendono dall'ordine cronologico
+        degli slot) per una ricetta gia' conteggiata nei totali settimanali.
+        Ritorna la categoria proteica principale.
+        """
+        carb_item = self._get_main_carb_item(recipe_id)
+        if carb_item:
+            recent_carb_items.append(carb_item)
+        item = self._get_main_protein_item(recipe_id)
+        if item:
+            recent_protein_items.append(item)
+            if len(recent_protein_items) > 3:
+                recent_protein_items.pop(0)
+        return self._get_main_protein_category(recipe_id)
+
     def _generate_day_with_context(
         self,
         rules: schemas.PlanRules,
@@ -1021,8 +1180,7 @@ class PlannerEngine:
         profile_id_B: Optional[str],
         current_date: date,
         day_slot: int,
-        seq_idx_base: int,
-        protein_sequence: List[Optional[str]],
+        slot_targets: Dict[str, Optional[str]],
         protein_cat_counts: Dict[str, int],
         protein_cat_limits: Dict[str, int],
         protein_item_counts: Dict[str, int],
@@ -1035,6 +1193,8 @@ class PlannerEngine:
         recently_selected: List[str],
         fantasy_mode: bool,
         locked_meals: Optional[Dict[str, dict]] = None,
+        meal_types: Optional[List[str]] = None,
+        locked_pre_tracked: bool = False,
     ) -> Tuple[schemas.DailyPlannedMeals, int]:
         """
         Genera pranzo+cena per un singolo giorno, aggiornando in place i contatori
@@ -1047,16 +1207,23 @@ class PlannerEngine:
         mensa, libero, non mangiato). Lo slot viene riproposto tale e quale e conta
         comunque per la rotazione, cosi' i pasti gia' segnati sopravvivono alla
         (ri)generazione del piano e gli altri slot non li ripetono.
+        meal_types: quali pasti generare per questo giorno (default: tutti). I pasti
+        esclusi restano slot VUOTI da compilare a mano — es. i pranzi lavorativi,
+        che l'utente registra dalla mensa. Un pasto bloccato viene comunque
+        riproposto anche se il suo slot non e' fra quelli da generare.
+        locked_pre_tracked: i pasti bloccati sono gia' stati contati nei totali di
+        rotazione dal chiamante; qui si aggiorna solo la parte cronologica
+        (ultimi ingredienti usati), per non contarli due volte.
 
         Ritorna (giorno generato, day_slot aggiornato).
         """
         generated_day = schemas.DailyPlannedMeals(date=current_date.isoformat(), meals=[])
         pranzo_protein_category: Optional[str] = None
         locked_meals = locked_meals or {}
+        meal_types = MEAL_TYPES if meal_types is None else meal_types
 
-        for meal_idx, meal_type in enumerate(["pranzo", "cena"]):
-            seq_idx = seq_idx_base + meal_idx
-            target_cat = protein_sequence[seq_idx] if seq_idx < len(protein_sequence) else None
+        for meal_type in MEAL_TYPES:
+            target_cat = slot_targets.get(meal_type)
 
             locked_item = locked_meals.get(meal_type)
             if locked_item:
@@ -1069,13 +1236,24 @@ class PlannerEngine:
                 if locked_recipe_id:
                     used_recipe_ids.add(locked_recipe_id)
                     recently_selected.append(locked_recipe_id)
-                    cat = self._track_recipe_context(
-                        locked_recipe_id,
-                        protein_cat_counts, protein_item_counts, recent_protein_items,
-                        carb_item_counts, recent_carb_items, used_fingerprints,
-                    )
+                    if locked_pre_tracked:
+                        cat = self._track_recent_items(
+                            locked_recipe_id, recent_protein_items, recent_carb_items,
+                        )
+                    else:
+                        cat = self._track_recipe_context(
+                            locked_recipe_id,
+                            protein_cat_counts, protein_item_counts, recent_protein_items,
+                            carb_item_counts, recent_carb_items, used_fingerprints,
+                        )
                     if meal_type == "pranzo":
                         pranzo_protein_category = cat
+                continue
+
+            if meal_type not in meal_types:
+                # Slot non generato (es. pranzo lavorativo): resta vuoto e cliccabile,
+                # lo compila l'utente registrando cio' che ha davvero mangiato.
+                generated_day.meals.append(schemas.PlannedMeal(meal_type=meal_type, items=[]))
                 continue
 
             meal_plan_A = self._rules_to_planned_meal(rules, meal_type, target_cat)
@@ -1205,10 +1383,8 @@ class PlannerEngine:
         # Garantisci che ogni categoria richiesta dal piano abbia almeno una ricetta
         self._ensure_category_coverage(rules, profile_id_A, profile_id_B or "persona_b")
 
-        protein_sequence = self._build_protein_sequence(rules.frequency_targets)
-        _LOGGER.info(f"[PlanRules] protein_sequence={protein_sequence}")
-
-        protein_cat_limits = self._default_protein_cat_limits(rules)
+        locked_slots = locked_slots or {}
+        slots_config = generation_slots_for(rules)
 
         protein_cat_counts: Dict[str, int] = {}
         protein_item_counts: Dict[str, int] = {}
@@ -1220,24 +1396,88 @@ class PlannerEngine:
         used_fingerprints: set = set()
         used_vegs: List[str] = []
         recently_selected: List[str] = []  # ordered list for recent-ID buffer in fallback 2
+
+        # Slot da generare davvero: giorno per giorno, solo i pasti configurati e non
+        # gia' decisi dall'utente. Le frequenze del piano vengono distribuite su questi
+        # (se si generano le sole cene le proteine vanno spalmate su 7 slot, non 14),
+        # dopo aver contato cio' che i pasti bloccati hanno gia' consumato del budget.
+        slot_plan: List[Tuple[int, str]] = []
+        for i in range(7):
+            day_iso = (start_date + timedelta(days=i)).isoformat()
+            weekday = (start_date + timedelta(days=i)).weekday()
+            locked_day = locked_slots.get(day_iso, {})
+            for meal_type in MEAL_TYPES:
+                if meal_type in locked_day:
+                    continue
+                if weekday in slots_config.get(meal_type, []):
+                    slot_plan.append((i, meal_type))
+
+        self._pretrack_locked_slots(
+            locked_slots, protein_cat_counts, protein_item_counts,
+            carb_item_counts, used_recipe_ids, used_fingerprints,
+        )
+
+        protein_sequence = self._build_protein_sequence(
+            rules.frequency_targets, slot_plan=slot_plan, initial_counts=protein_cat_counts,
+        )
+        _LOGGER.info(
+            f"[PlanRules] {len(slot_plan)} slot da generare, protein_sequence={protein_sequence}"
+        )
+
+        protein_cat_limits = self._default_protein_cat_limits(rules)
         day_slot = 0
         generated_plan: List[schemas.DailyPlannedMeals] = []
 
         for i in range(7):
             current_date = start_date + timedelta(days=i)
+            weekday = current_date.weekday()
             generated_day, day_slot = self._generate_day_with_context(
                 rules, profile_id_A, profile_id_B, current_date,
-                day_slot=day_slot, seq_idx_base=i * 2, protein_sequence=protein_sequence,
+                day_slot=day_slot,
+                slot_targets={mt: protein_sequence.get((i, mt)) for mt in MEAL_TYPES},
                 protein_cat_counts=protein_cat_counts, protein_cat_limits=protein_cat_limits,
                 protein_item_counts=protein_item_counts, recent_protein_items=recent_protein_items,
                 carb_item_counts=carb_item_counts, recent_carb_items=recent_carb_items,
                 used_recipe_ids=used_recipe_ids, used_fingerprints=used_fingerprints,
                 used_vegs=used_vegs, recently_selected=recently_selected, fantasy_mode=fantasy_mode,
-                locked_meals=(locked_slots or {}).get(current_date.isoformat()),
+                locked_meals=locked_slots.get(current_date.isoformat()),
+                meal_types=[mt for mt in MEAL_TYPES if weekday in slots_config.get(mt, [])],
+                locked_pre_tracked=True,
             )
             generated_plan.append(generated_day)
 
         return generated_plan
+
+    def _pretrack_locked_slots(
+        self,
+        locked_slots: Dict[str, Dict[str, dict]],
+        protein_cat_counts: Dict[str, int],
+        protein_item_counts: Dict[str, int],
+        carb_item_counts: Dict[str, int],
+        used_recipe_ids: set,
+        used_fingerprints: set,
+    ) -> None:
+        """
+        Conta nei totali di rotazione i pasti gia' registrati dall'utente PRIMA di
+        generare, invece che man mano che il ciclo li incontra.
+
+        Serve perche' un pasto bloccato di venerdi' deve pesare gia' sul lunedi': se
+        a pranzo in mensa si e' mangiato pollo tre volte, la generazione delle cene
+        deve saperlo subito, altrimenti assegna carne bianca ai primi giorni e sfora
+        il limite settimanale del piano. Le liste "ultimi usati", che dipendono
+        dall'ordine cronologico, restano al ciclo di generazione.
+        """
+        for _iso, meals in sorted((locked_slots or {}).items()):
+            for _meal_type, item in sorted(meals.items()):
+                recipe_id = (item or {}).get("recipe_id")
+                if not recipe_id:
+                    continue
+                used_recipe_ids.add(recipe_id)
+                self._track_recipe_context(
+                    recipe_id,
+                    protein_cat_counts, protein_item_counts, [],
+                    carb_item_counts, [], used_fingerprints,
+                )
 
     def regenerate_day_with_ai(
         self,
@@ -1256,7 +1496,10 @@ class PlannerEngine:
         current_date; ritorna None se manca uno dei due.
 
         locked_meals: pasti di quel giorno gia' registrati dall'utente, che
-        restano intatti (non si rigenera cio' che si e' gia' mangiato).
+        restano intatti (non si rigenera cio' che si e' gia' mangiato). Vengono
+        rigenerati solo i pasti che la configurazione prevede per quel giorno della
+        settimana (vedi generation_slots_for): un pranzo lasciato all'utente resta
+        vuoto anche premendo il bottone AI del giorno.
         """
         rules = self._get_latest_plan_rules(profile_id_A)
         if not rules:
@@ -1276,7 +1519,7 @@ class PlannerEngine:
         if not target_plan:
             return None
 
-        protein_sequence = self._build_protein_sequence(rules.frequency_targets)
+        slots_config = generation_slots_for(rules)
         protein_cat_limits = self._default_protein_cat_limits(rules)
 
         protein_cat_counts: Dict[str, int] = {}
@@ -1314,15 +1557,30 @@ class PlannerEngine:
                 )
 
         day_index = (current_date - plan_start_date).days
+        # Le categorie gia' usate negli altri giorni sono in protein_cat_counts: la
+        # sequenza viene calcolata solo per gli slot di OGGI, partendo da quei totali,
+        # cosi' il giorno rigenerato completa il piano invece di ricominciarlo.
+        meal_types = [
+            mt for mt in MEAL_TYPES
+            if current_date.weekday() in slots_config.get(mt, [])
+            and mt not in (locked_meals or {})
+        ]
+        protein_sequence = self._build_protein_sequence(
+            rules.frequency_targets,
+            slot_plan=[(day_index, mt) for mt in meal_types],
+            initial_counts=protein_cat_counts,
+        )
         generated_day, _ = self._generate_day_with_context(
             rules, profile_id_A, profile_id_B, current_date,
-            day_slot=day_slot, seq_idx_base=day_index * 2, protein_sequence=protein_sequence,
+            day_slot=day_slot,
+            slot_targets={mt: protein_sequence.get((day_index, mt)) for mt in MEAL_TYPES},
             protein_cat_counts=protein_cat_counts, protein_cat_limits=protein_cat_limits,
             protein_item_counts=protein_item_counts, recent_protein_items=recent_protein_items,
             carb_item_counts=carb_item_counts, recent_carb_items=recent_carb_items,
             used_recipe_ids=used_recipe_ids, used_fingerprints=used_fingerprints,
             used_vegs=used_vegs, recently_selected=recently_selected, fantasy_mode=True,
             locked_meals=locked_meals,
+            meal_types=[mt for mt in MEAL_TYPES if current_date.weekday() in slots_config.get(mt, [])],
         )
 
         import copy
@@ -1334,6 +1592,27 @@ class PlannerEngine:
         self.db.add(target_plan)
         self.db.commit()
         return generated_day
+
+    def _apply_generation_slots(
+        self,
+        weekly_plan: List[schemas.DailyPlannedMeals],
+        rules: Optional[schemas.PlanRules],
+    ) -> List[schemas.DailyPlannedMeals]:
+        """
+        Svuota gli slot che la configurazione non prevede di generare, lasciandoli
+        come caselle vuote da compilare a mano. Usata dai path che producono
+        comunque la settimana intera (generazione LLM full_week).
+        """
+        slots_config = generation_slots_for(rules)
+        for day in weekly_plan:
+            try:
+                weekday = date.fromisoformat(day.date).weekday()
+            except (TypeError, ValueError):
+                continue
+            for meal in day.meals:
+                if weekday not in slots_config.get(meal.meal_type, []):
+                    meal.items = []
+        return weekly_plan
 
     def _generate_full_week_with_llm(
         self,
@@ -1459,9 +1738,12 @@ class PlannerEngine:
 
             if effective_mode == "full_week":
                 _LOGGER.info(f"[generate_weekly_plan] AI full_week per '{profile_id_A}'")
-                return self._generate_full_week_with_llm(
+                week = self._generate_full_week_with_llm(
                     plan_rules, profile_id_A, profile_id_B or "persona_b", start_date
                 )
+                # L'LLM produce sempre 7 giorni x 2 pasti: gli slot che l'utente si
+                # tiene per se' (es. i pranzi in mensa) vanno svuotati qui.
+                return self._apply_generation_slots(week, plan_rules)
 
             use_llm_fill = (effective_mode == "per_slot") or fantasy_mode
             _LOGGER.info(f"[generate_weekly_plan] PlanRules path per '{profile_id_A}' (fantasy={fantasy_mode}, ai_mode={effective_mode})")
@@ -2967,7 +3249,7 @@ class PlannerEngine:
                 protein_cat_limits[cat] = int(hard_max if hard_max is not None else tgt.get("max", 7))
             protein_cat_limits.setdefault("carne_bianca", 3)
         else:
-            protein_sequence = [None] * 14
+            protein_sequence = {}
             # Legacy path: try to load StructuredMealPlan for limits
             raw_plan = self._get_latest_meal_plan(profile_id_A)
             protein_cat_limits = self._build_protein_limits(raw_plan.rotation_rules if raw_plan else [])
@@ -2983,9 +3265,8 @@ class PlannerEngine:
             current_date = start_date + timedelta(days=i)
             pranzo_protein_category: Optional[str] = None
 
-            for meal_idx, meal_type in enumerate(["pranzo", "cena"]):
-                seq_idx = i * 2 + meal_idx
-                target_cat = protein_sequence[seq_idx] if seq_idx < len(protein_sequence) else None
+            for meal_type in MEAL_TYPES:
+                target_cat = protein_sequence.get((i, meal_type))
                 excluded_protein = pranzo_protein_category if meal_type == "cena" else None
 
                 # Build meal plan for this slot

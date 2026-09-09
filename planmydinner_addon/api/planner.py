@@ -13,7 +13,10 @@ from pydantic import BaseModel as _BaseModel
 from .. import schemas
 from .. import database
 from ..database import get_db, GeneratedWeeklyPlan
-from ..planner import PlannerEngine, get_week_start, _LLM_CALL_LOG, _LLM_CALL_LOG_MAX
+from ..planner import (
+    PlannerEngine, get_week_start, generation_slots_for, MEAL_TYPES,
+    _LLM_CALL_LOG, _LLM_CALL_LOG_MAX,
+)
 
 
 class CustomMealBody(_BaseModel):
@@ -50,6 +53,12 @@ class VacationBody(_BaseModel):
 
 class TrackingStartDateBody(_BaseModel):
     start_date: str  # ISO date
+
+
+class GenerationSlotsBody(_BaseModel):
+    """Giorni della settimana (0=lunedi ... 6=domenica) da generare, per tipo di pasto."""
+    pranzo: List[int]
+    cena: List[int]
 
 
 DEFAULT_TRACKING_START_DATE = date(2026, 7, 6)
@@ -568,6 +577,7 @@ def get_plan_rules(
             "vacation_start": plan_rules_db.vacation_start,
             "vacation_end": plan_rules_db.vacation_end,
             "tracking_start_date": plan_rules_db.tracking_start_date or DEFAULT_TRACKING_START_DATE.isoformat(),
+            "generation_slots": generation_slots_for(plan_rules_db),
             "imported_at": plan_rules_db.imported_at,
         }
 
@@ -623,7 +633,10 @@ def debug_status(
     protein_sequence = []
     if plan_rules_db:
         freq = plan_rules_db.frequency_targets or {}
-        protein_sequence = PlannerEngine._build_protein_sequence(freq, n_slots=14)
+        # La sequenza e' una mappa (giorno, pasto) -> categoria: qui serve appiattita
+        # nell'ordine degli slot, per il pannello di debug.
+        _seq = PlannerEngine._build_protein_sequence(freq, n_slots=14)
+        protein_sequence = [_seq.get(slot) for slot in PlannerEngine._default_slot_plan(14)]
         plan_rules_info = {
             "id": plan_rules_db.id,
             "imported_at": plan_rules_db.imported_at,
@@ -1120,6 +1133,43 @@ def set_tracking_start_date(profile_id: str, body: TrackingStartDateBody, db: Se
     return {"tracking_start_date": rules.tracking_start_date}
 
 
+@router.put("/generation-slots")
+def set_generation_slots(profile_id: str, body: GenerationSlotsBody, db: Session = Depends(get_db)):
+    """
+    Quali pasti la generazione deve riempire, giorno per giorno.
+
+    Serve a chi il pranzo lo decide sul momento (mensa, ristorante): quei giorni
+    restano slot vuoti nel piano, da compilare registrando cio' che si e' mangiato,
+    e il budget settimanale delle proteine viene distribuito solo sugli slot
+    generati davvero.
+    """
+    slots = {}
+    for meal_type in MEAL_TYPES:
+        days = sorted(set(getattr(body, meal_type)))
+        if any(d < 0 or d > 6 for d in days):
+            raise HTTPException(
+                status_code=422,
+                detail="Giorni non validi: usa 0 (lunedi) ... 6 (domenica).",
+            )
+        slots[meal_type] = days
+    if not any(slots.values()):
+        raise HTTPException(
+            status_code=422,
+            detail="Almeno un pasto deve essere generato, altrimenti il piano resta vuoto.",
+        )
+
+    from datetime import datetime as _dt
+    rules = db.query(database.PlanRules).filter(
+        database.PlanRules.profile_id == profile_id
+    ).order_by(database.PlanRules.imported_at.desc()).first()
+    if not rules:
+        rules = database.PlanRules(id=str(uuid.uuid4()), profile_id=profile_id, imported_at=_dt.now().isoformat())
+    rules.generation_slots = slots
+    db.add(rules)
+    db.commit()
+    return {"generation_slots": slots}
+
+
 @router.post("/backfill-free-meal-estimates")
 def backfill_free_meal_estimates(request: Request, profile_id_A: str, db: Session = Depends(get_db)):
     """
@@ -1289,14 +1339,19 @@ def compute_adherence_stats(db: Session, profile_id_A: str, start_date: date, en
             d = date.fromisoformat(dp["date"])
             if start_date <= d <= end_date:
                 for meal in dp.get("meals", []):
-                    planned_slots += 1
                     items = meal.get("items", [])
-                    if items:
-                        fg = items[0].get("food_group")
-                        if fg == "free_meal":
-                            free_meals += 1
-                        elif fg == "not_eaten":
-                            not_eaten_slots += 1
+                    if not items:
+                        # Slot vuoto = nessun pasto pianificato: o l'utente ha scelto
+                        # di non farsi generare quel pasto, o e' lo scheletro creato
+                        # per ospitare una registrazione. Contarlo abbasserebbe
+                        # l'aderenza per pasti che il piano non ha mai proposto.
+                        continue
+                    planned_slots += 1
+                    fg = items[0].get("food_group")
+                    if fg == "free_meal":
+                        free_meals += 1
+                    elif fg == "not_eaten":
+                        not_eaten_slots += 1
 
     consumed_dates_meals: set = set()
 

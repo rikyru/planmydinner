@@ -15,6 +15,7 @@ _LOGGER = logging.getLogger(__name__) # Added logger setup
 from .. import schemas
 from ..database import get_db, ConsumedEntry, Recipe, CandidateRecipe, consume_ingredients_from_pantry
 from ..nutrition import compute_recipe_nutrition
+from ..planner import photo_meal_data, photo_meal_plan_eligible
 
 router = APIRouter(
     prefix="/consumed-entries",
@@ -329,17 +330,8 @@ def _mensa_content(ingredients: List[PhotoIngredient], profile_id: str) -> list:
 
 
 def _is_mensa_candidate(cand: CandidateRecipe) -> Optional[dict]:
-    """Restituisce recipe_data (dict) se il candidato è un pasto mensa, altrimenti None."""
-    data = cand.recipe_data
-    if isinstance(data, str):
-        try:
-            data = json.loads(data)
-        except Exception:
-            return None
-    if not isinstance(data, dict):
-        return None
-    tags = data.get("tags") or {}
-    return data if "true" in (tags.get("mensa") or []) else None
+    """Restituisce recipe_data (dict) se il candidato è un pasto da foto, altrimenti None."""
+    return photo_meal_data(cand)
 
 
 def _apply_mensa_to_plan(db: Session, profile_id: str, meal_date: str, meal_type: str,
@@ -499,6 +491,10 @@ def list_mensa_meals(request: Request, profile_id: Optional[str] = None, db: Ses
             "usage_count": cand.usage_count or 0,
             "ingredients": ingredients,
             "nutrition": nutrition,
+            # Se questo pasto puo' essere pescato dalla generazione del piano.
+            # Default sul nome (i pasti "mensa" sono esclusi) finche' non lo si
+            # imposta a mano da Ricette > Pasti da foto.
+            "plan_eligible": photo_meal_plan_eligible(data),
         })
     out.sort(key=lambda m: (-m["usage_count"], (m["name"] or "").lower()))
     return out
@@ -531,6 +527,12 @@ def save_mensa_meal(body: MensaMealSave, db: Session = Depends(get_db)):
         "difficulty": "sconosciuto",
         "tags": {"mensa": ["true"]},
     }
+    if cand is not None:
+        # Ri-salvare un pasto gia' in catalogo (stesso nome) non deve azzerare la
+        # scelta dell'utente su "usabile nel piano".
+        previous = _is_mensa_candidate(cand) or {}
+        if isinstance(previous.get("plan_eligible"), bool):
+            recipe_data["plan_eligible"] = previous["plan_eligible"]
     if cand is None:
         cand = CandidateRecipe(id=str(uuid.uuid4()), status="draft_structured", usage_count=0,
                                recipe_data=recipe_data)
@@ -563,6 +565,7 @@ def consume_mensa_meal(candidate_id: str, profile_id: str, meal_date: str, meal_
 class MensaMealUpdate(_BaseModel):
     name: str
     ingredients: List[PhotoIngredient]
+    plan_eligible: Optional[bool] = None
 
 
 @router.put("/mensa/{candidate_id}")
@@ -593,11 +596,18 @@ def update_mensa_meal(candidate_id: str, body: MensaMealUpdate, db: Session = De
             "quantities": {pk: {"qty": float(ing.grams), "unit": "g", "grams_equiv": float(ing.grams)}
                            for pk in profile_keys},
         })
-    cand.recipe_data = {**data, "name": body.name.strip(), "content": content}
+    updated = {**data, "name": body.name.strip(), "content": content}
+    if body.plan_eligible is not None:
+        updated["plan_eligible"] = bool(body.plan_eligible)
+    cand.recipe_data = updated
     from sqlalchemy.orm.attributes import flag_modified
     flag_modified(cand, "recipe_data")
     db.commit()
-    return {"recipe_id": cand.id, "name": body.name.strip()}
+    return {
+        "recipe_id": cand.id,
+        "name": body.name.strip(),
+        "plan_eligible": photo_meal_plan_eligible(updated),
+    }
 
 
 @router.delete("/mensa/{candidate_id}")

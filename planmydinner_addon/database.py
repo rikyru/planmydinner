@@ -138,6 +138,7 @@ class PlanRules(Base):
     vacation_start = Column(String, nullable=True)     # ISO date: sospende promemoria/box pasti dimenticati
     vacation_end = Column(String, nullable=True)
     tracking_start_date = Column(String, nullable=True)  # ISO date: da quando la box "pasti dimenticati" cerca pasti
+    generation_slots = Column(JSON, nullable=True)     # {"pranzo": [5,6], "cena": [0,1,2,3,4,5,6]} — weekday (0=lun) da generare
 
 
 class AppSettings(Base):
@@ -202,6 +203,7 @@ def create_db_and_tables():
             ("plan_rules", "vacation_start", "TEXT"),
             ("plan_rules", "vacation_end", "TEXT"),
             ("plan_rules", "tracking_start_date", "TEXT"),
+            ("plan_rules", "generation_slots", "JSON"),
         ]:
             try:
                 conn.execute(__import__("sqlalchemy").text(

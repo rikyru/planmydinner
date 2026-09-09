@@ -76,16 +76,25 @@ const Recipes = defineComponent({
                     <p class="hint" style="margin:0 0 10px;">
                         I pasti mappati dalla foto (mensa, ristorante, casa...). Correggi qui nomi e grammature:
                         le modifiche valgono anche per i macro dei consumi già registrati.
+                        Il segno <strong>🍽️/🚫</strong> decide se un pasto può essere pescato dalla
+                        generazione del piano: di default i pasti con "mensa" nel nome sono esclusi.
                     </p>
                     <div v-if="mensaMeals.length === 0" class="hint">Nessun pasto ancora: usa "📷 Da foto" dalla vista Oggi o dal popup del giorno.</div>
 
                     <div v-for="m in mensaMeals" :key="m.id"
+                         :class="{ 'photo-meal-off': !m.plan_eligible }"
                          style="border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:8px;">
                         <!-- Riga compatta -->
                         <div style="display:flex;align-items:center;gap:10px;cursor:pointer;" @click="toggleMensaEdit(m)">
                             <strong style="flex:1;">{{ m.name }}</strong>
                             <span class="hint" v-if="m.nutrition">~{{ Math.round(m.nutrition.kcal) }} kcal</span>
                             <span class="hint">usato {{ m.usage_count }}×</span>
+                            <button class="btn-secondary btn-sm" style="padding:2px 8px;"
+                                    :title="m.plan_eligible ? 'Il planner può proporlo: clicca per escluderlo' : 'Escluso dal planner: clicca per ammetterlo'"
+                                    :disabled="mensaPlanSavingId === m.id"
+                                    @click.stop="toggleMensaPlanEligible(m)">
+                                {{ m.plan_eligible ? '🍽️' : '🚫' }}
+                            </button>
                             <span style="color:var(--text-3);">{{ mensaEditId === m.id ? '▲' : '✏️' }}</span>
                         </div>
 
@@ -263,6 +272,7 @@ const Recipes = defineComponent({
             mensaEditId: null,
             mensaEdit: { name: '', ingredients: [] },
             mensaSaving: false,
+            mensaPlanSavingId: null,
             photoAnalyzing: false,
             profiles: [],
             // Bulk import
@@ -403,6 +413,35 @@ const Recipes = defineComponent({
                 this.toast.add('Errore: ' + e.message, 'error');
             } finally {
                 this.mensaSaving = false;
+            }
+        },
+        async toggleMensaPlanEligible(m) {
+            // Il PUT rimpiazza il pasto: rimanda nome e ingredienti attuali invariati.
+            this.mensaPlanSavingId = m.id;
+            try {
+                const body = {
+                    name: m.name,
+                    ingredients: m.ingredients.map(i => ({
+                        name: i.name, food_group: i.food_group || 'altro', grams: i.grams,
+                    })),
+                    plan_eligible: !m.plan_eligible,
+                };
+                const resp = await window.apiFetch(`/consumed-entries/mensa/${m.id}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body),
+                });
+                if (!resp.ok) throw new Error(await resp.text());
+                const data = await resp.json();
+                m.plan_eligible = data.plan_eligible;
+                this.toast.add(
+                    m.plan_eligible ? 'Il planner può proporlo.' : 'Escluso dal planner.',
+                    'success',
+                );
+            } catch (e) {
+                this.toast.add('Errore: ' + e.message, 'error');
+            } finally {
+                this.mensaPlanSavingId = null;
             }
         },
         async deleteMensa(m) {

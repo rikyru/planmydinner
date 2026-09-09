@@ -166,6 +166,40 @@ const SettingsView = defineComponent({
                 </div>
             </div>
 
+            <!-- ── Sezione: Cosa generare ── -->
+            <div class="settings-section">
+                <h3 class="settings-section__title">🍽️ Cosa generare nel piano</h3>
+                <div class="settings-section__body">
+                    <p class="settings-hint">
+                        I pasti non selezionati restano slot vuoti nel piano: li compili tu
+                        registrando cosa hai mangiato (mensa, foto, pasto libero). Le frequenze
+                        del piano nutrizionale vengono distribuite solo sui pasti generati.
+                    </p>
+                    <div class="gen-slots">
+                        <div v-for="mt in ['pranzo', 'cena']" :key="mt" class="gen-slots__row">
+                            <span class="gen-slots__label">{{ mt === 'pranzo' ? '🥗 Pranzo' : '🍽️ Cena' }}</span>
+                            <div class="gen-slots__days">
+                                <button v-for="(d, idx) in weekdayLabels" :key="idx"
+                                        type="button"
+                                        class="gen-slots__day"
+                                        :class="{ 'gen-slots__day--on': generationSlots[mt].includes(idx) }"
+                                        @click="toggleGenerationDay(mt, idx)">
+                                    {{ d }}
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                    <p class="settings-hint" v-if="!generationSlots.pranzo.length && !generationSlots.cena.length"
+                       style="color:var(--danger, #c92a2a);">
+                        Almeno un pasto deve essere generato.
+                    </p>
+                    <button class="btn-primary" @click="saveGenerationSlots"
+                            :disabled="savingGenerationSlots || (!generationSlots.pranzo.length && !generationSlots.cena.length)">
+                        {{ savingGenerationSlots ? 'Salvataggio...' : '💾 Salva' }}
+                    </button>
+                </div>
+            </div>
+
             <!-- ── Sezione: Inizio tracciamento pasti ── -->
             <div class="settings-section">
                 <h3 class="settings-section__title">📋 Inizio tracciamento pasti</h3>
@@ -212,6 +246,9 @@ const SettingsView = defineComponent({
             savingVacation: false,
             trackingStartDate: '2026-07-06',
             savingTrackingStart: false,
+            weekdayLabels: ['Lun', 'Mar', 'Mer', 'Gio', 'Ven', 'Sab', 'Dom'],
+            generationSlots: { pranzo: [0, 1, 2, 3, 4, 5, 6], cena: [0, 1, 2, 3, 4, 5, 6] },
+            savingGenerationSlots: false,
         };
     },
     computed: {
@@ -343,6 +380,11 @@ const SettingsView = defineComponent({
                     end_date: pr.vacation_end || '',
                 };
                 this.trackingStartDate = pr.tracking_start_date || '2026-07-06';
+                const slots = pr.generation_slots || {};
+                this.generationSlots = {
+                    pranzo: Array.isArray(slots.pranzo) ? slots.pranzo.slice() : [0, 1, 2, 3, 4, 5, 6],
+                    cena: Array.isArray(slots.cena) ? slots.cena.slice() : [0, 1, 2, 3, 4, 5, 6],
+                };
             } catch (_) { /* non bloccare */ }
         },
         async saveVacation() {
@@ -379,6 +421,30 @@ const SettingsView = defineComponent({
                 this.toast.add('Errore: ' + e.message, 'error');
             } finally {
                 this.savingVacation = false;
+            }
+        },
+        toggleGenerationDay(mealType, dayIdx) {
+            const days = this.generationSlots[mealType];
+            const at = days.indexOf(dayIdx);
+            if (at === -1) days.push(dayIdx); else days.splice(at, 1);
+            days.sort((a, b) => a - b);
+        },
+        async saveGenerationSlots() {
+            if (!this.profileId) return;
+            this.savingGenerationSlots = true;
+            try {
+                const params = new URLSearchParams({ profile_id: this.profileId });
+                const resp = await window.apiFetch('/planner/generation-slots?' + params, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(this.generationSlots),
+                });
+                if (!resp.ok) throw new Error(await resp.text());
+                this.toast.add('Pasti da generare salvati!', 'success');
+            } catch (e) {
+                this.toast.add('Errore: ' + e.message, 'error');
+            } finally {
+                this.savingGenerationSlots = false;
             }
         },
         async saveTrackingStartDate() {

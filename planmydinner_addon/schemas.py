@@ -147,7 +147,8 @@ class IngredientNutrition(BaseModel):
     protein_g: Optional[float] = None
     carbs_g: Optional[float] = None
     fat_g: Optional[float] = None
-    source: Optional[str] = Field(default=None, pattern="^(table|llm|manual)$")
+    # table_cooked: valore di tabella riportato al peso da cotto (vedi _COOKED_YIELD)
+    source: Optional[str] = Field(default=None, pattern="^(table|table_cooked|llm|manual)$")
 
 class RecipeIngredient(BaseModel):
     name: str
@@ -245,6 +246,7 @@ class PlanRules(BaseModel):
     free_meal_quota: Optional[int] = None
     meal_slots: Optional[Dict[str, Any]] = None      # colazione, spuntino_mattina, pranzo, merenda, cena, idratazione
     nutrition_targets: Optional[Dict[str, float]] = None  # obiettivi giornalieri kcal/protein_g/carbs_g/fat_g
+    generation_slots: Optional[Dict[str, Any]] = None  # meal_type -> weekday (0=lun) da generare
 
     class Config:
         from_attributes = True

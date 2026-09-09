@@ -123,3 +123,17 @@ class TestRecipeListNutrition:
         # pasta 80 g a crudo (353/100g) + ceci COTTI 150 g (~132/100g)
         assert n["kcal"] == pytest.approx(353 * 0.8 + 131.7 * 1.5, abs=2)
         assert n["sources"].get("table_cooked") == 1
+
+
+def test_source_table_cooked_is_a_valid_stored_value():
+    """resolve_ingredient_nutrition produce source="table_cooked": salvare quel
+    valore su un ingrediente non deve essere rifiutato dallo schema."""
+    from planmydinner_addon import schemas
+
+    ing = schemas.RecipeIngredient(
+        name="Lenticchie cotte", food_group="legumi",
+        quantities={"persona_a": {"qty": 200, "unit": "g", "grams_equiv": 200}},
+        nutrition={"kcal": 116, "protein_g": 9, "carbs_g": 20, "fat_g": 0.4,
+                   "source": "table_cooked"},
+    )
+    assert ing.nutrition.source == "table_cooked"
