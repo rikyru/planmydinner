@@ -1250,25 +1250,67 @@ def dedupe_catalog(profile_id_A: str, apply: bool = False, db: Session = Depends
     Ricette identiche (stesso nome E stessi ingredienti principali) presenti piu'
     volte: restringono la varieta' reale facendo sembrare il catalogo piu' ricco.
 
-    Di default fa solo il conto (dry-run): passare apply=true per cancellare,
-    tenendo sempre la prima copia di ogni gruppo.
+    Di default fa solo il conto (dry-run, campo `removable`): passare apply=true
+    per cancellare. Di ogni gruppo resta una copia — quella a cui puntano piani o
+    consumi gia' registrati, se esiste — e le altre copie referenziate non vengono
+    mai toccate (finirebbero in slot del piano che puntano al nulla).
     """
     planner = PlannerEngine(db)
     duplicates = planner.find_duplicate_recipes()
-    removed = []
-    if apply:
-        for group in duplicates:
-            for rid in group["ids"][1:]:
-                rec = db.query(database.Recipe).filter(database.Recipe.id == rid).first()
-                cand = None if rec else db.query(database.CandidateRecipe).filter(
+    referenced = _referenced_recipe_ids(db)
+
+    removed, kept_because_used = [], []
+    for group in duplicates:
+        # Tiene la copia a cui puntano piani o consumi gia' registrati: cancellarla
+        # lascerebbe uno slot del piano che rimanda a una ricetta inesistente.
+        ids = sorted(group["ids"], key=lambda rid: (rid not in referenced, rid))
+        group["keeping"] = ids[0]
+        for rid in ids[1:]:
+            if rid in referenced:
+                kept_because_used.append({"id": rid, "name": group["name"]})
+                continue
+            if not apply:
+                removed.append({"id": rid, "name": group["name"]})
+                continue
+            target = (
+                db.query(database.Recipe).filter(database.Recipe.id == rid).first()
+                or db.query(database.CandidateRecipe).filter(
                     database.CandidateRecipe.id == rid
                 ).first()
-                target = rec or cand
-                if target is not None:
-                    db.delete(target)
-                    removed.append({"id": rid, "name": group["name"]})
+            )
+            if target is not None:
+                db.delete(target)
+                removed.append({"id": rid, "name": group["name"]})
+    if apply:
         db.commit()
-    return {"duplicates": duplicates, "removed": removed, "applied": apply}
+    return {
+        "duplicates": duplicates,
+        "removed" if apply else "removable": removed,
+        "kept_because_used": kept_because_used,
+        "applied": apply,
+    }
+
+
+def _referenced_recipe_ids(db: Session) -> set:
+    """
+    ID di ricette usate da un piano salvato o da un consumo registrato.
+
+    Sono intoccabili: cancellarle romperebbe uno slot del piano o farebbe sparire
+    i macro di un pasto gia' mangiato.
+    """
+    used = {
+        e.consumed_recipe_id
+        for e in db.query(database.ConsumedEntry).filter(
+            database.ConsumedEntry.consumed_recipe_id != None  # noqa: E711
+        ).all()
+    }
+    for plan in db.query(GeneratedWeeklyPlan).all():
+        for day in plan.daily_plans or []:
+            for meal in day.get("meals", []):
+                for item in meal.get("items") or []:
+                    if item.get("recipe_id"):
+                        used.add(item["recipe_id"])
+    return used
 
 
 @router.post("/backfill-free-meal-estimates")

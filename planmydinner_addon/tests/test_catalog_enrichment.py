@@ -196,6 +196,40 @@ class TestDedupe:
         dupes = PlannerEngine(db).find_duplicate_recipes()
         assert any(d["name"] == "Zuppa di ceci" and d["count"] == 3 for d in dupes), dupes
 
+    def test_non_cancella_una_ricetta_usata_dal_piano(self, client, catalogo_incompleto):
+        """Cancellare la copia puntata da un piano salvato lascerebbe uno slot che
+        rimanda a una ricetta inesistente."""
+        from planmydinner_addon.database import GeneratedWeeklyPlan
+        db = catalogo_incompleto
+        ids = []
+        for _ in range(2):
+            cid = str(uuid.uuid4())
+            ids.append(cid)
+            db.add(CandidateRecipe(id=cid, status="approved",
+                                   recipe_data=_recipe_data("Zuppa di ceci", "ceci cotti", "legumi", "pane")))
+        db.commit()
+        # il piano punta alla SECONDA copia, che quindi va conservata
+        db.add(GeneratedWeeklyPlan(
+            id=str(uuid.uuid4()), profile_id_A="aa", profile_id_B="bb",
+            week_start_date="2026-03-02", generated_at="2026-03-02",
+            daily_plans=[{"date": "2026-03-02", "meals": [
+                {"meal_type": "cena", "items": [{
+                    "item_name": "Zuppa di ceci", "food_group": "recipe", "quantity": 1,
+                    "unit": "recipe", "is_estimated_unit": False, "alternatives": [],
+                    "recipe_id": ids[1],
+                }]},
+            ]}],
+        ))
+        db.commit()
+
+        resp = client.post("/planner/dedupe-catalog", params={"profile_id_A": "aa", "apply": "true"})
+
+        assert resp.status_code == 200
+        rimossi = {r["id"] for r in resp.json()["removed"]}
+        assert ids[1] not in rimossi, "cancellata la copia usata dal piano"
+        db.expire_all()
+        assert db.query(CandidateRecipe).filter(CandidateRecipe.id == ids[1]).first() is not None
+
     def test_dry_run_non_cancella(self, client, catalogo_incompleto):
         db = catalogo_incompleto
         db.add(CandidateRecipe(id=str(uuid.uuid4()), status="approved",
@@ -206,7 +240,7 @@ class TestDedupe:
         resp = client.post("/planner/dedupe-catalog", params={"profile_id_A": "aa"})
 
         assert resp.status_code == 200
-        assert resp.json()["removed"] == []
+        assert resp.json()["removable"], "il dry-run deve dire cosa toglierebbe"
         assert db.query(CandidateRecipe).count() == prima
 
     def test_apply_tiene_una_copia(self, client, catalogo_incompleto):
