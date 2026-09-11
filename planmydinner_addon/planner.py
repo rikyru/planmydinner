@@ -1,3 +1,4 @@
+import copy
 import logging
 import os
 import uuid
@@ -884,6 +885,244 @@ class PlannerEngine:
                     _LOGGER.info(f"[pre-generate] Approved: '{result.name}' ({p_name}/{correct_fg} + {c_name})")
 
         _LOGGER.info(f"[pre-generate] Done: {len(generated_names)}/{len(combos)} recipes approved")
+
+    # ------------------------------------------------------------------
+    # Arricchimento mirato del catalogo
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _plan_option_entries(options: Optional[Dict[str, Any]]) -> List[Tuple[str, float]]:
+        """
+        Opzioni (nome, grammi) del piano nutrizionale, scartando i frammenti.
+
+        Il parser del PDF a volte spezza una voce in due — "lenticchie", "secche -
+        bollite" — e i pezzi finiscono nella lista come stringhe nude. Le voci
+        riconosciute bene arrivano invece come dict con la grammatura: sono quelle
+        che si possono usare per chiedere una ricetta sensata all'AI.
+        """
+        out: List[Tuple[str, float]] = []
+        seen = set()
+        for meal_options in (options or {}).values():
+            for opt in meal_options or []:
+                if not isinstance(opt, dict):
+                    continue
+                name = (opt.get("name") or "").strip()
+                if not name:
+                    continue
+                key = PlannerEngine._rotation_key(name)
+                if not key or key in seen:
+                    continue
+                seen.add(key)
+                out.append((name, float(opt.get("quantity") or 0)))
+        return out
+
+    def catalog_gaps(self, rules: schemas.PlanRules) -> Dict[str, Any]:
+        """
+        Ingredienti che il piano nutrizionale ammette ma per cui il catalogo non ha
+        NESSUNA ricetta.
+
+        E' la ragione vera della monotonia: se i legumi disponibili sono solo ceci e
+        lenticchie ma il piano ne chiede tre volte a settimana, nessun filtro di
+        rotazione puo' inventare la varieta' che manca.
+        """
+        pool = self._get_all_recipes()
+        used_proteins = {self._get_main_protein_item_from_recipe(r) for r in pool}
+        used_carbs = {self._get_main_carb_item_from_recipe(r) for r in pool}
+
+        proteins = []
+        for name, grams in self._plan_option_entries(rules.protein_options):
+            key = self._rotation_key(name)
+            proteins.append({
+                "name": name, "grams": grams, "key": key,
+                "food_group": self._infer_protein_fg(name),
+                "covered": key in used_proteins,
+            })
+        carbs = []
+        for name, grams in self._plan_option_entries(rules.carb_options):
+            key = self._rotation_key(name)
+            carbs.append({
+                "name": name, "grams": grams, "key": key, "covered": key in used_carbs,
+            })
+
+        return {
+            "proteins": proteins,
+            "carbs": carbs,
+            "missing_proteins": [p for p in proteins if not p["covered"]],
+            "missing_carbs": [c for c in carbs if not c["covered"]],
+            "catalog_size": len(pool),
+        }
+
+    def enrich_catalog(
+        self,
+        rules: schemas.PlanRules,
+        profile_id_A: str,
+        profile_id_B: str,
+        limit: int = 8,
+    ) -> Dict[str, Any]:
+        """
+        Chiede all'AI ricette per gli ingredienti che il piano ammette e il catalogo
+        non copre, accoppiando ogni proteina mancante a un carboidrato mancante
+        (cosi' una sola ricetta chiude due buchi).
+
+        Le ricette nascono come Recipe vere, taggate `ai`, quindi compaiono nella
+        vista Ricette dove si possono correggere o cancellare prima di fidarsene.
+        Ritorna il riepilogo di cio' che ha creato e di cio' che ha saltato.
+        """
+        created: List[dict] = []
+        skipped: List[str] = []
+
+        if not self.llm_gateway:
+            return {"created": created, "skipped": ["LLM non configurato"], "gaps_left": None}
+
+        profile_A = self._get_user_profile(profile_id_A)
+        profile_B = self._get_user_profile(profile_id_B) or schemas.UserProfile(
+            id=profile_id_B, name="Dummy"
+        )
+        if not profile_A:
+            return {"created": created, "skipped": [f"profilo {profile_id_A} non trovato"], "gaps_left": None}
+
+        gaps = self.catalog_gaps(rules)
+        missing_proteins = gaps["missing_proteins"][:limit]
+        missing_carbs = list(gaps["missing_carbs"])
+        if not missing_proteins and not missing_carbs:
+            return {"created": created, "skipped": ["nessun buco da riempire"], "gaps_left": gaps}
+
+        covered_carbs = [c for c in gaps["carbs"] if c["covered"]]
+        default_protein_g = float((rules.protein_target or {}).get("cena", 130))
+        default_carb_g = float((rules.carb_target or {}).get("cena", 80))
+
+        existing_names = [r.name for r in self._get_all_recipes()]
+
+        # Se mancano solo carboidrati, li si accoppia a proteine gia' coperte:
+        # serve comunque una ricetta nuova per farli entrare nel giro.
+        targets: List[Tuple[dict, Optional[dict]]] = []
+        for i, prot in enumerate(missing_proteins):
+            carb = missing_carbs[i] if i < len(missing_carbs) else None
+            targets.append((prot, carb))
+        leftover_carbs = missing_carbs[len(missing_proteins):]
+        for i, carb in enumerate(leftover_carbs):
+            if len(targets) >= limit:
+                break
+            prot = (gaps["proteins"][i % len(gaps["proteins"])]
+                    if gaps["proteins"] else None)
+            if prot:
+                targets.append((prot, carb))
+        targets = targets[:limit]
+
+        for prot, carb in targets:
+            carb_name = (carb or {}).get("name")
+            carb_grams = (carb or {}).get("grams") or 0
+            if not carb_name:
+                fallback = covered_carbs[len(created) % len(covered_carbs)] if covered_carbs else None
+                carb_name = (fallback or {}).get("name") or "pane"
+                carb_grams = (fallback or {}).get("grams") or 0
+
+            meal_plan_A = schemas.PlannedMeal(
+                meal_type="cena",
+                items=[
+                    schemas.PlannedItem(
+                        item_name=self._pretty_ingredient_name(prot["name"]),
+                        food_group="proteina",
+                        quantity=prot.get("grams") or default_protein_g,
+                        unit="g",
+                    ),
+                    schemas.PlannedItem(
+                        item_name=self._pretty_ingredient_name(carb_name),
+                        food_group="carboidrati",
+                        quantity=carb_grams or default_carb_g,
+                        unit="g",
+                    ),
+                ],
+            )
+            result = self._generate_llm_recipe_suggestion(
+                meal_plan_A, schemas.PlannedMeal(meal_type="cena", items=[]),
+                profile_A, profile_B,
+                pantry_items=[], consumed_entries_A=[], consumed_entries_B=[],
+                used_recipe_names=list(existing_names),
+            )
+            if not result:
+                skipped.append(f"{prot['name']} + {carb_name}: l'AI non ha prodotto una ricetta")
+                continue
+
+            recipe = self._promote_candidate_to_recipe(
+                result.recipe_id, protein_food_group=prot.get("food_group") or "proteina"
+            )
+            if not recipe:
+                skipped.append(f"{prot['name']}: ricetta generata ma non salvabile")
+                continue
+
+            existing_names.append(recipe.name)
+            created.append({
+                "id": recipe.id,
+                "name": recipe.name,
+                "protein": prot["name"],
+                "carb": carb_name,
+                "food_group": prot.get("food_group"),
+            })
+            _LOGGER.info(f"[enrich] Creata '{recipe.name}' ({prot['name']} + {carb_name})")
+
+        return {"created": created, "skipped": skipped, "gaps_left": self.catalog_gaps(rules)}
+
+    def _promote_candidate_to_recipe(
+        self, candidate_id: str, protein_food_group: str = "proteina"
+    ) -> Optional[Recipe]:
+        """
+        Trasforma una CandidateRecipe generata dall'AI in una Recipe vera.
+
+        Come Recipe compare nella vista Ricette, dove si puo' correggere o
+        cancellare: una ricetta inventata dall'AI deve poter essere rivista prima
+        di fidarsene. Sistema anche il food_group della proteina, che l'LLM salva
+        sempre come generico "proteina" — senza la categoria giusta la ricetta
+        sfugge ai limiti di rotazione settimanali.
+        """
+        cand = self.db.query(CandidateRecipe).filter(CandidateRecipe.id == candidate_id).first()
+        if not cand or not isinstance(cand.recipe_data, dict):
+            return None
+        data = dict(cand.recipe_data)
+
+        content = copy.deepcopy(data.get("content", []))
+        if protein_food_group not in ("proteina", "proteine"):
+            for ing in content:
+                if isinstance(ing, dict) and (ing.get("food_group") or "").lower() in ("proteina", "proteine"):
+                    ing["food_group"] = protein_food_group
+                    break
+
+        tags = dict(data.get("tags") or {})
+        tags["ai"] = ["true"]
+        recipe = Recipe(
+            id=str(uuid.uuid4()),
+            name=data.get("name") or "Ricetta generata",
+            description=data.get("description") or "Generata dall'AI per coprire un ingrediente del piano.",
+            is_composed_dish=bool(data.get("is_composed_dish")),
+            content=content,
+            steps=data.get("steps") or [],
+            total_time_minutes=int(data.get("total_time_minutes") or 25),
+            difficulty=data.get("difficulty") or "facile",
+            tags=tags,
+        )
+        self.db.add(recipe)
+        # La candidate ha esaurito il suo scopo: lasciarla creerebbe un doppione
+        # nel pool (una come Recipe e una come CandidateRecipe approvata).
+        self.db.delete(cand)
+        self.db.commit()
+        self.db.refresh(recipe)
+        return recipe
+
+    def find_duplicate_recipes(self) -> List[dict]:
+        """
+        Gruppi di ricette con lo stesso nome E gli stessi ingredienti principali.
+
+        I doppioni non fanno danno diretto ma restringono la varieta' reale: il
+        catalogo sembra piu' ricco di quanto sia.
+        """
+        groups: Dict[Tuple[str, Any], List[schemas.Recipe]] = {}
+        for rec in self._get_all_recipes():
+            key = ((rec.name or "").strip().lower(), self._recipe_fingerprint(rec))
+            groups.setdefault(key, []).append(rec)
+        return [
+            {"name": recs[0].name, "count": len(recs), "ids": [r.id for r in recs]}
+            for key, recs in groups.items() if len(recs) > 1
+        ]
 
     def _ensure_category_coverage(
         self,

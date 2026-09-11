@@ -126,6 +126,13 @@ def _find_plan_covering_date(db: Session, profile_id_A: str, target_date: date) 
 _USER_SET_FOOD_GROUPS = ("mensa", "free_meal", "not_eaten")
 
 
+def _latest_plan_rules(db: Session, profile_id: str):
+    """PlanRules piu' recenti di un profilo (None se il piano non e' mai stato importato)."""
+    return db.query(database.PlanRules).filter(
+        database.PlanRules.profile_id == profile_id
+    ).order_by(database.PlanRules.imported_at.desc()).first()
+
+
 def _empty_daily_plans(start_date: date) -> List[dict]:
     """Scheletro di settimana: 7 giorni con pranzo e cena vuoti."""
     return [
@@ -1168,6 +1175,100 @@ def set_generation_slots(profile_id: str, body: GenerationSlotsBody, db: Session
     db.add(rules)
     db.commit()
     return {"generation_slots": slots}
+
+
+@router.get("/catalog-gaps")
+def get_catalog_gaps(profile_id_A: str, db: Session = Depends(get_db)):
+    """
+    Ingredienti che il piano nutrizionale ammette ma per cui non esiste nessuna
+    ricetta in catalogo.
+
+    E' la misura della monotonia possibile: se i legumi disponibili sono due e il
+    piano ne chiede tre volte a settimana, la ripetizione e' aritmetica, non un
+    difetto della generazione.
+    """
+    rules = _latest_plan_rules(db, profile_id_A)
+    if not rules:
+        raise HTTPException(status_code=404, detail="Nessuna regola del piano per questo profilo.")
+    planner = PlannerEngine(db)
+    gaps = planner.catalog_gaps(schemas.PlanRules.from_orm(rules))
+    return {
+        "catalog_size": gaps["catalog_size"],
+        "proteins_covered": sum(1 for x in gaps["proteins"] if x["covered"]),
+        "proteins_total": len(gaps["proteins"]),
+        "carbs_covered": sum(1 for x in gaps["carbs"] if x["covered"]),
+        "carbs_total": len(gaps["carbs"]),
+        "missing_proteins": [x["name"] for x in gaps["missing_proteins"]],
+        "missing_carbs": [x["name"] for x in gaps["missing_carbs"]],
+        "duplicates": planner.find_duplicate_recipes(),
+    }
+
+
+@router.post("/enrich-catalog")
+def enrich_catalog(
+    request: Request,
+    profile_id_A: str,
+    profile_id_B: Optional[str] = None,
+    limit: int = 8,
+    db: Session = Depends(get_db),
+):
+    """
+    Chiede all'AI ricette per gli ingredienti scoperti del piano (vedi
+    /planner/catalog-gaps), una chiamata per ricetta.
+
+    Le ricette create sono Recipe vere, taggate `ai`: compaiono nella vista
+    Ricette e si possono correggere o cancellare prima di fidarsene. Richiede un
+    LLM configurato; e' idempotente nel senso che rilanciarlo lavora solo sui
+    buchi ancora aperti.
+    """
+    rules = _latest_plan_rules(db, profile_id_A)
+    if not rules:
+        raise HTTPException(status_code=404, detail="Nessuna regola del piano per questo profilo.")
+    if limit < 1 or limit > 20:
+        raise HTTPException(status_code=422, detail="limit deve essere fra 1 e 20.")
+
+    planner = PlannerEngine(db, llm_gateway=request.app.state.llm_gateway)
+    other = db.query(database.UserProfile).filter(
+        database.UserProfile.id != profile_id_A
+    ).first()
+    result = planner.enrich_catalog(
+        schemas.PlanRules.from_orm(rules),
+        profile_id_A,
+        profile_id_B or (other.id if other else profile_id_A),
+        limit=limit,
+    )
+    gaps = result.pop("gaps_left", None)
+    if gaps:
+        result["missing_proteins_left"] = [x["name"] for x in gaps["missing_proteins"]]
+        result["missing_carbs_left"] = [x["name"] for x in gaps["missing_carbs"]]
+    return result
+
+
+@router.post("/dedupe-catalog")
+def dedupe_catalog(profile_id_A: str, apply: bool = False, db: Session = Depends(get_db)):
+    """
+    Ricette identiche (stesso nome E stessi ingredienti principali) presenti piu'
+    volte: restringono la varieta' reale facendo sembrare il catalogo piu' ricco.
+
+    Di default fa solo il conto (dry-run): passare apply=true per cancellare,
+    tenendo sempre la prima copia di ogni gruppo.
+    """
+    planner = PlannerEngine(db)
+    duplicates = planner.find_duplicate_recipes()
+    removed = []
+    if apply:
+        for group in duplicates:
+            for rid in group["ids"][1:]:
+                rec = db.query(database.Recipe).filter(database.Recipe.id == rid).first()
+                cand = None if rec else db.query(database.CandidateRecipe).filter(
+                    database.CandidateRecipe.id == rid
+                ).first()
+                target = rec or cand
+                if target is not None:
+                    db.delete(target)
+                    removed.append({"id": rid, "name": group["name"]})
+        db.commit()
+    return {"duplicates": duplicates, "removed": removed, "applied": apply}
 
 
 @router.post("/backfill-free-meal-estimates")

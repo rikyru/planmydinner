@@ -64,6 +64,79 @@ const Recipes = defineComponent({
                 </div>
             </div>
 
+            <!-- Completa il catalogo: ingredienti del piano senza ricette -->
+            <div class="card" style="margin-bottom:20px;">
+                <div style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;"
+                     @click="showGaps = !showGaps; if (showGaps && !gaps) fetchGaps()">
+                    <h3 style="margin:0;">✨ Completa il catalogo
+                        <span class="hint" v-if="gaps">({{ gaps.missing_proteins.length + gaps.missing_carbs.length }} ingredienti scoperti)</span>
+                    </h3>
+                    <span style="font-size:18px;color:var(--text-3);">{{ showGaps ? '▲' : '▼' }}</span>
+                </div>
+
+                <div v-if="showGaps" style="margin-top:14px;">
+                    <p class="hint" style="margin:0 0 10px;">
+                        Il piano nutrizionale ammette questi ingredienti, ma non esiste nessuna
+                        ricetta che li usi: il planner è costretto a ripetere quelli che hai.
+                        L'AI ne scrive una per ciascuno — poi le trovi qui sotto, modificabili.
+                    </p>
+
+                    <div v-if="gapsLoading" class="hint">Carico...</div>
+                    <div v-else-if="!gaps" class="hint">Nessun dato: serve un piano importato.</div>
+                    <div v-else>
+                        <div style="display:flex;gap:18px;flex-wrap:wrap;margin-bottom:10px;font-size:13.5px;">
+                            <span>Proteine coperte: <strong>{{ gaps.proteins_covered }}/{{ gaps.proteins_total }}</strong></span>
+                            <span>Carboidrati coperti: <strong>{{ gaps.carbs_covered }}/{{ gaps.carbs_total }}</strong></span>
+                            <span>Ricette in catalogo: <strong>{{ gaps.catalog_size }}</strong></span>
+                        </div>
+
+                        <div v-if="gaps.missing_proteins.length" style="margin-bottom:8px;">
+                            <strong style="font-size:13px;">Proteine senza ricette:</strong>
+                            <span v-for="n in gaps.missing_proteins" :key="n" class="gap-chip">{{ n }}</span>
+                        </div>
+                        <div v-if="gaps.missing_carbs.length" style="margin-bottom:8px;">
+                            <strong style="font-size:13px;">Carboidrati senza ricette:</strong>
+                            <span v-for="n in gaps.missing_carbs" :key="n" class="gap-chip">{{ n }}</span>
+                        </div>
+                        <div v-if="!gaps.missing_proteins.length && !gaps.missing_carbs.length" class="hint">
+                            Tutti gli ingredienti del piano hanno almeno una ricetta. 👌
+                        </div>
+
+                        <div v-if="gaps.duplicates && gaps.duplicates.length" style="margin:10px 0;">
+                            <strong style="font-size:13px;">Doppioni:</strong>
+                            <span v-for="d in gaps.duplicates" :key="d.name" class="gap-chip">{{ d.name }} ×{{ d.count }}</span>
+                            <button class="btn-secondary btn-sm" style="margin-left:8px;"
+                                    @click="dedupe" :disabled="enriching">🧹 Rimuovi doppioni</button>
+                        </div>
+
+                        <div style="display:flex;gap:10px;align-items:center;margin-top:12px;flex-wrap:wrap;">
+                            <label class="hint">Quante ricette generare:</label>
+                            <input type="number" v-model.number="enrichLimit" min="1" max="20"
+                                   style="width:70px;">
+                            <button class="btn-primary" @click="enrich"
+                                    :disabled="enriching || (!gaps.missing_proteins.length && !gaps.missing_carbs.length)">
+                                {{ enriching ? 'Genero... (può volerci un minuto)' : '✨ Genera le ricette mancanti' }}
+                            </button>
+                        </div>
+
+                        <div v-if="enrichResult" style="margin-top:12px;">
+                            <div v-if="enrichResult.created.length">
+                                <strong style="font-size:13px;">Create:</strong>
+                                <ul style="margin:6px 0 0 18px;font-size:13px;">
+                                    <li v-for="c in enrichResult.created" :key="c.id">
+                                        {{ c.name }} <span class="hint">({{ c.protein }} + {{ c.carb }})</span>
+                                    </li>
+                                </ul>
+                            </div>
+                            <ul v-if="enrichResult.skipped.length"
+                                style="margin:6px 0 0 18px;font-size:12.5px;color:var(--text-3);">
+                                <li v-for="sk in enrichResult.skipped" :key="sk">{{ sk }}</li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <!-- Catalogo pasti mensa (da foto) -->
             <div class="card" style="margin-bottom:20px;">
                 <div style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;"
@@ -273,6 +346,13 @@ const Recipes = defineComponent({
             mensaEdit: { name: '', ingredients: [] },
             mensaSaving: false,
             mensaPlanSavingId: null,
+            // Completa il catalogo
+            showGaps: false,
+            gaps: null,
+            gapsLoading: false,
+            enriching: false,
+            enrichLimit: 8,
+            enrichResult: null,
             photoAnalyzing: false,
             profiles: [],
             // Bulk import
@@ -373,6 +453,65 @@ const Recipes = defineComponent({
             } finally {
                 this.photoAnalyzing = false;
                 ev.target.value = '';
+            }
+        },
+
+        // --- Completa il catalogo ---
+        async profileId() {
+            try {
+                const resp = await window.apiFetch('/profiles/');
+                const profiles = resp.ok ? await resp.json() : [];
+                return profiles.length ? profiles[0].id : null;
+            } catch (_) { return null; }
+        },
+        async fetchGaps() {
+            this.gapsLoading = true;
+            try {
+                const pid = await this.profileId();
+                if (!pid) { this.gaps = null; return; }
+                const resp = await window.apiFetch('/planner/catalog-gaps?profile_id_A=' + encodeURIComponent(pid));
+                this.gaps = resp.ok ? await resp.json() : null;
+            } catch (_) {
+                this.gaps = null;
+            } finally {
+                this.gapsLoading = false;
+            }
+        },
+        async enrich() {
+            this.enriching = true;
+            this.enrichResult = null;
+            try {
+                const pid = await this.profileId();
+                const params = new URLSearchParams({ profile_id_A: pid, limit: this.enrichLimit });
+                const resp = await window.apiFetch('/planner/enrich-catalog?' + params, { method: 'POST' });
+                if (!resp.ok) throw new Error(await resp.text());
+                this.enrichResult = await resp.json();
+                const n = this.enrichResult.created.length;
+                this.toast.add(n ? `${n} ricette generate!` : 'Nessuna ricetta generata.', n ? 'success' : 'error');
+                await this.fetchGaps();
+                await this.fetchRecipes();
+            } catch (e) {
+                this.toast.add('Errore: ' + e.message, 'error');
+            } finally {
+                this.enriching = false;
+            }
+        },
+        async dedupe() {
+            if (!confirm('Rimuovere le copie in più? Di ogni gruppo resta la prima.')) return;
+            this.enriching = true;
+            try {
+                const pid = await this.profileId();
+                const params = new URLSearchParams({ profile_id_A: pid, apply: 'true' });
+                const resp = await window.apiFetch('/planner/dedupe-catalog?' + params, { method: 'POST' });
+                if (!resp.ok) throw new Error(await resp.text());
+                const data = await resp.json();
+                this.toast.add(`${data.removed.length} doppioni rimossi.`, 'success');
+                await this.fetchGaps();
+                await this.fetchRecipes();
+            } catch (e) {
+                this.toast.add('Errore: ' + e.message, 'error');
+            } finally {
+                this.enriching = false;
             }
         },
 
