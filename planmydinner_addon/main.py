@@ -156,8 +156,25 @@ async def serve_ui_index(request: Request):
     html = html.replace("<head>", f'<head>\n    <base href="{base_href}">', 1)
     return HTMLResponse(html)
 
+class RevalidatingStaticFiles(StaticFiles):
+    """
+    StaticFiles che chiede sempre al browser di rivalidare.
+
+    Senza Cache-Control il browser applica una euristica e puo' tenersi una copia
+    vecchia per ore: se un asset viene corretto SENZA cambiare il suo ?v= (per
+    esempio ripristinando un file danneggiato), l'utente continua a vedere quello
+    rotto. Con no-cache la copia locale resta valida ma viene rivalidata via ETag,
+    quindi la richiesta e' un 304 vuoto finche' il file non cambia davvero.
+    """
+
+    def file_response(self, *args, **kwargs):
+        response = super().file_response(*args, **kwargs)
+        response.headers.setdefault("Cache-Control", "no-cache")
+        return response
+
+
 # Serve all other static assets (CSS, JS, images) — no html=True to avoid index fallback
-app.mount("/ui", StaticFiles(directory=frontend_dir), name="ui")
+app.mount("/ui", RevalidatingStaticFiles(directory=frontend_dir), name="ui")
 
 
 app.include_router(profiles_router.router)
