@@ -1081,11 +1081,21 @@ class PlannerEngine:
         data = dict(cand.recipe_data)
 
         content = copy.deepcopy(data.get("content", []))
-        if protein_food_group not in ("proteina", "proteine"):
-            for ing in content:
-                if isinstance(ing, dict) and (ing.get("food_group") or "").lower() in ("proteina", "proteine"):
-                    ing["food_group"] = protein_food_group
-                    break
+        for ing in content:
+            if not isinstance(ing, dict):
+                continue
+            if (ing.get("food_group") or "").lower() not in ("proteina", "proteine"):
+                continue
+            # La categoria arriva dal nome dell'OPZIONE del piano ("pesci di mare
+            # (media)"), che non sempre e' riconoscibile; il nome dell'ingrediente
+            # scelto dall'AI ("filetti di branzino") di solito lo e'. Senza una
+            # categoria specifica la ricetta sfugge ai limiti di rotazione.
+            fg = protein_food_group
+            if fg in ("proteina", "proteine"):
+                fg = self._infer_protein_fg(ing.get("name") or "")
+            if fg not in ("proteina", "proteine"):
+                ing["food_group"] = fg
+            break
 
         tags = dict(data.get("tags") or {})
         tags["ai"] = ["true"]
@@ -2245,7 +2255,8 @@ class PlannerEngine:
         ("cinghiale", "carne_rossa"), ("bresaola", "carne_rossa"),
         ("salmone", "pesce"), ("tonno", "pesce"), ("merluzzo", "pesce"), ("orata", "pesce"),
         ("spigola", "pesce"), ("branzino", "pesce"), ("sgombro", "pesce"),
-        ("gamber", "pesce"), ("pesce", "pesce"),
+        ("gamber", "pesce"), ("pesce", "pesce"), ("pesci", "pesce"),
+        ("platessa", "pesce"), ("nasello", "pesce"), ("sogliola", "pesce"),
         # uova di pesce (bottarga & co.) PRIMA della keyword generica "uova"
         ("uova di cefalo", "pesce"), ("uova di muggine", "pesce"),
         ("uova di lompo", "pesce"), ("bottarga", "pesce"),

@@ -257,3 +257,27 @@ class TestDedupe:
         db.expire_all()
         rimaste = [r for r in PlannerEngine(db)._get_all_recipes() if r.name == "Zuppa di ceci"]
         assert len(rimaste) == 1
+
+
+class TestCategoriaProteica:
+    def test_deduce_la_categoria_dall_ingrediente_se_l_opzione_non_basta(self, catalogo_incompleto):
+        """L'opzione del piano si chiama "pesci di mare (media)" e non e'
+        riconoscibile; l'ingrediente scelto dall'AI ("filetti di branzino") si'.
+        Senza categoria specifica la ricetta sfuggirebbe ai limiti di rotazione."""
+        db = catalogo_incompleto
+        p = PlannerEngine(db)
+        cid = str(uuid.uuid4())
+        db.add(CandidateRecipe(
+            id=cid, status="draft_structured",
+            recipe_data=_recipe_data("Branzino al forno", "filetti di branzino", "proteina", "patate"),
+        ))
+        db.commit()
+
+        rec = p._promote_candidate_to_recipe(cid, protein_food_group="proteina")
+
+        assert rec is not None
+        gruppi = {i["food_group"] for i in rec.content}
+        assert "pesce" in gruppi, gruppi
+
+    def test_pesci_al_plurale_e_riconosciuto(self):
+        assert PlannerEngine._infer_protein_fg("pesci di mare (media)") == "pesce"
