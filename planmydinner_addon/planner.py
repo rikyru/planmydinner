@@ -928,6 +928,10 @@ class PlannerEngine:
         pool = self._get_all_recipes()
         used_proteins = {self._get_main_protein_item_from_recipe(r) for r in pool}
         used_carbs = {self._get_main_carb_item_from_recipe(r) for r in pool}
+        # Ricette generate apposta per una voce del piano il cui nome e' una
+        # categoria e non un ingrediente (vedi _promote_candidate_to_recipe)
+        for rec in pool:
+            used_proteins.update((rec.tags or {}).get("plan_option") or [])
 
         proteins = []
         for name, grams in self._plan_option_entries(rules.protein_options):
@@ -1045,7 +1049,9 @@ class PlannerEngine:
                 continue
 
             recipe = self._promote_candidate_to_recipe(
-                result.recipe_id, protein_food_group=prot.get("food_group") or "proteina"
+                result.recipe_id,
+                protein_food_group=prot.get("food_group") or "proteina",
+                plan_option=prot["name"],
             )
             if not recipe:
                 skipped.append(f"{prot['name']}: ricetta generata ma non salvabile")
@@ -1064,7 +1070,8 @@ class PlannerEngine:
         return {"created": created, "skipped": skipped, "gaps_left": self.catalog_gaps(rules)}
 
     def _promote_candidate_to_recipe(
-        self, candidate_id: str, protein_food_group: str = "proteina"
+        self, candidate_id: str, protein_food_group: str = "proteina",
+        plan_option: Optional[str] = None,
     ) -> Optional[Recipe]:
         """
         Trasforma una CandidateRecipe generata dall'AI in una Recipe vera.
@@ -1099,6 +1106,12 @@ class PlannerEngine:
 
         tags = dict(data.get("tags") or {})
         tags["ai"] = ["true"]
+        if plan_option:
+            # Voce del piano che questa ricetta copre. Serve quando il nome
+            # dell'opzione e' una categoria ("pesci di mare (media)") e non
+            # l'ingrediente scelto ("branzino"): senza, il buco resterebbe aperto
+            # per sempre e ogni rilancio genererebbe un doppione.
+            tags["plan_option"] = [self._rotation_key(plan_option)]
         recipe = Recipe(
             id=str(uuid.uuid4()),
             name=data.get("name") or "Ricetta generata",

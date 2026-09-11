@@ -279,5 +279,28 @@ class TestCategoriaProteica:
         gruppi = {i["food_group"] for i in rec.content}
         assert "pesce" in gruppi, gruppi
 
+
+    def test_una_voce_generica_del_piano_resta_coperta(self, catalogo_incompleto):
+        """"pesci di mare (media)" non si riconosce in "branzino": senza un segno
+        esplicito il buco resterebbe aperto e ogni rilancio genererebbe un doppione."""
+        db = catalogo_incompleto
+        p = PlannerEngine(db)
+        cid = str(uuid.uuid4())
+        db.add(CandidateRecipe(
+            id=cid, status="draft_structured",
+            recipe_data=_recipe_data("Branzino al forno", "filetti di branzino", "proteina", "farro"),
+        ))
+        db.commit()
+        p._promote_candidate_to_recipe(cid, protein_food_group="proteina",
+                                       plan_option="pesci di mare (media)")
+
+        rules = p._get_latest_plan_rules("aa")
+        rules.protein_options = {"cena": list(rules.protein_options["cena"]) + [
+            {"name": "pesci di mare (media)", "quantity": 120, "unit": "g"},
+        ]}
+        gaps = p.catalog_gaps(rules)
+
+        assert "pesci di mare (media)" not in {x["name"] for x in gaps["missing_proteins"]}
+
     def test_pesci_al_plurale_e_riconosciuto(self):
         assert PlannerEngine._infer_protein_fg("pesci di mare (media)") == "pesce"
