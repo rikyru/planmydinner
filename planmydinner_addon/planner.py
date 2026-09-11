@@ -671,11 +671,23 @@ class PlannerEngine:
         if slot_plan is None:
             slot_plan = PlannerEngine._default_slot_plan(n_slots)
 
+        # I minimi del piano sono scritti per una settimana INTERA (14 pasti). Se si
+        # generano meno slot — perche' i pranzi li registra l'utente — puo' succedere
+        # che i minimi non ci stiano piu': in quel caso vengono riproporzionati, cosi'
+        # la generazione non si accanisce sulle categorie in deficit riempiendo tutta
+        # la settimana con le stesse due. Se invece ci stanno si rispettano tali e
+        # quali: sono la volonta' del nutrizionista. I massimi restano tetti.
+        raw_mins = {cat: int(tgt.get("min", 0)) for cat, tgt in frequency_targets.items()}
+        already = sum(int(v) for v in (initial_counts or {}).values())
+        budget = max(0, len(slot_plan)) + already
+        total_min = sum(raw_mins.values())
+        scale = min(1.0, budget / total_min) if total_min > budget and total_min else 1.0
+
         # Build state per category
         state: Dict[str, Dict[str, Any]] = {}
         for cat, tgt in sorted(frequency_targets.items()):
             state[cat] = {
-                "min": int(tgt.get("min", 0)),
+                "min": int(round(raw_mins.get(cat, 0) * scale)),
                 "max": int(tgt.get("max", 7)),
                 "hard_max": tgt.get("hard_max"),
                 "count": int((initial_counts or {}).get(cat, 0)),
@@ -683,6 +695,7 @@ class PlannerEngine:
 
         sequence: Dict[Tuple[int, str], Optional[str]] = {}
         assigned_by_day: Dict[int, List[Optional[str]]] = {}
+        previous: Optional[str] = None
 
         for day, meal_type in slot_plan:
             same_day = [c for c in assigned_by_day.get(day, []) if c]
@@ -692,29 +705,38 @@ class PlannerEngine:
                 hard_max = s["hard_max"]
                 effective_max = hard_max if hard_max is not None else s["max"]
                 if s["count"] >= effective_max:
-                    return (-999, 0)  # exhausted
-                # Priority: deficit from min first, then remaining room
+                    return (-999, 0, 0)  # exhausted
+                # Prima chi e' sotto il minimo; poi la categoria usata MENO finora
+                # (altrimenti gli slot liberi finiscono tutti a chi ha il tetto piu'
+                # alto, es. legumi 5 e uova 4, e la settimana diventa monotona);
+                # a parita', chi ha piu' spazio residuo.
                 deficit = max(0, s["min"] - s["count"])
                 room = effective_max - s["count"]
-                return (deficit, room)
+                return (deficit, -s["count"], room)
 
-            # Pick category with highest score, excluding categories already used
-            # in the same day (no repeated protein at pranzo and cena)
-            candidates = [c for c in sorted(state.keys()) if c not in same_day]
-            best = max(candidates, key=_score, default=None)
-
-            # Check if best is still valid (not exhausted)
-            if best:
-                s = state[best]
+            def _pick(excluded: List[str]) -> Optional[str]:
+                candidates = [c for c in sorted(state.keys()) if c not in excluded]
+                choice = max(candidates, key=_score, default=None)
+                if not choice:
+                    return None
+                s = state[choice]
                 hard_max = s["hard_max"]
                 effective_max = hard_max if hard_max is not None else s["max"]
-                if s["count"] >= effective_max:
-                    best = None
+                return None if s["count"] >= effective_max else choice
+
+            # Mai la stessa categoria nello stesso giorno, e nemmeno nello slot
+            # precedente: legumi lunedi' sera e martedi' sera si somigliano troppo
+            # anche quando le ricette sono diverse. Se cosi' non resta nessuna
+            # categoria disponibile si riprova senza il vincolo sul precedente.
+            best = _pick(same_day + ([previous] if previous else []))
+            if best is None:
+                best = _pick(same_day)
 
             if best:
                 state[best]["count"] += 1
             sequence[(day, meal_type)] = best
             assigned_by_day.setdefault(day, []).append(best)
+            previous = best or previous
 
         return sequence
 
@@ -1066,7 +1088,9 @@ class PlannerEngine:
         for ing in ingredients:
             fg = (ing.get("food_group") if isinstance(ing, dict) else ing.food_group or "").lower()
             if fg in self._CARB_GROUPS:
-                return ((ing.get("name") if isinstance(ing, dict) else ing.name) or "").lower()
+                return self._rotation_key(
+                    (ing.get("name") if isinstance(ing, dict) else ing.name) or ""
+                )
         return None
 
     def _get_main_carb_item_from_recipe(self, recipe: "schemas.Recipe") -> Optional[str]:
@@ -1074,7 +1098,7 @@ class PlannerEngine:
         ingredients = recipe.content.components if recipe.is_composed_dish else recipe.content
         for ing in ingredients:
             if (ing.food_group or "").lower() in self._CARB_GROUPS:
-                return (ing.name or "").lower()
+                return self._rotation_key(ing.name or "")
         return None
 
     @staticmethod
@@ -2064,6 +2088,28 @@ class PlannerEngine:
     }
     _VEG_DEFAULT_PORTION_GRAMS: float = 150.0
 
+    # Qualificatori da listino alimentare: non aggiungono nulla al nome di un piatto
+    _NAME_NOISE = (
+        "secchi", "secche", "freschi", "fresche", "surgelati", "surgelate",
+        "bolliti", "bollite", "bollito", "bollita", "cotti", "cotte", "cotto", "cotta",
+        "crudi", "crude", "crudo", "cruda", "intero", "intera", "interi",
+        "sgrassato", "sgrassata", "sgocciolato", "sgocciolata", "affumicato", "affumicata",
+        "nazionale", "magri", "magro", "tagli", "media", "piccola", "grande",
+    )
+
+    @staticmethod
+    def _pretty_ingredient_name(name: str) -> str:
+        """
+        Ripulisce un nome di ingrediente importato dal piano nutrizionale, che arriva
+        in forma da tabella alimentare — "uova di gallina - intero", "ceci secchi -
+        bolliti", "pollo - sovracoscio - senza pelle" — e come nome di piatto suona
+        malissimo. Tiene la parte prima del trattino e toglie i qualificatori.
+        """
+        base = (name or "").split(" - ")[0].strip()
+        words = [w for w in base.split() if w.lower().strip(",-") not in PlannerEngine._NAME_NOISE]
+        cleaned = " ".join(words).strip(" ,-") or base.strip() or name or ""
+        return cleaned
+
     @staticmethod
     def _make_display_name(content: list, specific_veg: Optional[str] = None) -> str:
         """
@@ -2082,7 +2128,9 @@ class PlannerEngine:
 
         for ing in content:
             fg = (ing.get("food_group") if isinstance(ing, dict) else ing.food_group or "").lower()
-            name = (ing.get("name") if isinstance(ing, dict) else ing.name or "").title()
+            name = PlannerEngine._pretty_ingredient_name(
+                ing.get("name") if isinstance(ing, dict) else ing.name or ""
+            )
             if not protein_name and fg in protein_groups:
                 protein_name = name
             elif not carb_name and fg in carb_groups:
@@ -2090,25 +2138,31 @@ class PlannerEngine:
             elif fg == "verdure":
                 has_veg = True
 
+        def _cap(text: str) -> str:
+            text = (text or "").strip()
+            return text[:1].upper() + text[1:] if text else text
+
         if protein_name and carb_name:
             base = f"{protein_name} con {carb_name}"
             if specific_veg:
-                return f"{base} e {specific_veg.title()}"
+                return _cap(f"{base} e {PlannerEngine._pretty_ingredient_name(specific_veg)}")
             if has_veg:
                 # Step D: never show generic "Verdure" — pick deterministic fallback from catalog
                 fallback = PlannerEngine._VEG_CATALOG[
                     abs(hash(protein_name or "")) % len(PlannerEngine._VEG_CATALOG)
                 ]["name"]
-                return f"{base} e {fallback.title()}"
-            return base
+                return _cap(f"{base} e {fallback}")
+            return _cap(base)
         if protein_name:
-            return protein_name
+            return _cap(protein_name)
         if carb_name:
-            return carb_name
+            return _cap(carb_name)
         # Last resort: first ingredient
         if content:
             first = content[0]
-            return (first.get("name") if isinstance(first, dict) else first.name or "Pasto").title()
+            return _cap(PlannerEngine._pretty_ingredient_name(
+                first.get("name") if isinstance(first, dict) else first.name or "Pasto"
+            ))
         return "Pasto"
 
     @staticmethod
@@ -2200,8 +2254,33 @@ class PlannerEngine:
         for ing in ingredients:
             fg = (ing.get("food_group") if isinstance(ing, dict) else ing.food_group or "").lower()
             if fg in self._PROTEIN_GROUPS:
-                return (ing.get("name") if isinstance(ing, dict) else ing.name or "").lower()
+                return self._rotation_key(
+                    ing.get("name") if isinstance(ing, dict) else ing.name or ""
+                )
         return None
+
+    # Varianti dello stesso alimento base: per la rotazione "pane tostato" e
+    # "pane per tramezzini" sono pane, non due carboidrati diversi.
+    _ROTATION_BASE_FOODS = ("pane", "piadina", "patate", "riso", "couscous", "cous cous")
+
+    @classmethod
+    def _rotation_key(cls, name: str) -> str:
+        """
+        Chiave con cui un ingrediente conta per la rotazione. Normalizza le varianti
+        dello stesso alimento — "ceci cotti", "ceci secchi - bolliti" e "Ceci" sono
+        lo stesso ingrediente, come "pane", "pane tostato" e "pane (mollica)" —
+        altrimenti la settimana propone tre volte i ceci o cinque volte il pane
+        credendo di aver variato.
+        """
+        cleaned = cls._pretty_ingredient_name(name or "").lower().strip()
+        cleaned = cleaned.replace("(", " ").replace(")", " ")
+        cleaned = " ".join(cleaned.split())
+        for base in cls._ROTATION_BASE_FOODS:
+            # "pane tostato" -> pane, ma "pasta sfoglia" resta distinta da "pasta"
+            # (non e' nella lista: sono impasti diversi, non lo stesso alimento).
+            if cleaned == base or cleaned.startswith(base + " "):
+                return "cous cous" if base == "couscous" else base
+        return cleaned
 
     def _get_main_protein_item_from_recipe(self, recipe: "schemas.Recipe") -> Optional[str]:
         """Returns the name (lowercase) of the main protein ingredient from an already-loaded Recipe."""
@@ -2209,7 +2288,7 @@ class PlannerEngine:
         for ing in ingredients:
             fg = (ing.food_group or "").lower()
             if fg in self._PROTEIN_GROUPS:
-                return (ing.name or "").lower()
+                return self._rotation_key(ing.name or "")
         return None
 
     def _load_recent_plan_recipe_ids(self, profile_id_A: str, before_date: date, days_back: int = 14) -> set:
@@ -3002,9 +3081,13 @@ class PlannerEngine:
                     f"Will trigger LLM if catalog candidates insufficient."
                 )
 
-        # Step B Tier 1: max 2/week per specific protein item (soft filter, keeps variety)
+        # Step B Tier 1: a parita' di categoria, evita di riproporre lo stesso
+        # ingrediente proteico gia' usato nella settimana (soft: si applica solo se
+        # restano alternative). Prima la soglia era 2, ma su una settimana di sole
+        # cene vedersi i ceci due volte su cinque e' esattamente la monotonia che
+        # l'utente nota.
         if protein_item_counts:
-            over_limit = {k for k, v in protein_item_counts.items() if v >= 2}
+            over_limit = {k for k, v in protein_item_counts.items() if v >= 1}
             preferred = [
                 r for r in valid_recipes
                 if (self._get_main_protein_item_from_recipe(r["recipe"]) or "") not in over_limit
@@ -3017,13 +3100,13 @@ class PlannerEngine:
                 valid_recipes = preferred
                 _LOGGER.info(
                     f"[protein-item-filter] Narrowed to {len(preferred)} recipe(s) "
-                    f"excluding items used ≥2 times: {over_limit}"
+                    f"excluding items already used: {over_limit}"
                 )
 
         # Varietà carboidrati (soft): evita lo stesso carbo per >= 3 slot a settimana
         # e nello slot immediatamente precedente. Si applica solo se restano alternative.
         if carb_item_counts is not None or recent_carb_items:
-            over_carbs = {k for k, v in (carb_item_counts or {}).items() if v >= 3}
+            over_carbs = {k for k, v in (carb_item_counts or {}).items() if v >= 2}
             over_carbs |= set((recent_carb_items or [])[-1:])
             if over_carbs:
                 preferred = [
