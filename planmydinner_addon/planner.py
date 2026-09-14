@@ -4194,13 +4194,27 @@ class PlannerEngine:
         if not name:
             return None
 
-        # Stesso nome gia' in catalogo: si riusa quella invece di accumulare cloni
-        existing = self.db.query(Recipe).filter(func.lower(Recipe.name) == name.lower()).first()
-        if existing:
-            self.db.delete(candidate)
-            self.db.commit()
-            _LOGGER.info(f"[adattato] '{name}' era gia' in catalogo: riuso {existing.id}")
-            return existing.id, existing.name
+        # Stesso nome E stesse dosi gia' in catalogo: si riusa quella invece di
+        # accumulare cloni. Se le dosi differiscono si salva comunque la nuova:
+        # chi ha scritto "bresaola, 90 g" non deve ritrovarsi i 150 g di una
+        # ricetta omonima salvata tempo prima.
+        def _dosi(content) -> set:
+            out = set()
+            for ing in content or []:
+                if not isinstance(ing, dict):
+                    continue
+                q = next(iter((ing.get("quantities") or {}).values()), None)
+                grammi = float((q or {}).get("grams_equiv") or (q or {}).get("qty") or 0)
+                out.add(((ing.get("name") or "").strip().lower(), round(grammi)))
+            return out
+
+        nuove_dosi = _dosi(data.get("content"))
+        for existing in self.db.query(Recipe).filter(func.lower(Recipe.name) == name.lower()).all():
+            if _dosi(existing.content) == nuove_dosi:
+                self.db.delete(candidate)
+                self.db.commit()
+                _LOGGER.info(f"[adattato] '{name}' era gia' in catalogo: riuso {existing.id}")
+                return existing.id, existing.name
 
         recipe = self._promote_candidate_to_recipe(candidate.id, tags_extra={"adattata": ["true"]})
         if not recipe:

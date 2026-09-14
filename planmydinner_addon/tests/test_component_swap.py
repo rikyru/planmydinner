@@ -215,6 +215,37 @@ class TestPastoAdattatoDiventaRicetta:
         nuova = db.query(Recipe).filter(Recipe.name == scelta.name).first()
         assert any(r.id == nuova.id for r in PlannerEngine(db)._get_all_recipes())
 
+    def test_dosi_diverse_non_vengono_schiacciate_su_una_ricetta_omonima(self, client, piano_con_regole):
+        """Chi scrive "bresaola, 90 g" non deve ritrovarsi i grammi di una ricetta
+        omonima salvata tempo prima: sarebbe ignorare in silenzio cio' che ha chiesto."""
+        db, rid = piano_con_regole
+
+        def variante(grammi):
+            return client.post("/planner/custom-component", params={
+                "profile_id_A": "aa", "profile_id_B": "bb", "meal_type": "cena",
+                "recipe_id": rid, "component": "protein",
+            }, json={"name": "bresaola", "grams": grammi}).json()
+
+        prima = variante(90)
+        client.post("/planner/apply-recipe-option", params={
+            "profile_id_A": "aa", "profile_id_B": "bb", "meal_type": "cena",
+            "current_date": GIORNO.isoformat(), "recipe_id": prima["recipe_id"],
+        })
+        seconda = variante(150)
+        client.post("/planner/apply-recipe-option", params={
+            "profile_id_A": "aa", "profile_id_B": "bb", "meal_type": "cena",
+            "current_date": GIORNO.isoformat(), "recipe_id": seconda["recipe_id"],
+        })
+
+        db.expire_all()
+        omonime = db.query(Recipe).filter(Recipe.name == prima["name"]).all()
+        grammi = set()
+        for r in omonime:
+            for i in r.content:
+                if i["name"] == "bresaola":
+                    grammi.add(round(float(list(i["quantities"].values())[0]["grams_equiv"])))
+        assert grammi == {90, 150}, f"dosi perse: {grammi}"
+
     def test_applicarla_due_volte_non_crea_doppioni(self, piano_con_regole):
         db, rid = piano_con_regole
         p = PlannerEngine(db)
