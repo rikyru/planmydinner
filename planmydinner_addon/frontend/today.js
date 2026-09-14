@@ -212,6 +212,25 @@ const TodayView = defineComponent({
                         <button @click="closeModal" class="btn-secondary">Annulla</button>
                     </div>
 
+                    <div v-if="currentComponent" class="custom-component">
+                        <label class="hint">Oppure scrivi tu {{ currentComponent === 'carb' ? 'il carboidrato' : currentComponent === 'protein' ? 'la proteina' : 'la verdura' }}:</label>
+                        <div class="custom-component__row">
+                            <input v-model="customComponentName" type="text"
+                                   placeholder="es. bresaola"
+                                   @keyup.enter="applyCustomComponent">
+                            <input v-model.number="customComponentGrams" type="number"
+                                   min="1" max="2000" placeholder="g">
+                            <button class="btn-primary btn-sm"
+                                    :disabled="!customComponentName.trim() || applyingCustomComponent"
+                                    @click="applyCustomComponent">
+                                {{ applyingCustomComponent ? '...' : 'Usa' }}
+                            </button>
+                        </div>
+                        <p class="hint" style="margin:4px 0 0;">
+                            Grammi vuoti: quelli che il piano prevede per questo componente.
+                        </p>
+                    </div>
+
                     <div v-if="showRecipeSearch" style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px;">
                         <input v-model="recipeSearchQuery" type="text" placeholder="Cerca per nome..."
                                style="width:100%;box-sizing:border-box;">
@@ -291,6 +310,11 @@ const TodayView = defineComponent({
             modalError: null,
             // Ricerca libera tra le proprie ricette (modal cambio ricetta)
             showRecipeSearch: false,
+            currentComponent: null,
+            currentRecipeId: null,
+            customComponentName: '',
+            customComponentGrams: null,
+            applyingCustomComponent: false,
             allRecipes: [],
             loadingAllRecipes: false,
             recipeSearchQuery: '',
@@ -569,6 +593,10 @@ const TodayView = defineComponent({
         },
         async openComponentModal(mealType, recipeId, component) {
             this.currentMealType = mealType;
+            this.currentComponent = component;
+            this.currentRecipeId = recipeId;
+            this.customComponentName = '';
+            this.customComponentGrams = null;
             this.recipeOptions = [];
             this.modalError = null;
             this.loadingOptions = true;
@@ -591,9 +619,40 @@ const TodayView = defineComponent({
                 this.loadingOptions = false;
             }
         },
+        async applyCustomComponent() {
+            const nome = this.customComponentName.trim();
+            if (!nome || !this.currentComponent || !this.currentRecipeId) return;
+            this.applyingCustomComponent = true;
+            this.modalError = null;
+            try {
+                const params = new URLSearchParams({
+                    profile_id_A: this.profileA.id,
+                    profile_id_B: this.profileB.id,
+                    meal_type: this.currentMealType,
+                    recipe_id: this.currentRecipeId,
+                    component: this.currentComponent,
+                });
+                const resp = await window.apiFetch('/planner/custom-component?' + params, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name: nome, grams: this.customComponentGrams || null }),
+                });
+                if (!resp.ok) throw new Error(await resp.text());
+                const option = await resp.json();
+                await this.applyRecipe(option.recipe_id);
+            } catch (e) {
+                this.modalError = 'Errore: ' + e.message;
+            } finally {
+                this.applyingCustomComponent = false;
+            }
+        },
         closeModal() {
             this.showModal = false;
             this.currentMealType = null;
+            this.currentComponent = null;
+            this.currentRecipeId = null;
+            this.customComponentName = '';
+            this.customComponentGrams = null;
             this.recipeOptions = [];
             this.modalError = null;
             this.showRecipeSearch = false;

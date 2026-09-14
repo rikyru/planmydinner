@@ -55,6 +55,12 @@ class TrackingStartDateBody(_BaseModel):
     start_date: str  # ISO date
 
 
+class CustomComponentBody(_BaseModel):
+    """Ingrediente scritto a mano per sostituire un componente del pasto."""
+    name: str
+    grams: Optional[float] = None
+
+
 class GenerationSlotsBody(_BaseModel):
     """Giorni della settimana (0=lunedi ... 6=domenica) da generare, per tipo di pasto."""
     pranzo: List[int]
@@ -891,6 +897,58 @@ def change_component(
     if not options:
         raise HTTPException(status_code=404, detail=f"No alternatives found for component '{component}'.")
     return options
+
+
+@router.post("/custom-component", response_model=schemas.ChangeRecipeOption)
+def custom_component(
+    request: Request,
+    profile_id_A: str,
+    profile_id_B: str,
+    meal_type: str,
+    recipe_id: str,
+    component: str,          # 'carb' | 'protein' | 'veg'
+    body: CustomComponentBody,
+    db: Session = Depends(get_db),
+):
+    """
+    Sostituisce un componente del pasto con un ingrediente scritto a mano.
+
+    Le alternative proposte vengono dal piano nutrizionale, ma non sempre c'e'
+    quello che si ha in casa: qui si scrive "bresaola" e si ottiene la stessa
+    variante, con la grammatura che il piano prevede per quel componente (o
+    quella indicata). Applicandola diventa una ricetta riproponibile come le
+    altre.
+    """
+    if component not in ("carb", "protein", "veg"):
+        raise HTTPException(status_code=422, detail="component: usa carb, protein o veg.")
+    nome = (body.name or "").strip()
+    if not nome:
+        raise HTTPException(status_code=422, detail="Scrivi il nome dell'ingrediente.")
+    if len(nome) > 80:
+        raise HTTPException(status_code=422, detail="Nome troppo lungo (max 80 caratteri).")
+    if body.grams is not None and not (1 <= body.grams <= 2000):
+        raise HTTPException(status_code=422, detail="Grammi fuori scala (1-2000).")
+
+    planner = PlannerEngine(db, llm_gateway=request.app.state.llm_gateway)
+    profile_A = planner._get_user_profile(profile_id_A)
+    if not profile_A:
+        raise HTTPException(status_code=404, detail="Profilo non trovato.")
+    profile_B = planner._get_user_profile(profile_id_B) or schemas.UserProfile(
+        id=profile_id_B, name="Dummy"
+    )
+    rules_row = _latest_plan_rules(db, profile_id_A)
+    option = planner.build_custom_component_variant(
+        recipe_id, component, nome, profile_A, profile_B,
+        grams=body.grams,
+        rules=schemas.PlanRules.from_orm(rules_row) if rules_row else None,
+        meal_type=meal_type,
+    )
+    if not option:
+        raise HTTPException(
+            status_code=404,
+            detail="Non riesco a costruire la variante: ricetta non trovata o senza quel componente.",
+        )
+    return option
 
 
 @router.post("/apply-recipe-option")

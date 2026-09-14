@@ -277,6 +277,25 @@ const WeekView = defineComponent({
                         <div v-if="!mealModalApplying && !mealModalError && mealModalOptions.length === 0" class="hint">
                             Nessuna alternativa trovata.
                         </div>
+
+                        <div class="custom-component">
+                            <label class="hint">Oppure scrivi tu {{ mealModalComponent === 'carb' ? 'il carboidrato' : mealModalComponent === 'protein' ? 'la proteina' : 'la verdura' }}:</label>
+                            <div class="custom-component__row">
+                                <input v-model="customComponentName" type="text"
+                                       placeholder="es. bresaola"
+                                       @keyup.enter="applyCustomComponent">
+                                <input v-model.number="customComponentGrams" type="number"
+                                       min="1" max="2000" placeholder="g">
+                                <button class="btn-primary btn-sm"
+                                        :disabled="!customComponentName.trim() || applyingCustomComponent"
+                                        @click="applyCustomComponent">
+                                    {{ applyingCustomComponent ? '...' : 'Usa' }}
+                                </button>
+                            </div>
+                            <p class="hint" style="margin:4px 0 0;">
+                                Grammi vuoti: quelli che il piano prevede per questo componente.
+                            </p>
+                        </div>
                     </div>
 
                     <!-- Vista pasto personalizzato -->
@@ -666,6 +685,9 @@ const WeekView = defineComponent({
             mealModalDate: null,
             mealModalMeal: null,
             mealModalComponent: null,
+            customComponentName: '',
+            customComponentGrams: null,
+            applyingCustomComponent: false,
             mealModalOptions: [],
             mealModalApplying: false,
             mealModalError: null,
@@ -1045,6 +1067,8 @@ const WeekView = defineComponent({
         async openMealComponent(component) {
             if (!this.profileA || !this.profileB) return;
             this.mealModalComponent = component;
+            this.customComponentName = '';
+            this.customComponentGrams = null;
             this.mealModalOptions = [];
             this.mealModalError = null;
             this.mealModalApplying = true;
@@ -1066,6 +1090,34 @@ const WeekView = defineComponent({
                 this.mealModalError = 'Errore: ' + e.message;
             } finally {
                 this.mealModalApplying = false;
+            }
+        },
+        async applyCustomComponent() {
+            const nome = this.customComponentName.trim();
+            const recipeId = this.mealModalMeal?.items?.[0]?.recipe_id;
+            if (!nome || !this.mealModalComponent || !recipeId) return;
+            this.applyingCustomComponent = true;
+            this.mealModalError = null;
+            try {
+                const params = new URLSearchParams({
+                    profile_id_A: this.profileA.id,
+                    profile_id_B: this.profileB.id,
+                    meal_type: this.mealModalMeal.meal_type,
+                    recipe_id: recipeId,
+                    component: this.mealModalComponent,
+                });
+                const resp = await window.apiFetch('/planner/custom-component?' + params, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name: nome, grams: this.customComponentGrams || null }),
+                });
+                if (!resp.ok) throw new Error(await resp.text());
+                const option = await resp.json();
+                await this.applyMealOption(option.recipe_id);
+            } catch (e) {
+                this.mealModalError = 'Errore: ' + e.message;
+            } finally {
+                this.applyingCustomComponent = false;
             }
         },
         async applyMealOption(recipeId) {

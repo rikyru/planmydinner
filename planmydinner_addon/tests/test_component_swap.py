@@ -253,3 +253,98 @@ class TestPastoAdattatoDiventaRicetta:
         assert PlannerEngine(db).apply_recipe_to_plan(
             "aa", "bb", "cena", date(2027, 1, 1), rid,
         ) is False
+
+
+class TestIngredienteScrittoAMano:
+    """Le alternative proposte vengono dal piano, ma non sempre c'e' quello che
+    si ha in casa: si deve poter scrivere "bresaola"."""
+
+    def _chiama(self, client, nome, componente="protein", grammi=None):
+        return client.post("/planner/custom-component", params={
+            "profile_id_A": "aa", "profile_id_B": "bb", "meal_type": "cena",
+            "recipe_id": self.rid, "component": componente,
+        }, json={"name": nome, "grams": grammi})
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, piano_con_regole):
+        self.db, self.rid = piano_con_regole
+
+    def test_crea_la_variante_con_l_ingrediente_scritto(self, client):
+        resp = self._chiama(client, "bresaola")
+
+        assert resp.status_code == 200, resp.text
+        opzione = resp.json()
+        assert "bresaola" in opzione["name"].lower()
+        assert opzione["key_ingredients"] == ["bresaola"]
+
+    def test_la_categoria_e_dedotta_dal_nome(self, client):
+        """Senza categoria specifica la ricetta sfuggirebbe ai limiti di rotazione."""
+        resp = self._chiama(client, "bresaola")
+        p = PlannerEngine(self.db)
+
+        assert p._get_main_protein_category(resp.json()["recipe_id"]) == "carne_rossa"
+
+    def test_usa_le_grammature_del_piano_se_non_specificate(self, client):
+        resp = self._chiama(client, "bresaola")
+        ingr, _ = PlannerEngine(self.db)._get_recipe_content(resp.json()["recipe_id"])
+
+        bres = next(i for i in ingr if (i.name if not isinstance(i, dict) else i["name"]) == "bresaola")
+        q = next(iter((bres.quantities if not isinstance(bres, dict) else bres["quantities"]).values()))
+        grammi = float(q.grams_equiv if not isinstance(q, dict) else q["grams_equiv"])
+        assert grammi == 130, "doveva usare protein_target della cena"
+
+    def test_grammi_espliciti(self, client):
+        resp = self._chiama(client, "bresaola", grammi=90)
+        ingr, _ = PlannerEngine(self.db)._get_recipe_content(resp.json()["recipe_id"])
+
+        bres = next(i for i in ingr if (i.name if not isinstance(i, dict) else i["name"]) == "bresaola")
+        q = next(iter((bres.quantities if not isinstance(bres, dict) else bres["quantities"]).values()))
+        assert float(q.grams_equiv if not isinstance(q, dict) else q["grams_equiv"]) == 90
+
+    def test_conserva_gli_altri_componenti(self, client):
+        resp = self._chiama(client, "bresaola")
+        ingr, _ = PlannerEngine(self.db)._get_recipe_content(resp.json()["recipe_id"])
+
+        nomi = {(i.name if not isinstance(i, dict) else i["name"]).lower() for i in ingr}
+        assert "pane" in nomi and "pomodorini" in nomi
+        assert "ceci bolliti" not in nomi, "la proteina vecchia doveva sparire"
+
+    def test_funziona_anche_per_carbo_e_verdura(self, client):
+        for componente, atteso in (("carb", "focaccia"), ("veg", "cicoria")):
+            resp = self._chiama(client, atteso, componente=componente)
+            assert resp.status_code == 200, f"{componente}: {resp.text[:120]}"
+            assert atteso in resp.json()["name"].lower()
+
+    def test_applicandola_diventa_una_ricetta_riproponibile(self, client):
+        opzione = self._chiama(client, "bresaola").json()
+
+        applica = client.post("/planner/apply-recipe-option", params={
+            "profile_id_A": "aa", "profile_id_B": "bb", "meal_type": "cena",
+            "current_date": GIORNO.isoformat(), "recipe_id": opzione["recipe_id"],
+        })
+
+        assert applica.status_code == 200
+        self.db.expire_all()
+        salvata = self.db.query(Recipe).filter(Recipe.name == opzione["name"]).first()
+        assert salvata is not None
+        assert "true" in (salvata.tags or {}).get("adattata", [])
+
+    @pytest.mark.parametrize("nome,grammi,atteso", [
+        ("", None, 422),
+        ("   ", None, 422),
+        ("x" * 81, None, 422),
+        ("bresaola", 0, 422),
+        ("bresaola", 5000, 422),
+    ])
+    def test_input_non_validi(self, client, nome, grammi, atteso):
+        assert self._chiama(client, nome, grammi=grammi).status_code == atteso
+
+    def test_componente_sconosciuto(self, client):
+        assert self._chiama(client, "bresaola", componente="dolce").status_code == 422
+
+    def test_ricetta_inesistente(self, client):
+        resp = client.post("/planner/custom-component", params={
+            "profile_id_A": "aa", "profile_id_B": "bb", "meal_type": "cena",
+            "recipe_id": "non-esiste", "component": "protein",
+        }, json={"name": "bresaola"})
+        assert resp.status_code == 404

@@ -710,3 +710,14 @@ input[type="checkbox"] { accent-color: var(--primary); }
     background: var(--warning-soft); color: var(--text-2);
     border: 1px solid color-mix(in srgb, var(--warning) 30%, transparent);
 }
+
+/* Scelta libera di un componente (modal cambio carbo/proteina/verdura) */
+.custom-component {
+    margin-top: 12px; padding-top: 12px;
+    border-top: 1px solid var(--border);
+}
+.custom-component__row {
+    display: flex; gap: 8px; align-items: center; margin-top: 6px;
+}
+.custom-component__row input[type="text"] { flex: 1; min-width: 0; }
+.custom-component__row input[type="number"] { width: 72px; flex: none; }

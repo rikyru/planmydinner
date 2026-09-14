@@ -3817,6 +3817,134 @@ class PlannerEngine:
         _add(rules.protein_options, "proteina", default_protein)
         return schemas.PlannedMeal(meal_type=meal_type, items=items)
 
+    # Gruppi alimentari sostituiti da ciascun componente del pasto
+    _COMPONENT_FOOD_GROUPS = {
+        "carb": ("carboidrati", "carboidrato"),
+        "protein": ("proteina", "proteine", "pollo", "pesce", "carne_rossa",
+                    "legumi", "uova", "latticini", "formaggio", "carne_bianca"),
+        "veg": ("verdure", "verdura"),
+    }
+
+    def build_custom_component_variant(
+        self,
+        recipe_id: str,
+        component: str,
+        ingredient_name: str,
+        profile_A: schemas.UserProfile,
+        profile_B: schemas.UserProfile,
+        grams: Optional[float] = None,
+        rules: Optional[schemas.PlanRules] = None,
+        meal_type: str = "cena",
+    ) -> Optional[schemas.ChangeRecipeOption]:
+        """
+        Variante del pasto con un ingrediente scelto a mano ("bresaola").
+
+        Le alternative proposte vengono dal piano nutrizionale, ma non sempre c'e'
+        quello che si ha in casa o voglia di mangiare. Le grammature: quelle
+        indicate dall'utente, altrimenti quelle che il piano prevede per quel
+        componente in quel pasto, altrimenti quelle dell'ingrediente sostituito.
+
+        Il food_group viene dedotto dal nome ("bresaola" -> carne_rossa): senza
+        categoria specifica la ricetta sfuggirebbe ai limiti di rotazione.
+        """
+        name = (ingredient_name or "").strip()
+        if not name:
+            return None
+        current_ingredients, _ = self._get_recipe_content(recipe_id)
+        if not current_ingredients:
+            return None
+
+        target_fgs = self._COMPONENT_FOOD_GROUPS.get(component)
+        if not target_fgs:
+            return None
+
+        def _fg_of(ing) -> str:
+            return ((ing.get("food_group") if isinstance(ing, dict) else ing.food_group) or "").lower()
+
+        def _ing_to_dict(ing) -> dict:
+            if isinstance(ing, dict):
+                return ing
+            d = ing.model_dump()
+            d["quantities"] = {
+                k: (v.model_dump() if hasattr(v, "model_dump") else v)
+                for k, v in d["quantities"].items()
+            }
+            return d
+
+        kept = [_ing_to_dict(i) for i in current_ingredients if _fg_of(i) not in target_fgs]
+        sostituito = next((i for i in current_ingredients if _fg_of(i) in target_fgs), None)
+
+        if grams is None and rules is not None:
+            if component == "carb":
+                grams = float((rules.carb_target or {}).get(meal_type, 0)) or None
+            elif component == "protein":
+                grams = float((rules.protein_target or {}).get(meal_type, 0)) or None
+        if grams is None and sostituito is not None:
+            quantities = (sostituito.get("quantities") if isinstance(sostituito, dict)
+                          else {k: v.model_dump() for k, v in sostituito.quantities.items()}) or {}
+            for v in quantities.values():
+                g = float(v.get("grams_equiv") or v.get("qty") or 0) if isinstance(v, dict) else 0.0
+                if g > 0:
+                    grams = g
+                    break
+        if grams is None:
+            grams = self._VEG_DEFAULT_PORTION_GRAMS if component == "veg" else 120.0
+
+        if component == "veg":
+            food_group = "verdure"
+        elif component == "carb":
+            food_group = "carboidrati"
+        else:
+            # Categoria specifica dal nome, cosi' la rotazione settimanale la vede
+            food_group = self._infer_protein_fg(name)
+            if food_group in ("proteina", "proteine"):
+                food_group = "proteina"
+
+        new_ing = {
+            "name": name,
+            "food_group": food_group,
+            "quantities": {
+                profile_A.id: {"qty": float(grams), "unit": "g", "grams_equiv": float(grams)},
+                profile_B.id: {"qty": float(grams), "unit": "g", "grams_equiv": float(grams)},
+            },
+        }
+        new_content = kept + [new_ing]
+        display = self._make_display_name(
+            new_content, specific_veg=name if component == "veg" else None
+        )
+        recipe_data = {
+            "name": display,
+            "description": f"Variante con {name} scelto a mano.",
+            "is_composed_dish": False,
+            "content": new_content,
+            "steps": [],
+            "total_time_minutes": 20,
+            "difficulty": "facile",
+            "tags": {"cooking_methods": ["tegame"], "mood": ["normale"], "cleanup": ["facile"]},
+        }
+        try:
+            candidate_id = str(uuid.uuid4())
+            self.db.add(CandidateRecipe(
+                id=candidate_id, status="draft_structured", recipe_data=recipe_data,
+            ))
+            self.db.commit()
+        except Exception as e:
+            _LOGGER.error(f"Errore creazione variante personalizzata '{name}': {e}")
+            self.db.rollback()
+            return None
+
+        return schemas.ChangeRecipeOption(
+            option_id=str(uuid.uuid4()),
+            recipe_id=candidate_id,
+            name=display,
+            total_time_minutes=20,
+            difficulty="facile",
+            cleanup_score="facile",
+            key_ingredients=[name],
+            divergence_strategy=f"custom_{component}",
+            divergence_details=f"Scelto a mano: {name} ({float(grams):g}g)",
+        )
+
     def get_component_alternatives(
         self,
         recipe_id: str,
