@@ -7,7 +7,7 @@ bottoni non facevano nulla; e la variante scelta restava una bozza invisibile,
 persa dopo quella sera invece di diventare una ricetta riproponibile.
 """
 import uuid
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 
@@ -348,3 +348,74 @@ class TestIngredienteScrittoAMano:
             "recipe_id": "non-esiste", "component": "protein",
         }, json={"name": "bresaola"})
         assert resp.status_code == 404
+
+
+class TestPianiSovrapposti:
+    """Rigenerando a meta' settimana il piano vecchio resta se contiene pasti
+    registrati, quindi due piani possono coprire lo stesso giorno. Leggere da uno
+    e scrivere sull'altro faceva sembrare riuscita un'operazione che non cambiava
+    nulla: e' cosi' che "bresaola per il pranzo di ieri" non veniva presa."""
+
+    @pytest.fixture
+    def due_piani(self, piano_con_regole):
+        db, rid = piano_con_regole
+        # il piano del fixture parte dal 2 marzo (generato lo stesso giorno);
+        # se ne aggiunge uno piu' recente che copre gli stessi giorni
+        ieri = GIORNO + timedelta(days=1)
+        db.add(GeneratedWeeklyPlan(
+            id="piano-recente", profile_id_A="aa", profile_id_B="bb",
+            week_start_date=ieri.isoformat(),
+            generated_at=(GIORNO + timedelta(days=2)).isoformat(),
+            daily_plans=[{
+                "date": (ieri + timedelta(days=i)).isoformat(),
+                "meals": [
+                    {"meal_type": "pranzo", "items": [{
+                        "item_name": "Pollo al forno", "food_group": "recipe",
+                        "quantity": 1, "unit": "recipe", "is_estimated_unit": False,
+                        "alternatives": [], "recipe_id": rid,
+                    }]},
+                    {"meal_type": "cena", "items": []},
+                ],
+            } for i in range(7)],
+        ))
+        db.commit()
+        return db, rid, ieri
+
+    def test_scrive_sul_piano_che_l_utente_sta_guardando(self, due_piani):
+        db, rid, ieri = due_piani
+        p = PlannerEngine(db)
+
+        scelto = p.find_plan_covering_date("aa", ieri)
+
+        assert scelto.id == "piano-recente", "deve vincere il piano piu' recente"
+
+    def test_il_cambio_si_vede_davvero(self, client, due_piani):
+        db, rid, ieri = due_piani
+        opzione = client.post("/planner/custom-component", params={
+            "profile_id_A": "aa", "profile_id_B": "bb", "meal_type": "pranzo",
+            "recipe_id": rid, "component": "protein",
+        }, json={"name": "bresaola"}).json()
+
+        applica = client.post("/planner/apply-recipe-option", params={
+            "profile_id_A": "aa", "profile_id_B": "bb", "meal_type": "pranzo",
+            "current_date": ieri.isoformat(), "recipe_id": opzione["recipe_id"],
+        })
+        assert applica.status_code == 200
+
+        db.expire_all()
+        letto = client.get("/planner/plan-for-date", params={
+            "profile_id_A": "aa", "profile_id_B": "bb", "target_date": ieri.isoformat(),
+        }).json()
+        giorno = next(d for d in letto["daily_plans"] if d["date"] == ieri.isoformat())
+        pranzo = next(m for m in giorno["meals"] if m["meal_type"] == "pranzo")
+        assert "bresaola" in pranzo["items"][0]["item_name"].lower(),             f"il cambio non si vede: {pranzo['items'][0]['item_name']}"
+
+    def test_uno_slot_inesistente_non_finge_successo(self, piano_con_regole):
+        """Rispondere "fatto!" senza aver scritto nulla e' come nascondere l'errore."""
+        db, rid = piano_con_regole
+
+        esito = PlannerEngine(db).apply_recipe_to_plan(
+            "aa", "bb", "colazione", GIORNO, rid,
+        )
+
+        assert esito is False

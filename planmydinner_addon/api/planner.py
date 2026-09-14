@@ -115,15 +115,13 @@ router = APIRouter(
 # ---------------------------------------------------------------------------
 
 def _find_plan_covering_date(db: Session, profile_id_A: str, target_date: date) -> Optional[GeneratedWeeklyPlan]:
-    """Find the most recently generated plan whose 7-day window covers target_date."""
-    plans = db.query(GeneratedWeeklyPlan).filter(
-        GeneratedWeeklyPlan.profile_id_A == profile_id_A,
-    ).order_by(GeneratedWeeklyPlan.generated_at.desc()).all()
-    for plan in plans:
-        plan_start = date.fromisoformat(plan.week_start_date)
-        if plan_start <= target_date <= plan_start + timedelta(days=6):
-            return plan
-    return None
+    """Il piano piu' recente la cui settimana copre target_date.
+
+    Unica regola condivisa fra lettura e scrittura: quando piu' piani si
+    sovrappongono, leggere da uno e scrivere su un altro fa sembrare riuscita
+    un'operazione che non cambia nulla.
+    """
+    return PlannerEngine(db).find_plan_covering_date(profile_id_A, target_date)
 
 
 # Slot "bloccati": pasti che l'utente ha già registrato o deciso e che una

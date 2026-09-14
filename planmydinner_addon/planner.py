@@ -1792,19 +1792,10 @@ class PlannerEngine:
         if not rules:
             return None
 
-        plans = self.db.query(GeneratedWeeklyPlan).filter(
-            GeneratedWeeklyPlan.profile_id_A == profile_id_A,
-        ).all()
-        target_plan = None
-        plan_start_date = None
-        for p in plans:
-            plan_start = date.fromisoformat(p.week_start_date)
-            if plan_start <= current_date <= plan_start + timedelta(days=6):
-                target_plan = p
-                plan_start_date = plan_start
-                break
+        target_plan = self.find_plan_covering_date(profile_id_A, current_date)
         if not target_plan:
             return None
+        plan_start_date = date.fromisoformat(target_plan.week_start_date)
 
         slots_config = generation_slots_for(rules)
         protein_cat_limits = self._default_protein_cat_limits(rules)
@@ -2565,6 +2556,31 @@ class PlannerEngine:
             fg = (ing.food_group or "").lower()
             if fg in self._PROTEIN_GROUPS:
                 return self._rotation_key(ing.name or "")
+        return None
+
+    def find_plan_covering_date(
+        self, profile_id_A: str, target_date: date
+    ) -> Optional[GeneratedWeeklyPlan]:
+        """
+        Il piano che copre `target_date`: il piu' recente, se piu' d'uno la copre.
+
+        I piani si sovrappongono per scelta — rigenerando da mercoledi' quello
+        vecchio resta se contiene pasti registrati nei giorni precedenti — quindi
+        "il primo che salta fuori dal database" non basta: scrivere sul piano
+        sbagliato non cambia nulla di cio' che l'utente vede, e l'operazione
+        sembra riuscita mentre non lo e'. Stesso ordinamento che usa la lettura
+        (vedi _find_plan_covering_date in api/planner.py).
+        """
+        plans = self.db.query(GeneratedWeeklyPlan).filter(
+            GeneratedWeeklyPlan.profile_id_A == profile_id_A,
+        ).order_by(
+            GeneratedWeeklyPlan.generated_at.desc(),
+            GeneratedWeeklyPlan.week_start_date.desc(),
+        ).all()
+        for plan in plans:
+            start = date.fromisoformat(plan.week_start_date)
+            if start <= target_date <= start + timedelta(days=6):
+                return plan
         return None
 
     def _load_recent_plan_recipe_ids(self, profile_id_A: str, before_date: date, days_back: int = 14) -> set:
@@ -4201,16 +4217,9 @@ class PlannerEngine:
         recipe_id: str
     ) -> bool:
         import copy
-        # Find the plan whose 7-day window covers current_date (rolling, no Monday-snapping)
-        all_plans = self.db.query(GeneratedWeeklyPlan).filter(
-            GeneratedWeeklyPlan.profile_id_A == profile_id_A,
-        ).all()
-        plan = None
-        for p in all_plans:
-            plan_start = date.fromisoformat(p.week_start_date)
-            if plan_start <= current_date <= plan_start + timedelta(days=6):
-                plan = p
-                break
+        # Il piano che copre current_date; se piu' d'uno la copre vince il piu'
+        # recente, lo stesso che l'utente sta guardando.
+        plan = self.find_plan_covering_date(profile_id_A, current_date)
         if not plan:
             _LOGGER.warning(
                 f"No GeneratedWeeklyPlan found for {profile_id_A} covering {current_date.isoformat()}"
@@ -4238,6 +4247,7 @@ class PlannerEngine:
                 _LOGGER.warning(f"Recipe {recipe_id} not found in Recipe or CandidateRecipe.")
                 return False
         updated = copy.deepcopy(plan.daily_plans)
+        applied = False
         for day in updated:
             if day["date"] == current_date.isoformat():
                 for meal in day["meals"]:
@@ -4246,6 +4256,15 @@ class PlannerEngine:
                                           "quantity": 1, "unit": "recipe",
                                           "is_estimated_unit": False, "alternatives": [],
                                           "recipe_id": recipe_id}]
+                        applied = True
+        if not applied:
+            # Meglio un errore che un "fatto!" a cui non corrisponde nulla: era
+            # cosi' che scrivere sul piano sbagliato passava per un successo.
+            _LOGGER.warning(
+                f"[apply] Nessuno slot '{meal_type}' il {current_date.isoformat()} "
+                f"nel piano {plan.week_start_date}: niente da aggiornare."
+            )
+            return False
         plan.daily_plans = updated
         self.db.add(plan)
         self.db.commit()
