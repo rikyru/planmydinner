@@ -1072,6 +1072,7 @@ class PlannerEngine:
     def _promote_candidate_to_recipe(
         self, candidate_id: str, protein_food_group: str = "proteina",
         plan_option: Optional[str] = None,
+        tags_extra: Optional[Dict[str, List[str]]] = None,
     ) -> Optional[Recipe]:
         """
         Trasforma una CandidateRecipe generata dall'AI in una Recipe vera.
@@ -1105,7 +1106,7 @@ class PlannerEngine:
             break
 
         tags = dict(data.get("tags") or {})
-        tags["ai"] = ["true"]
+        tags.update(tags_extra or {"ai": ["true"]})
         if plan_option:
             # Voce del piano che questa ricetta copre. Serve quando il nome
             # dell'opzione e' una categoria ("pesci di mare (media)") e non
@@ -1115,7 +1116,7 @@ class PlannerEngine:
         recipe = Recipe(
             id=str(uuid.uuid4()),
             name=data.get("name") or "Ricetta generata",
-            description=data.get("description") or "Generata dall'AI per coprire un ingrediente del piano.",
+            description=data.get("description") or "Salvata dal piano.",
             is_composed_dish=bool(data.get("is_composed_dish")),
             content=content,
             steps=data.get("steps") or [],
@@ -2370,8 +2371,11 @@ class PlannerEngine:
         """
         base = (name or "").split(" - ")[0].strip()
         words = [w for w in base.split() if w.lower().strip(",-") not in PlannerEngine._NAME_NOISE]
-        cleaned = " ".join(words).strip(" ,-") or base.strip() or name or ""
-        return cleaned
+        if not words:
+            # Solo qualificatori, nessun alimento: es. "secche - bollite", pezzo
+            # orfano di una voce che il parser del PDF ha spezzato in due.
+            return ""
+        return " ".join(words).strip(" ,-")
 
     @staticmethod
     def _make_display_name(content: list, specific_veg: Optional[str] = None) -> str:
@@ -2384,6 +2388,7 @@ class PlannerEngine:
         protein_name = None
         carb_name = None
         has_veg = False
+        real_veg = None
 
         protein_groups = {"proteina", "proteine", "pollo", "carne_bianca", "pesce", "carne_rossa",
                           "legumi", "uova", "latticini", "formaggio"}
@@ -2400,6 +2405,11 @@ class PlannerEngine:
                 carb_name = name
             elif fg == "verdure":
                 has_veg = True
+                # La verdura del nome deve essere quella che c'e' davvero nel
+                # piatto: prima veniva pescata dal catalogo in base a un hash,
+                # quindi il nome prometteva radicchio e dentro c'erano pomodorini.
+                if not real_veg and name and name.lower() not in PlannerEngine._VEG_GENERIC_NAMES:
+                    real_veg = name
 
         def _cap(text: str) -> str:
             text = (text or "").strip()
@@ -2409,8 +2419,11 @@ class PlannerEngine:
             base = f"{protein_name} con {carb_name}"
             if specific_veg:
                 return _cap(f"{base} e {PlannerEngine._pretty_ingredient_name(specific_veg)}")
+            if real_veg:
+                return _cap(f"{base} e {real_veg}")
             if has_veg:
-                # Step D: never show generic "Verdure" — pick deterministic fallback from catalog
+                # Verdura generica ("verdure", "contorno"): non c'e' un nome vero da
+                # mostrare, si sceglie dal catalogo in modo deterministico.
                 fallback = PlannerEngine._VEG_CATALOG[
                     abs(hash(protein_name or "")) % len(PlannerEngine._VEG_CATALOG)
                 ]["name"]
@@ -3705,6 +3718,46 @@ class PlannerEngine:
 
         return trace
 
+    def _rules_to_component_options(
+        self, rules: schemas.PlanRules, meal_type: str
+    ) -> schemas.PlannedMeal:
+        """
+        PlannedMeal con TUTTE le alternative ammesse dal piano per quel pasto.
+
+        Serve al cambio di un singolo componente: il piano nutrizionale elenca
+        gia' i carboidrati e le proteine consentiti con le rispettive grammature
+        (80 g di riso ma 300 g di patate), quindi le alternative proposte sono
+        quelle vere invece di una lista fissa scritta nel codice.
+        """
+        items: List[schemas.PlannedItem] = []
+        default_carb = float((rules.carb_target or {}).get(meal_type, 80))
+        default_protein = float((rules.protein_target or {}).get(meal_type, 130))
+
+        def _add(options, food_group: str, default_grams: float) -> None:
+            for opt in (options or {}).get(meal_type) or []:
+                name = opt.get("name") if isinstance(opt, dict) else opt
+                if not name or not isinstance(name, str):
+                    continue
+                # Il parser del PDF spezza certe voci e lascia orfani i pezzi
+                # ("secche - bollite" da "lenticchie, secche - bollite"): proporli
+                # come alternativa darebbe un piatto di "Secche".
+                if food_group == "proteina":
+                    if self._infer_protein_fg(name) in ("proteina", "proteine"):
+                        continue
+                elif not self._pretty_ingredient_name(name).strip():
+                    continue
+                grams = float(opt.get("quantity") or 0) if isinstance(opt, dict) else 0.0
+                items.append(schemas.PlannedItem(
+                    item_name=self._pretty_ingredient_name(name),
+                    food_group=food_group,
+                    quantity=grams or default_grams,
+                    unit="g",
+                ))
+
+        _add(rules.carb_options, "carboidrati", default_carb)
+        _add(rules.protein_options, "proteina", default_protein)
+        return schemas.PlannedMeal(meal_type=meal_type, items=items)
+
     def get_component_alternatives(
         self,
         recipe_id: str,
@@ -3829,12 +3882,16 @@ class PlannerEngine:
             if (ing.get("food_group") if isinstance(ing, dict) else ing.food_group or "").lower() not in target_fgs
         ]
 
-        # Get target grams from meal plan
+        # Grammatura prevista dal piano per ciascuna alternativa: 80 g di riso e
+        # 300 g di patate non sono intercambiabili a parita' di peso.
+        grams_by_name: Dict[str, float] = {}
         target_qty = 0
         for item in meal_plan_A.items:
             if item.food_group.lower() in target_fgs:
-                target_qty = item.quantity
-                break
+                if not target_qty:
+                    target_qty = item.quantity
+                if item.item_name:
+                    grams_by_name[item.item_name.lower()] = item.quantity
 
         # Build list of alternative names from the meal plan items for that component
         alternatives = [item.item_name for item in meal_plan_A.items if item.food_group.lower() in target_fgs and item.item_name]
@@ -3846,7 +3903,7 @@ class PlannerEngine:
 
         # Deduplicate, exclude current ingredient names
         current_names = {(ing.get("name") if isinstance(ing, dict) else ing.name or "").lower() for ing in current_ingredients if (ing.get("food_group") if isinstance(ing, dict) else ing.food_group or "").lower() in target_fgs}
-        alternatives = list(dict.fromkeys(a for a in alternatives if a.lower() not in current_names))[:4]
+        alternatives = list(dict.fromkeys(a for a in alternatives if a.lower() not in current_names))[:6]
 
         if not alternatives:
             return []
@@ -3854,12 +3911,13 @@ class PlannerEngine:
         options = []
         for alt_name in alternatives:
             food_group = "carboidrati" if component == "carb" else "proteina"
+            alt_grams = grams_by_name.get(alt_name.lower()) or target_qty
             new_ing = {
                 "name": alt_name,
                 "food_group": food_group,
                 "quantities": {
-                    profile_A.id: _make_qty(target_qty),
-                    profile_B.id: _make_qty(target_qty),
+                    profile_A.id: _make_qty(alt_grams),
+                    profile_B.id: _make_qty(alt_grams),
                 },
             }
             new_content = list(kept_ingredients) + [new_ing]
@@ -3888,13 +3946,56 @@ class PlannerEngine:
                     cleanup_score="facile",
                     key_ingredients=[alt_name],
                     divergence_strategy=f"swap_{component}",
-                    divergence_details=f"Solo {component} cambiato: {alt_name} ({target_qty}g)",
+                    divergence_details=f"Solo {component} cambiato: {alt_name} ({alt_grams:g}g)",
                 ))
             except Exception as e:
                 _LOGGER.error(f"Errore creazione CandidateRecipe per variante '{alt_name}': {e}")
                 self.db.rollback()
 
         return options
+
+    # Bozze che hanno un loro posto e non vanno trasformate in ricette da cucinare:
+    # i pasti fotografati vivono nel catalogo "Pasti da foto", i pasti fissi nella
+    # routine, le stime dei pasti liberi servono solo a dare dei macro al giorno.
+    _NON_RECIPE_CANDIDATE_TAGS = ("mensa", "routine", "free_meal_estimate")
+
+    def _materialize_chosen_candidate(
+        self, candidate: CandidateRecipe
+    ) -> Optional[Tuple[str, str]]:
+        """
+        Trasforma in Recipe vera la bozza che l'utente ha scelto per il proprio
+        piano — tipicamente un pasto adattato cambiandone carbo, proteina o
+        verdura — cosi' resta disponibile per le settimane successive.
+
+        Ritorna (recipe_id, nome) oppure None se la bozza non e' una ricetta
+        (pasto da foto, pasto fisso, stima di un pasto libero) o e' gia' approvata.
+        """
+        if candidate.status != "draft_structured":
+            return None
+        data = candidate.recipe_data
+        if not isinstance(data, dict):
+            return None
+        tags = data.get("tags") or {}
+        if any(t in tags for t in self._NON_RECIPE_CANDIDATE_TAGS):
+            return None
+
+        name = (data.get("name") or "").strip()
+        if not name:
+            return None
+
+        # Stesso nome gia' in catalogo: si riusa quella invece di accumulare cloni
+        existing = self.db.query(Recipe).filter(func.lower(Recipe.name) == name.lower()).first()
+        if existing:
+            self.db.delete(candidate)
+            self.db.commit()
+            _LOGGER.info(f"[adattato] '{name}' era gia' in catalogo: riuso {existing.id}")
+            return existing.id, existing.name
+
+        recipe = self._promote_candidate_to_recipe(candidate.id, tags_extra={"adattata": ["true"]})
+        if not recipe:
+            return None
+        _LOGGER.info(f"[adattato] '{recipe.name}' salvata come ricetta riproponibile")
+        return recipe.id, recipe.name
 
     def apply_recipe_to_plan(
         self,
@@ -3916,7 +4017,9 @@ class PlannerEngine:
                 plan = p
                 break
         if not plan:
-            _LOGGER.warning(f"No GeneratedWeeklyPlan found for {profile_id_A} week {week_start.isoformat()}")
+            _LOGGER.warning(
+                f"No GeneratedWeeklyPlan found for {profile_id_A} covering {current_date.isoformat()}"
+            )
             return False
         recipe = self.db.query(Recipe).filter(Recipe.id == recipe_id).first()
         if recipe:
@@ -3925,14 +4028,17 @@ class PlannerEngine:
             # Ricerca in CandidateRecipe (ricette generate dall'LLM non ancora approvate)
             candidate = self.db.query(CandidateRecipe).filter(CandidateRecipe.id == recipe_id).first()
             if candidate:
-                recipe_name = candidate.recipe_data.get("name", "Ricetta AI") if isinstance(candidate.recipe_data, dict) else getattr(candidate.recipe_data, "name", "Ricetta AI")
-                _LOGGER.info(f"Recipe {recipe_id} found in CandidateRecipe: {recipe_name}")
-                # Incrementa usage_count e auto-promuove se soglia raggiunta
-                candidate.usage_count = (candidate.usage_count or 0) + 1
-                if candidate.usage_count >= 2 and candidate.status == "draft_structured":
-                    candidate.status = "approved"
-                    _LOGGER.info(f"CandidateRecipe {recipe_id} auto-promossa ad 'approved' (usage_count={candidate.usage_count})")
-                self.db.add(candidate)
+                # Sceglierla per il proprio piano e' un gesto deliberato: la variante
+                # diventa subito una ricetta vera, visibile in Ricette e ripescabile
+                # dal planner. Prima restava una bozza invisibile e il pasto adattato
+                # andava perso dopo quella sera.
+                promoted = self._materialize_chosen_candidate(candidate)
+                if promoted:
+                    recipe_id, recipe_name = promoted
+                else:
+                    recipe_name = candidate.recipe_data.get("name", "Ricetta AI") if isinstance(candidate.recipe_data, dict) else getattr(candidate.recipe_data, "name", "Ricetta AI")
+                    candidate.usage_count = (candidate.usage_count or 0) + 1
+                    self.db.add(candidate)
             else:
                 _LOGGER.warning(f"Recipe {recipe_id} not found in Recipe or CandidateRecipe.")
                 return False

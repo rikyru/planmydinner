@@ -846,23 +846,39 @@ def change_component(
     db: Session = Depends(get_db)
 ):
     """
-    Return recipe options with only one component swapped (carb or protein).
-    Preserves the other component and uses exact target grams from the plan.
+    Return recipe options with only one component swapped (carb, protein or veg).
+    Preserves the other components and uses the grams the plan prescribes.
+
+    Le alternative escono dalle PlanRules — cioe' dagli alimenti che il piano
+    nutrizionale ammette per quel pasto, con le loro grammature. Prima serviva per
+    forza un vecchio StructuredMealPlan importato: chi ha solo le PlanRules (il
+    caso normale dopo l'import del PDF) si vedeva rispondere 404 e i bottoni
+    "cambia carbo/proteina/verdura" non facevano nulla.
     """
     planner = PlannerEngine(db, llm_gateway=request.app.state.llm_gateway)
 
-    weekly_plan_A = planner._get_latest_meal_plan(profile_id_A)
-    if not weekly_plan_A:
-        raise HTTPException(status_code=404, detail=f"No meal plan for '{profile_id_A}'.")
+    meal_plan_A = None
+    rules = _latest_plan_rules(db, profile_id_A)
+    if rules:
+        meal_plan_A = planner._rules_to_component_options(
+            schemas.PlanRules.from_orm(rules), meal_type
+        )
 
-    # Match by weekday so this works for any rolling date
-    daily_plan_A = next((d for d in weekly_plan_A.daily_plans if date.fromisoformat(d.date).weekday() == current_date.weekday()), None)
-    if not daily_plan_A:
-        raise HTTPException(status_code=404, detail="No daily plan for this weekday.")
-
-    meal_plan_A = next((m for m in daily_plan_A.meals if m.meal_type == meal_type), None)
-    if not meal_plan_A:
-        raise HTTPException(status_code=404, detail=f"No '{meal_type}' plan for this date.")
+    if meal_plan_A is None or not meal_plan_A.items:
+        # Percorso legacy: profili con un piano importato ma senza PlanRules
+        weekly_plan_A = planner._get_latest_meal_plan(profile_id_A)
+        if not weekly_plan_A:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Nessun piano per '{profile_id_A}': importa il piano nutrizionale.",
+            )
+        # Match by weekday so this works for any rolling date
+        daily_plan_A = next((d for d in weekly_plan_A.daily_plans if date.fromisoformat(d.date).weekday() == current_date.weekday()), None)
+        if not daily_plan_A:
+            raise HTTPException(status_code=404, detail="No daily plan for this weekday.")
+        meal_plan_A = next((m for m in daily_plan_A.meals if m.meal_type == meal_type), None)
+        if not meal_plan_A:
+            raise HTTPException(status_code=404, detail=f"No '{meal_type}' plan for this date.")
 
     profile_A = planner._get_user_profile(profile_id_A)
     profile_B = planner._get_user_profile(profile_id_B)
