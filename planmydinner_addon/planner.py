@@ -4,7 +4,7 @@ import os
 import uuid
 import json
 import random
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import List, Dict, Any, Optional, Tuple
 import re
 
@@ -3718,6 +3718,65 @@ class PlannerEngine:
 
         return trace
 
+    # Quanti giorni una bozza mai scelta resta in giro prima di essere buttata.
+    # Non zero: mentre l'utente guarda il menu delle alternative, quelle bozze
+    # esistono gia' nel database e cancellarle gli farebbe fallire la scelta.
+    ORPHAN_DRAFT_MAX_AGE_DAYS = 2
+
+    def cleanup_orphan_drafts(self, older_than_days: Optional[int] = None, dry_run: bool = False) -> dict:
+        """
+        Butta le bozze di ricetta che nessuno ha scelto.
+
+        Ogni volta che si aprono le alternative di un componente ne nascono una
+        ventina, e quelle scartate restavano nel database per sempre. Vengono
+        rimosse solo se: sono `draft_structured`, non le punta nessun piano ne'
+        nessun pasto registrato, non sono pasti da foto / pasti fissi / stime di
+        pasti liberi, e sono piu' vecchie della soglia.
+
+        Ritorna {"removed": n, "kept": n} — con dry_run=True conta soltanto.
+        """
+        max_age = self.ORPHAN_DRAFT_MAX_AGE_DAYS if older_than_days is None else older_than_days
+        cutoff = (datetime.now() - timedelta(days=max_age)).isoformat()
+
+        referenced: set = {
+            e.consumed_recipe_id
+            for e in self.db.query(ConsumedEntry).filter(
+                ConsumedEntry.consumed_recipe_id.isnot(None)
+            ).all()
+        }
+        for plan in self.db.query(GeneratedWeeklyPlan).all():
+            for day in plan.daily_plans or []:
+                for meal in day.get("meals", []):
+                    for item in meal.get("items") or []:
+                        if item.get("recipe_id"):
+                            referenced.add(item["recipe_id"])
+
+        removed = kept = 0
+        for cand in self.db.query(CandidateRecipe).filter(
+            CandidateRecipe.status == "draft_structured"
+        ).all():
+            data = cand.recipe_data if isinstance(cand.recipe_data, dict) else {}
+            tags = data.get("tags") or {}
+            is_special = any(t in tags for t in self._NON_RECIPE_CANDIDATE_TAGS)
+            # created_at NULL = creata prima che la colonna esistesse: vecchia
+            too_recent = bool(cand.created_at) and cand.created_at > cutoff
+            if (
+                cand.id in referenced
+                or cand.origin_override_id
+                or is_special
+                or too_recent
+                or (cand.usage_count or 0) > 0
+            ):
+                kept += 1
+                continue
+            removed += 1
+            if not dry_run:
+                self.db.delete(cand)
+        if removed and not dry_run:
+            self.db.commit()
+            _LOGGER.info(f"[cleanup] Rimosse {removed} bozze mai scelte ({kept} conservate)")
+        return {"removed": removed, "kept": kept, "older_than_days": max_age, "dry_run": dry_run}
+
     def _rules_to_component_options(
         self, rules: schemas.PlanRules, meal_type: str
     ) -> schemas.PlannedMeal:
@@ -3773,6 +3832,14 @@ class PlannerEngine:
         current_ingredients, _ = self._get_recipe_content(recipe_id)
         if not current_ingredients:
             return []
+
+        # Chi produce le bozze si porta via anche quelle vecchie: cosi' la pulizia
+        # avviene da sola, senza un lavoro periodico da ricordarsi di far partire.
+        try:
+            self.cleanup_orphan_drafts()
+        except Exception:
+            _LOGGER.exception("[cleanup] fallita durante il cambio componente, proseguo")
+            self.db.rollback()
 
         # Convert any Pydantic RecipeIngredient objects to plain dicts
         def _ing_to_dict(ing) -> dict:

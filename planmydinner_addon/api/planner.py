@@ -1329,6 +1329,24 @@ def _referenced_recipe_ids(db: Session) -> set:
     return used
 
 
+@router.post("/cleanup-drafts")
+def cleanup_drafts(apply: bool = True, older_than_days: Optional[int] = None,
+                   db: Session = Depends(get_db)):
+    """
+    Rimuove le bozze di ricetta che nessuno ha scelto.
+
+    Ogni apertura del menu "cambia carbo/proteina/verdura" ne crea una ventina e
+    le scartate restavano per sempre. La pulizia gira gia' da sola all'avvio e a
+    ogni nuovo menu di alternative; questo endpoint serve per farla subito o per
+    contare soltanto (apply=false).
+
+    Non tocca le bozze usate da un piano o da un pasto registrato, i pasti da
+    foto, i pasti fissi e le stime dei pasti liberi.
+    """
+    planner = PlannerEngine(db)
+    return planner.cleanup_orphan_drafts(older_than_days=older_than_days, dry_run=not apply)
+
+
 @router.post("/backfill-free-meal-estimates")
 def backfill_free_meal_estimates(request: Request, profile_id_A: str, db: Session = Depends(get_db)):
     """

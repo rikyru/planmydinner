@@ -100,6 +100,20 @@ async def lifespan(app: FastAPI):
     app.state.llm_gateway = gw
     app.state.ingress_path = await _fetch_ingress_path()
 
+    # Pulizia delle bozze di ricetta mai scelte: ogni menu di alternative ne
+    # produce una ventina e restavano nel database per sempre. Best-effort —
+    # un problema qui non deve impedire l'avvio dell'applicazione.
+    _db = SessionLocal()
+    try:
+        from .planner import PlannerEngine as _Planner
+        _stats = _Planner(_db).cleanup_orphan_drafts()
+        if _stats["removed"]:
+            print(f"Pulizia bozze: rimosse {_stats['removed']}, conservate {_stats['kept']}")
+    except Exception as _e:  # noqa: BLE001
+        print(f"Pulizia bozze saltata: {_e}")
+    finally:
+        _db.close()
+
     yield
     print("Shutting down...")
 

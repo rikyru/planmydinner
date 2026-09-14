@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime
 from sqlalchemy import create_engine, Column, Integer, String, Float, Date, JSON, Boolean, Text, func
 from sqlalchemy.orm import declarative_base, sessionmaker, Session
 from typing import List, Dict, Any # Added for type hinting
@@ -97,6 +98,10 @@ class CandidateRecipe(Base):
     usage_count = Column(Integer, default=0)
     origin_override_id = Column(String, nullable=True) # Links to ConsumedEntry that originated it
     recipe_data = Column(JSON) # Stores the Recipe data in JSON format
+    # Quando e' stata creata: serve alla pulizia delle bozze mai scelte, per non
+    # cancellare quelle appena proposte mentre l'utente ha il menu aperto.
+    # NULL = creata prima di questa colonna, quindi vecchia di sicuro.
+    created_at = Column(String, nullable=True, default=lambda: datetime.now().isoformat())
 
 class StructuredMealPlan(Base):
     __tablename__ = "structured_meal_plans"
@@ -204,6 +209,7 @@ def create_db_and_tables():
             ("plan_rules", "vacation_end", "TEXT"),
             ("plan_rules", "tracking_start_date", "TEXT"),
             ("plan_rules", "generation_slots", "JSON"),
+            ("candidate_recipes", "created_at", "TEXT"),
         ]:
             try:
                 conn.execute(__import__("sqlalchemy").text(
