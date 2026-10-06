@@ -561,17 +561,20 @@ class PlannerEngine:
         if recipe_tags.get("manual"):
             score += 1.5
 
-        # Boost CandidateRecipe approvate: l'utente le ha mangiate e apprezzate
-        if getattr(recipe, "_is_candidate", False):
+        affinity = getattr(self, "_affinity", None)
+        a = affinity.get(recipe.id, 0.0) if affinity else 0.0
+
+        # Boost CandidateRecipe approvate SOLO se davvero consumate (affinità > 0):
+        # le candidate auto-generate per coprire le categorie non vanno premiate
+        # come se l'utente le avesse scelte — altrimenti vincono sulle ricette vere.
+        if getattr(recipe, "_is_candidate", False) and a > 0:
             score += 1.0
 
-        # Affinità storica: pesca dal repertorio reale. Più spesso (e più di
-        # recente) hai mangiato questa ricetta nelle scorse settimane, più sale.
-        affinity = getattr(self, "_affinity", None)
-        if affinity:
-            a = affinity.get(recipe.id, 0.0)
-            if a > 0:
-                score += min(a * 0.25, 1.2)
+        # Affinità storica: segnale DOMINANTE. Più spesso (e più di recente) hai
+        # mangiato davvero questa ricetta nelle scorse settimane, più sale — così
+        # il piano pesca dal tuo repertorio reale invece che dalle auto-generate.
+        if a > 0:
+            score += min(a * 0.6, 3.0)
 
         # Piccolo jitter casuale per rompere i pareggi e garantire varietà
         score += random.uniform(-0.05, 0.05)
@@ -2275,7 +2278,7 @@ class PlannerEngine:
         ("fesa di tacchino", "carne_bianca"), ("tacchino", "carne_bianca"), ("pollo", "carne_bianca"),
         ("vitellone", "carne_rossa"), ("vitello", "carne_rossa"), ("manzo", "carne_rossa"),
         ("bovino", "carne_rossa"), ("maiale", "carne_rossa"), ("agnello", "carne_rossa"),
-        ("cinghiale", "carne_rossa"), ("bresaola", "carne_rossa"),
+        ("cinghiale", "carne_rossa"), ("bresaola", "carne_rossa"), ("speck", "carne_rossa"),
         ("salmone", "pesce"), ("tonno", "pesce"), ("merluzzo", "pesce"), ("orata", "pesce"),
         ("spigola", "pesce"), ("branzino", "pesce"), ("sgombro", "pesce"),
         ("gamber", "pesce"), ("pesce", "pesce"), ("pesci", "pesce"),
