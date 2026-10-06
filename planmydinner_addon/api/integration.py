@@ -8,14 +8,18 @@ significato tra release; eventuali aggiunte sono retro-compatibili.
 """
 import json
 import logging
-from datetime import date, timedelta
+import uuid
+from datetime import date, datetime, timedelta
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from .. import schemas
 from ..database import get_db, CandidateRecipe, ConsumedEntry, GeneratedWeeklyPlan, PlanRules, Recipe
 from ..nutrition import NUTRITION_KEYS, compute_recipe_nutrition
+from ..scaling import apply_nutrition_scaling
 from .planner import compute_adherence_stats
 
 _LOGGER = logging.getLogger(__name__)
@@ -225,12 +229,13 @@ def get_plan_targets(request: Request, profile_id: str, db: Session = Depends(ge
             if not items or not items[0].get("recipe_id") or \
                     items[0].get("food_group") in ("mensa", "free_meal", "not_eaten"):
                 continue   # solo il piano originale, non le deviazioni
+            scale = meal.get("scale", 1.0) or 1.0
             n = _recipe_nutrition(items[0]["recipe_id"])
             if n:
                 if day is None:
                     day = {k: 0.0 for k in NUTRITION_KEYS}
                 for k in NUTRITION_KEYS:
-                    day[k] += n[k]
+                    day[k] += n[k] * scale
         if day:
             day_totals.append(day)
 
@@ -243,6 +248,69 @@ def get_plan_targets(request: Request, profile_id: str, db: Session = Depends(ge
     }
     return {"targets": targets, "days_sampled": len(day_totals),
             "routine_included": any(v > 0 for v in routine_total.values())}
+
+
+class NutritionTargetsBody(BaseModel):
+    """Daily energy/macro targets set by an external app (e.g. OpenFit)."""
+    kcal: float = Field(..., gt=0)
+    protein_g: Optional[float] = Field(None, ge=0)
+    carbs_g: Optional[float] = Field(None, ge=0)
+    fat_g: Optional[float] = Field(None, ge=0)
+    # Also re-scale the current saved plan so the target bites immediately,
+    # without waiting for the next weekly generation.
+    rescale_current: bool = True
+
+
+@router.post("/apply-targets")
+def apply_targets(
+    request: Request,
+    profile_id: str,
+    body: NutritionTargetsBody,
+    db: Session = Depends(get_db),
+):
+    """Official hook for external apps to set a profile's daily nutrition
+    targets. Stores them in the plan rules (so future generations aim for them)
+    and, unless disabled, re-scales the current plan's upcoming meals right away.
+    """
+    plan_rules = (
+        db.query(PlanRules)
+        .filter(PlanRules.profile_id == profile_id)
+        .order_by(PlanRules.imported_at.desc())
+        .first()
+    )
+    if not plan_rules:
+        plan_rules = PlanRules(
+            id=str(uuid.uuid4()), profile_id=profile_id,
+            imported_at=datetime.now().isoformat(),
+        )
+    targets: Dict[str, float] = {"kcal": body.kcal}
+    for k in ("protein_g", "carbs_g", "fat_g"):
+        v = getattr(body, k)
+        if v is not None:
+            targets[k] = v
+    plan_rules.nutrition_targets = targets
+    plan_rules.imported_at = datetime.now().isoformat()
+    db.add(plan_rules)
+    db.commit()
+
+    rescaled = False
+    if body.rescale_current:
+        llm_gateway = getattr(request.app.state, "llm_gateway", None)
+        plan = (
+            db.query(GeneratedWeeklyPlan)
+            .filter(GeneratedWeeklyPlan.profile_id_A == profile_id)
+            .order_by(GeneratedWeeklyPlan.generated_at.desc())
+            .first()
+        )
+        if plan and plan.daily_plans:
+            daily = [schemas.DailyPlannedMeals.model_validate(dp) for dp in plan.daily_plans]
+            apply_nutrition_scaling(db, profile_id, daily, llm_gateway=llm_gateway)
+            plan.daily_plans = [dp.model_dump() for dp in daily]
+            db.add(plan)
+            db.commit()
+            rescaled = True
+
+    return {"status": "ok", "targets": targets, "rescaled_current_plan": rescaled}
 
 
 @router.get("/summary")
@@ -359,6 +427,8 @@ def get_integration_summary(
             items = meal.get("items", [])
             if not items:
                 continue
+            # Portion multiplier set by the scaling pass (1.0 = unscaled).
+            scale = meal.get("scale", 1.0) or 1.0
             fg = items[0].get("food_group")
             if fg == "free_meal":
                 free_meals += 1
@@ -372,7 +442,7 @@ def get_integration_summary(
                     if day_nutrition is None:
                         day_nutrition = {k: 0.0 for k in NUTRITION_KEYS}
                     for k in NUTRITION_KEYS:
-                        day_nutrition[k] += nutrition[k]
+                        day_nutrition[k] += nutrition[k] * scale
                     coverages.append(nutrition.get("coverage", 1.0))
                     has_estimated_meal = True
                 else:
@@ -390,7 +460,7 @@ def get_integration_summary(
                 if day_nutrition is None:
                     day_nutrition = {k: 0.0 for k in NUTRITION_KEYS}
                 for k in NUTRITION_KEYS:
-                    day_nutrition[k] += nutrition[k]
+                    day_nutrition[k] += nutrition[k] * scale
                 coverages.append(nutrition.get("coverage", 1.0))
 
         # Aggiungi i pasti fissi del giorno (colazione/spuntini assunti + opt-in registrati)
