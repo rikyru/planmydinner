@@ -285,6 +285,44 @@ def _ingredient_grams(ingredient: Dict[str, Any], profile_id: str) -> Optional[f
         return None
 
 
+def analyze_recipe(
+    content: Union[List, Dict, None],
+    profile_id: str,
+    llm_gateway: Any = None,
+    add_cooking_fat_g: float = 0.0,
+) -> Dict[str, Any]:
+    """Diagnostica per l'inserimento di una ricetta: nutrizione calcolata +
+    problemi per ingrediente, così la UI può segnalare cosa manca prima di
+    salvare. Non solleva: i problemi sono dati, non errori.
+
+    Ritorna::
+
+        {"nutrition": {...} | None,
+         "issues": [{"ingredient": nome, "issue": "no_grams"|"unknown"|"estimated_llm"}],
+         "warnings": ["no_added_fat", ...]}
+    """
+    ingredients = _content_ingredients(content)
+    issues: List[Dict[str, str]] = []
+    for ing in ingredients:
+        name = (ing.get("name") or "?").strip()
+        grams = _ingredient_grams(ing, profile_id)
+        if not grams or grams <= 0:
+            issues.append({"ingredient": name, "issue": "no_grams"})
+            continue
+        n = resolve_ingredient_nutrition(ing, llm_gateway=llm_gateway)
+        if not n:
+            issues.append({"ingredient": name, "issue": "unknown"})
+        elif n.get("source") == "llm":
+            issues.append({"ingredient": name, "issue": "estimated_llm"})
+
+    nutrition = compute_recipe_nutrition(
+        content, profile_id, llm_gateway=llm_gateway, add_cooking_fat_g=add_cooking_fat_g)
+    warnings: List[str] = []
+    if nutrition is not None and not _has_added_fat(ingredients):
+        warnings.append("no_added_fat")
+    return {"nutrition": nutrition, "issues": issues, "warnings": warnings}
+
+
 def _content_ingredients(content: Union[List, Dict, None]) -> List[Dict[str, Any]]:
     """Estrae la lista di ingredienti da Recipe.content (lista o ComposedDishContent)."""
     if isinstance(content, list):
