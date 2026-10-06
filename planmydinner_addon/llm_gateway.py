@@ -164,6 +164,63 @@ class LLMGateway:
             _LOGGER.error(f"Error during LLM call for structured recipe generation: {e}")
             return None
 
+    def estimate_nutrition(self, ingredient_name: str) -> Optional[Dict[str, Any]]:
+        """Stima i valori nutrizionali PER 100 g di un ingrediente sconosciuto
+        (non presente nella tabella locale). Ritorna {kcal, protein_g, carbs_g,
+        fat_g} o None. Risultati in cache su disco per non ripagare la chiamata.
+
+        Rete di sicurezza: usata da resolve_ingredient_nutrition quando un
+        ingrediente non è in tabella, così un nome nuovo non finisce a 0 kcal.
+        """
+        name = (ingredient_name or "").strip()
+        if not name:
+            return None
+        key = self._cache_key("nutrition_estimate", name.lower())
+        if key in self._cache:
+            return self._cache[key]
+        if not self._client:
+            return None
+
+        task_description = (
+            "Sei un esperto di composizione degli alimenti. Dato il nome di un "
+            "ingrediente, stima i valori nutrizionali PER 100 g di prodotto come "
+            "comunemente venduto/consumato (per cereali, pasta e legumi usa il peso "
+            "a crudo/secco). Rispondi SOLO con un oggetto JSON con esattamente le "
+            "chiavi numeriche: kcal, protein_g, carbs_g, fat_g. Nessun testo extra, "
+            "nessun markdown."
+        )
+        messages = [
+            {"role": "system", "content": self._get_system_message(task_description)},
+            {"role": "user", "content": f"Ingrediente: {name}"},
+        ]
+        try:
+            if self.provider == "openai":
+                response = self._client.chat.completions.create(
+                    model=self.model, messages=messages, temperature=0,
+                    response_format={"type": "json_object"},
+                )
+                raw = response.choices[0].message.content
+            elif self.provider == "ollama":
+                response = self._client.chat(
+                    model=self.model, messages=messages, temperature=0)
+                raw = response["message"]["content"]
+            else:
+                return None
+            data = json.loads(raw)
+            result = {k: float(data[k]) for k in ("kcal", "protein_g", "carbs_g", "fat_g")}
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as e:
+            _LOGGER.warning(f"Stima nutrizione LLM non valida per '{name}': {e}")
+            return None
+        except Exception as e:
+            _LOGGER.warning(f"Errore stima nutrizione LLM per '{name}': {e}")
+            return None
+        # sanità minima: kcal plausibili per 100 g
+        if not (0 <= result["kcal"] <= 950):
+            return None
+        self._cache[key] = result
+        self._save_cache()
+        return result
+
     def get_llm_description_for_recipe(self, recipe_name: str, ingredients: List[str]) -> Optional[str]:
         """
         Generates a creative description for a recipe based on its name and key ingredients.
