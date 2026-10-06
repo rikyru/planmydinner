@@ -6,7 +6,7 @@ import uuid
 from pydantic import BaseModel as _BaseModel
 from .. import schemas
 from ..database import get_db, Recipe, CandidateRecipe, UserProfile
-from ..nutrition import compute_recipe_nutrition
+from ..nutrition import DEFAULT_COOKING_FAT_G, analyze_recipe, compute_recipe_nutrition
 
 
 class BulkIngredient(_BaseModel):
@@ -192,6 +192,36 @@ def _attach_nutrition_per_portion(validated: schemas.Recipe, db: Session, llm_ga
     except Exception:
         validated.nutrition_per_portion = None
     return validated
+
+
+class PreviewNutritionBody(_BaseModel):
+    content: Any                       # lista di ingredienti o {components:[...]}
+    profile_id: Optional[str] = None   # se assente: tutti i profili
+
+
+@router.post("/preview-nutrition")
+def preview_nutrition(body: PreviewNutritionBody, request: Request,
+                      db: Session = Depends(get_db)):
+    """Nutrizione + diagnostica di una ricetta in BOZZA (non salvata), per dare
+    feedback durante l'inserimento: kcal/macro per profilo, ingredienti senza
+    grammi o sconosciuti, e l'avviso se manca un grasso di cottura. Include la
+    stima dell'olio di cottura (come nei pasti) così l'anteprima è realistica."""
+    llm_gateway = getattr(request.app.state, "llm_gateway", None)
+    if body.profile_id:
+        pids = [body.profile_id]
+    else:
+        pids = [p.id for p in db.query(UserProfile).all()]
+    if not pids:
+        ings = body.content if isinstance(body.content, list) else \
+            (body.content or {}).get("components", [])
+        if ings and isinstance(ings[0], dict):
+            pids = list((ings[0].get("quantities") or {}).keys())
+    by_profile = {
+        pid: analyze_recipe(body.content, pid, llm_gateway=llm_gateway,
+                            add_cooking_fat_g=DEFAULT_COOKING_FAT_G)
+        for pid in pids
+    }
+    return {"by_profile": by_profile}
 
 
 @router.get("/detail/{recipe_id}", response_model=schemas.Recipe)
