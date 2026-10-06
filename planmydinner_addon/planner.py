@@ -1688,6 +1688,9 @@ class PlannerEngine:
         recent_carb_items: List[str] = []
         # Pre-popola con le ricette della settimana precedente per evitare ripetizioni cross-week
         used_recipe_ids: set = self._load_recent_plan_recipe_ids(profile_id_A, start_date)
+        # Non escludere le ricette che mangi davvero (affinità): devono poter tornare
+        # nel piano; l'anti-ripetizione cross-week resta per quelle mai consumate.
+        used_recipe_ids -= set(getattr(self, "_affinity", {}) or {})
         used_fingerprints: set = set()
         used_vegs: List[str] = []
         recently_selected: List[str] = []  # ordered list for recent-ID buffer in fallback 2
@@ -2103,6 +2106,8 @@ class PlannerEngine:
         generated_plan: List[schemas.DailyPlannedMeals] = []
         # Pre-popola con le ricette della settimana precedente per evitare ripetizioni cross-week
         used_recipe_ids: set = self._load_recent_plan_recipe_ids(profile_id_A, start_date)
+        # Non escludere le ricette che mangi davvero (affinità): devono poter tornare.
+        used_recipe_ids -= set(getattr(self, "_affinity", {}) or {})
         used_fingerprints: set = set()
         for i in range(7):
             current_date = start_date + timedelta(days=i)
