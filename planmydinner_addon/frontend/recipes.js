@@ -321,6 +321,24 @@ const Recipes = defineComponent({
                         </div>
                     </div>
 
+                    <div class="form-section" v-if="previewLoading || preview">
+                        <label style="margin:0">Valori nutrizionali <span class="hint">(stima a porzione, live)</span></label>
+                        <div v-if="previewLoading" class="hint">calcolo…</div>
+                        <div v-else-if="preview && preview.nutrition">
+                            <div style="font-weight:600;font-size:15px">
+                                {{ Math.round(preview.nutrition.kcal) }} kcal
+                                <span class="hint" style="font-weight:400">· P {{ Math.round(preview.nutrition.protein_g) }}g · C {{ Math.round(preview.nutrition.carbs_g) }}g · G {{ Math.round(preview.nutrition.fat_g) }}g</span>
+                            </div>
+                            <div v-if="preview.warnings.includes('no_added_fat')" style="color:#b26b00;font-size:12px;margin-top:4px">
+                                ⚠️ Nessun olio/grasso tra gli ingredienti: la stima include un olio di cottura. Aggiungilo per un calcolo esatto.
+                            </div>
+                            <ul v-if="preview.issues.length" style="margin:6px 0 0;padding-left:18px;font-size:12px;color:#999">
+                                <li v-for="(it, i) in preview.issues" :key="i">{{ it.ingredient }}: {{ issueLabel(it.issue) }}</li>
+                            </ul>
+                        </div>
+                        <div v-else class="hint">Aggiungi ingredienti con grammi per vedere la stima.</div>
+                    </div>
+
                     <div style="display:flex;gap:10px;margin-top:20px;">
                         <button @click="saveRecipe"
                                 class="btn-primary"
@@ -339,6 +357,8 @@ const Recipes = defineComponent({
             loading: false,
             showModal: false,
             editedRecipe: this._emptyRecipe(),
+            preview: null,          // anteprima nutrizionale della bozza
+            previewLoading: false,
             // Catalogo pasti mensa
             showMensa: false,
             mensaMeals: [],
@@ -645,6 +665,50 @@ const Recipes = defineComponent({
         },
         closeModal() {
             this.showModal = false;
+            this.preview = null;
+            clearTimeout(this._previewTimer);
+        },
+        issueLabel(issue) {
+            return {
+                no_grams: 'senza grammi (non conteggiato)',
+                unknown: 'sconosciuto, nessuna stima',
+                estimated_llm: 'stima AI',
+            }[issue] || issue;
+        },
+        _previewContent() {
+            const pA = localStorage.getItem('profile_a_id') || 'persona_a';
+            return this.editedRecipe.ingredients
+                .filter(ing => (ing.name || '').trim() && ing.grams > 0)
+                .map(ing => ({
+                    name: ing.name,
+                    food_group: ing.food_group,
+                    quantities: { [pA]: { qty: ing.grams, unit: 'g', grams_equiv: ing.grams } },
+                }));
+        },
+        requestPreview() {
+            // debounce: l'utente sta ancora digitando nome/grammi
+            clearTimeout(this._previewTimer);
+            this._previewTimer = setTimeout(() => this.fetchPreview(), 450);
+        },
+        async fetchPreview() {
+            const content = this._previewContent();
+            if (!content.length) { this.preview = null; return; }
+            const pA = localStorage.getItem('profile_a_id') || 'persona_a';
+            this.previewLoading = true;
+            try {
+                const resp = await window.apiFetch('/recipes/preview-nutrition', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ content, profile_id: pA }),
+                });
+                if (!resp.ok) throw new Error(await resp.text());
+                const data = await resp.json();
+                this.preview = data.by_profile[pA] || null;
+            } catch (_) {
+                this.preview = null;   // best-effort: l'anteprima non blocca il form
+            } finally {
+                this.previewLoading = false;
+            }
         },
         addIngredient() {
             this.editedRecipe.ingredients.push({ name: '', food_group: 'verdure', grams: 100 });
@@ -758,6 +822,16 @@ const Recipes = defineComponent({
             const firstKey = Object.keys(quantities)[0];
             const grams = firstKey ? Math.round(quantities[firstKey].grams_equiv ?? quantities[firstKey].qty ?? 0) : 0;
             return `${ing.name} (${grams}g)`;
+        },
+    },
+    watch: {
+        'editedRecipe.ingredients': {
+            handler() { if (this.showModal) this.requestPreview(); },
+            deep: true,
+        },
+        showModal(open) {
+            if (open) this.requestPreview();
+            else { this.preview = null; clearTimeout(this._previewTimer); }
         },
     },
     mounted() {
