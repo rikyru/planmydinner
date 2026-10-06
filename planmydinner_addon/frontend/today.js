@@ -8,7 +8,12 @@ const TodayView = defineComponent({
     components: { MensaModal, RoutineStrip },
     template: `
         <div class="today-view">
-            <h2>Oggi — {{ formattedDate }}</h2>
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px;">
+                <button class="btn-sm" @click="changeDay(-1)" title="Giorno precedente">‹</button>
+                <h2 style="margin:0;text-transform:capitalize">{{ formattedDate }}<span v-if="isToday" class="hint" style="text-transform:none"> · oggi</span></h2>
+                <button class="btn-sm" @click="changeDay(1)" title="Giorno successivo">›</button>
+                <button v-if="!isToday" class="btn-sm" @click="goToday()">Torna a oggi</button>
+            </div>
 
             <!-- Adherence strip -->
             <div v-if="adherence && adherence.planned_slots > 0" class="adherence-strip">
@@ -348,6 +353,9 @@ const TodayView = defineComponent({
         };
     },
     computed: {
+        isToday() {
+            return this.today === new Date().toISOString().slice(0, 10);
+        },
         customValid() {
             return (this.customForm.components || [])
                 .some(c => (c.name || '').trim() && c.grams > 0);
@@ -401,6 +409,24 @@ const TodayView = defineComponent({
         this.loadData();
     },
     methods: {
+        changeDay(delta) {
+            const d = new Date(this.today + 'T12:00:00');
+            d.setDate(d.getDate() + delta);
+            this.today = d.toISOString().slice(0, 10);
+            this.refreshDay();
+        },
+        goToday() {
+            this.today = new Date().toISOString().slice(0, 10);
+            this.refreshDay();
+        },
+        async refreshDay() {
+            this.todayPlan = null;
+            this.recipeDetails = {};
+            if (this.profileA && this.profileB) {
+                await this.loadWeeklyPlan();
+                await this.loadAdherence();
+            }
+        },
         async loadData() {
             this.loading = true;
             this.error = null;
@@ -462,7 +488,9 @@ const TodayView = defineComponent({
                 if (resp.ok) this.adherence = await resp.json();
             } catch (_) { /* non bloccare */ }
             try {
-                const resp = await window.apiFetch('/integration/today-status?profile_id=' + encodeURIComponent(this.profileA.id));
+                const statusParams = new URLSearchParams({
+                    profile_id: this.profileA.id, target_date: this.today });
+                const resp = await window.apiFetch('/integration/today-status?' + statusParams);
                 if (resp.ok) this.todayStatus = await resp.json();
             } catch (_) { /* non bloccare */ }
         },
