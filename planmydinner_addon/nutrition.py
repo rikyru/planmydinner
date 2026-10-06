@@ -36,10 +36,12 @@ NUTRITION_TABLE: Dict[str, Dict[str, float]] = {
     "farro": _v(335, 15.0, 67.0, 2.5),
     "orzo": _v(319, 10.4, 70.0, 1.4),
     "couscous": _v(376, 12.8, 77.4, 0.6),
+    "fregola": _v(356, 12.0, 72.0, 1.5),
     "quinoa": _v(368, 14.0, 64.0, 6.0),
     "patate": _v(77, 2.0, 17.0, 0.1),
     "patata": _v(77, 2.0, 17.0, 0.1),
     "pane": _v(265, 9.0, 49.0, 3.2),
+    "piadina": _v(310, 8.0, 48.0, 9.0),
     "polenta": _v(361, 8.7, 79.0, 2.7),
     # Proteine animali
     "pollo": _v(110, 23.0, 0.0, 1.5),
@@ -58,6 +60,7 @@ NUTRITION_TABLE: Dict[str, Dict[str, float]] = {
     "uova": _v(143, 12.4, 0.5, 9.5),
     "uovo": _v(143, 12.4, 0.5, 9.5),
     "bresaola": _v(151, 32.0, 0.4, 2.0),
+    "speck": _v(303, 28.0, 0.5, 21.0),
     "prosciutto crudo": _v(224, 26.9, 0.3, 12.9),
     "prosciutto cotto": _v(132, 19.8, 0.9, 5.5),
     # Legumi (secchi)
@@ -73,6 +76,7 @@ NUTRITION_TABLE: Dict[str, Dict[str, float]] = {
     "parmigiano": _v(392, 33.0, 0.0, 28.0),
     "grana": _v(392, 33.0, 0.0, 28.0),
     "feta": _v(264, 14.0, 4.0, 21.0),
+    "formaggio spalmabile": _v(250, 6.0, 4.0, 23.0),
     "yogurt greco": _v(97, 9.0, 3.9, 5.0),
     "yogurt": _v(66, 3.8, 4.3, 3.9),
     # Verdure
@@ -106,7 +110,11 @@ NUTRITION_TABLE: Dict[str, Dict[str, float]] = {
     "carciofi": _v(47, 2.7, 10.5, 0.2),
     "cavolo": _v(25, 2.1, 2.5, 0.1),
     "cavolfiore": _v(25, 2.1, 2.5, 0.1),
+    "bietola": _v(17, 1.8, 2.6, 0.2),
+    "bietole": _v(17, 1.8, 2.6, 0.2),
     "limone": _v(29, 1.1, 9.3, 0.3),
+    # Frutta
+    "mela": _v(52, 0.3, 14.0, 0.2),
     # Grassi e condimenti
     "olio": _v(899, 0.0, 0.0, 99.9),
     "burro": _v(758, 0.8, 1.1, 83.4),
@@ -114,6 +122,11 @@ NUTRITION_TABLE: Dict[str, Dict[str, float]] = {
     "avocado": _v(160, 2.0, 8.5, 15.0),
     "noci": _v(654, 15.2, 13.7, 65.2),
     "mandorle": _v(603, 22.0, 4.6, 55.3),
+    "curry": _v(325, 13.0, 55.0, 14.0),
+    # Zero-kcal: evitano stime LLM inutili e non abbassano la coverage
+    "sale": _v(0, 0.0, 0.0, 0.0),
+    "pepe": _v(0, 0.0, 0.0, 0.0),
+    "spezie": _v(0, 0.0, 0.0, 0.0),
 }
 
 # Chiavi ordinate per lunghezza decrescente: la corrispondenza più specifica vince
@@ -135,6 +148,7 @@ _COOKED_YIELD: Dict[str, float] = {
     "farro": 2.7,
     "orzo": 2.6,
     "couscous": 3.0,
+    "fregola": 2.3,
     "quinoa": 3.0,
     "ceci": 2.4,
     "lenticchie": 2.6,
@@ -161,6 +175,13 @@ def _match_table_key(name: str) -> Optional[str]:
     for key in _TABLE_KEYS_BY_LENGTH:
         if re.search(rf"\b{re.escape(key)}\b", name):
             return key
+    # Secondo tentativo tollerante alla scrittura: spazi e apostrofi rimossi, cosi'
+    # "Cous Cous" trova "couscous" e "fregola sarda"/"d'oliva" restano gestiti.
+    compact = name.replace(" ", "").replace("'", "").replace("’", "")
+    if compact != name:
+        for key in _TABLE_KEYS_BY_LENGTH:
+            if re.search(rf"\b{re.escape(key.replace(' ', ''))}\b", compact):
+                return key
     return None
 
 
