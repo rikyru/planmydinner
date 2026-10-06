@@ -82,6 +82,32 @@ class TestSetCustomMeal:
         matching = [r for r in all_recipes if r["name"].lower() == "piadina con manzo"]
         assert len(matching) == 1
 
+    def test_multi_component_meal_two_proteins(self, client, setup_database):
+        _make_plan(setup_database)
+        body = {
+            "title": "Pasta e pane con uova e legumi",
+            "components": [
+                {"name": "Pasta", "food_group": "carboidrati", "grams": 80},
+                {"name": "Pane", "food_group": "carboidrati", "grams": 50},
+                {"name": "Uova", "food_group": "uova", "grams": 100},
+                {"name": "Lenticchie", "food_group": "legumi", "grams": 120},
+                {"name": "Spinaci", "food_group": "verdure", "grams": 150},
+            ],
+        }
+        resp = client.post("/planner/set-custom-meal", params={
+            "profile_id_A": "persona_a", "profile_id_B": "persona_b",
+            "meal_type": "cena", "current_date": TODAY.isoformat(),
+        }, json=body)
+        assert resp.status_code == 200, resp.text
+        recipe_id = resp.json()["recipe_id"]
+        recipe = setup_database.query(Recipe).filter(Recipe.id == recipe_id).first()
+        content = recipe.content
+        assert len(content) == 5                      # tutti i componenti salvati
+        carbs = [c for c in content if c["food_group"] == "carboidrati"]
+        proteinish = [c for c in content if c["food_group"] in ("uova", "legumi", "proteina")]
+        assert len(carbs) == 2                         # due carboidrati
+        assert len(proteinish) == 2                    # due proteine
+
     def test_applies_to_the_requested_slot(self, client, setup_database):
         _make_plan(setup_database)
         resp = client.post("/planner/set-custom-meal", params={

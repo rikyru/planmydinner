@@ -19,12 +19,22 @@ from ..planner import (
 )
 
 
+class CustomMealComponent(_BaseModel):
+    """Un componente di un pasto personalizzato (più per gruppo sono ammessi)."""
+    name: str
+    food_group: str = "altro"
+    grams: float
+
+
 class CustomMealBody(_BaseModel):
     title: str
-    protein_name: str
-    protein_grams: float
-    carb_name: str
-    carb_grams: float
+    # Nuovo: lista libera di componenti → più proteine / carbi / verdure per pasto.
+    components: Optional[List[CustomMealComponent]] = None
+    # Legacy (retro-compatibile): singolo carboidrato + proteina + verdura.
+    protein_name: Optional[str] = None
+    protein_grams: Optional[float] = None
+    carb_name: Optional[str] = None
+    carb_grams: Optional[float] = None
     veg_name: Optional[str] = None
     veg_grams: float = 100
     notes: Optional[str] = None
@@ -1011,33 +1021,35 @@ def set_custom_meal(
     def _make_qty(grams: float) -> dict:
         return {"qty": float(grams), "unit": "g", "grams_equiv": float(grams)}
 
-    content = [
-        {
-            "name": body.carb_name,
-            "food_group": "carboidrati",
+    def _component(name: str, food_group: str, grams: float) -> dict:
+        return {
+            "name": name,
+            "food_group": food_group,
             "quantities": {
-                profile_A.id: _make_qty(body.carb_grams),
-                profile_B.id: _make_qty(body.carb_grams),
+                profile_A.id: _make_qty(grams),
+                profile_B.id: _make_qty(grams),
             },
-        },
-        {
-            "name": body.protein_name,
-            "food_group": "proteina",
-            "quantities": {
-                profile_A.id: _make_qty(body.protein_grams),
-                profile_B.id: _make_qty(body.protein_grams),
-            },
-        },
-    ]
-    if body.veg_name:
-        content.append({
-            "name": body.veg_name,
-            "food_group": "verdure",
-            "quantities": {
-                profile_A.id: _make_qty(body.veg_grams),
-                profile_B.id: _make_qty(body.veg_grams),
-            },
-        })
+        }
+
+    if body.components:
+        # Pasto multi-componente: tanti item quanti servono (2 proteine, 2 carbi…).
+        content = [_component(c.name, c.food_group, c.grams)
+                   for c in body.components if c.name and c.name.strip() and c.grams > 0]
+        if not content:
+            raise HTTPException(status_code=422, detail="Nessun componente valido nel pasto.")
+    else:
+        # Formato legacy: singolo carboidrato + proteina (+ verdura opzionale).
+        if not (body.carb_name and body.protein_name
+                and body.carb_grams is not None and body.protein_grams is not None):
+            raise HTTPException(
+                status_code=422,
+                detail="Fornire 'components' oppure carb_name/protein_name con i grammi.")
+        content = [
+            _component(body.carb_name, "carboidrati", body.carb_grams),
+            _component(body.protein_name, "proteina", body.protein_grams),
+        ]
+        if body.veg_name:
+            content.append(_component(body.veg_name, "verdure", body.veg_grams))
 
     recipe_data = {
         "name": body.title,
