@@ -279,10 +279,17 @@ const Recipes = defineComponent({
                     </div>
 
                     <div class="form-section">
-                        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+                        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;gap:8px;flex-wrap:wrap;">
                             <label style="margin:0">Ingredienti</label>
-                            <button @click="addIngredient" class="btn-sm">+ Aggiungi</button>
+                            <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                                <button @click="addIngredient('proteina')" class="btn-sm">+ Proteina</button>
+                                <button @click="addIngredient('carboidrati')" class="btn-sm">+ Carbo</button>
+                                <button @click="addIngredient('verdure')" class="btn-sm">+ Verdura</button>
+                                <button @click="addIngredient('condimenti')" class="btn-sm">+ Condimento</button>
+                                <button @click="addIngredient('altro')" class="btn-sm">+ Altro</button>
+                            </div>
                         </div>
+                        <div v-if="groupSummary" class="hint" style="margin-bottom:6px">Composizione: {{ groupSummary }}</div>
                         <table class="ingredient-table">
                             <thead>
                                 <tr>
@@ -406,6 +413,25 @@ const Recipes = defineComponent({
                 },
             ], null, 2),
         };
+    },
+    computed: {
+        groupSummary() {
+            const label = (fg) => {
+                if (['proteina', 'carne_bianca', 'carne_rossa', 'pesce', 'uova', 'legumi'].includes(fg)) return 'proteine';
+                if (fg === 'carboidrati') return 'carbo';
+                if (fg === 'verdure') return 'verdure';
+                if (fg === 'latticini') return 'latticini';
+                if (fg === 'grassi' || fg === 'condimenti') return 'condimenti';
+                return 'altro';
+            };
+            const counts = {};
+            for (const ing of this.editedRecipe.ingredients) {
+                if (!(ing.name || '').trim()) continue;
+                const l = label(ing.food_group);
+                counts[l] = (counts[l] || 0) + 1;
+            }
+            return Object.entries(counts).map(([k, v]) => `${v} ${k}`).join(' · ');
+        },
     },
     methods: {
         // --- kcal per porzione (dal catalogo) ---
@@ -710,8 +736,9 @@ const Recipes = defineComponent({
                 this.previewLoading = false;
             }
         },
-        addIngredient() {
-            this.editedRecipe.ingredients.push({ name: '', food_group: 'verdure', grams: 100 });
+        addIngredient(group = 'verdure') {
+            const defaults = { proteina: 150, carboidrati: 80, verdure: 150, condimenti: 10, altro: 50 };
+            this.editedRecipe.ingredients.push({ name: '', food_group: group, grams: defaults[group] ?? 100 });
         },
         removeIngredient(idx) {
             this.editedRecipe.ingredients.splice(idx, 1);
