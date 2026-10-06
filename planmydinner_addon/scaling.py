@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy.orm import Session
 
 from .database import CandidateRecipe, PlanRules, Recipe
-from .nutrition import compute_recipe_nutrition
+from .nutrition import DEFAULT_COOKING_FAT_G, compute_recipe_nutrition
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -111,7 +111,9 @@ def apply_nutrition_scaling(
         if recipe_id not in nut_cache:
             content = _recipe_content(db, recipe_id)
             try:
-                n = compute_recipe_nutrition(content, profile_id, llm_gateway=llm_gateway) if content else None
+                n = compute_recipe_nutrition(
+                    content, profile_id, llm_gateway=llm_gateway,
+                    add_cooking_fat_g=DEFAULT_COOKING_FAT_G) if content else None
             except Exception:
                 n = None
             nut_cache[recipe_id] = n["kcal"] if n else None

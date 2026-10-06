@@ -2,6 +2,10 @@
 import pytest
 
 from planmydinner_addon.database import GeneratedWeeklyPlan
+from planmydinner_addon.nutrition import DEFAULT_COOKING_FAT_G
+
+# Pranzo/cena ricevono una stima di olio di cottura se la ricetta non ha grassi.
+OIL_KCAL = DEFAULT_COOKING_FAT_G * 899 / 100.0
 
 # freeze_time in conftest: today = 2026-02-24 (martedì) → lunedì = 2026-02-23
 TODAY = "2026-02-24"
@@ -104,8 +108,9 @@ class TestIntegrationSummaryWithData:
         assert monday["meals_planned"] == 2
         assert monday["complete"] is True
         # Ricetta seed per persona_a: Pasta 100 g (353 kcal) + Pomodoro 200 g (36 kcal)
-        expected_meal_kcal = 353 + 18 * 2
-        assert monday["nutrition"]["kcal"] == pytest.approx(2 * expected_meal_kcal, abs=0.3)
+        # + olio di cottura stimato (la ricetta non ha grassi aggiunti)
+        expected_meal_kcal = 353 + 18 * 2 + OIL_KCAL
+        assert monday["nutrition"]["kcal"] == pytest.approx(2 * expected_meal_kcal, abs=1)
         assert monday["nutrition"]["coverage"] == 1.0
 
         # Martedì: cena libera → kcal note solo del pranzo, ma il giorno è
@@ -115,7 +120,7 @@ class TestIntegrationSummaryWithData:
         assert tuesday["free_meals"] == 1
         assert tuesday["complete"] is False
         assert tuesday["has_estimated_meal"] is False  # nessun LLM in questo test: resta ignoto
-        assert tuesday["nutrition"]["kcal"] == pytest.approx(expected_meal_kcal, abs=0.2)
+        assert tuesday["nutrition"]["kcal"] == pytest.approx(expected_meal_kcal, abs=1)
 
         # Mercoledì: pranzo non mangiato → conteggiato come not_eaten, giorno
         # comunque "completo" (0 kcal per quello slot è un dato certo, non ignoto)
@@ -221,9 +226,10 @@ class TestNutritionTargets:
         resp = client.get("/integration/plan-targets", params={"profile_id": "persona_a"})
         assert resp.status_code == 200
         targets = resp.json()["targets"]
-        # Ricetta seed: 389 kcal/pasto. 5 giorni pieni (778) + 2 giorni con 1 solo
-        # pasto pianificato (389, gli altri slot sono free/not_eaten) → media
-        expected = (5 * 2 * 389 + 2 * 389) / 7
+        # Ricetta seed: 389 kcal/pasto + olio di cottura stimato. 5 giorni pieni
+        # (2 pasti) + 2 giorni con 1 solo pasto (gli altri free/not_eaten) → media
+        meal = 389 + OIL_KCAL
+        expected = (5 * 2 * meal + 2 * meal) / 7
         assert targets["kcal"] == pytest.approx(expected, abs=1.5)
         assert resp.json()["days_sampled"] == 7
 

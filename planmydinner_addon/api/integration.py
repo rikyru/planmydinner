@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 
 from .. import schemas
 from ..database import get_db, CandidateRecipe, ConsumedEntry, GeneratedWeeklyPlan, PlanRules, Recipe
-from ..nutrition import NUTRITION_KEYS, compute_recipe_nutrition
+from ..nutrition import DEFAULT_COOKING_FAT_G, NUTRITION_KEYS, compute_recipe_nutrition
 from ..scaling import apply_nutrition_scaling
 from .planner import compute_adherence_stats
 
@@ -203,7 +203,8 @@ def get_plan_targets(request: Request, profile_id: str, db: Session = Depends(ge
         if not content:
             return None
         try:
-            return compute_recipe_nutrition(content, profile_id, llm_gateway=llm_gateway)
+            return compute_recipe_nutrition(content, profile_id, llm_gateway=llm_gateway,
+                                            add_cooking_fat_g=DEFAULT_COOKING_FAT_G)
         except Exception:
             return None
 
@@ -358,19 +359,21 @@ def get_integration_summary(
             if d and d not in meals_by_date:  # il piano più recente vince
                 meals_by_date[d] = dp.get("meals", [])
 
-    nutrition_cache: Dict[str, Optional[Dict[str, Any]]] = {}
+    nutrition_cache: Dict[tuple, Optional[Dict[str, Any]]] = {}
 
-    def _nutrition_for_recipe(recipe_id: str) -> Optional[Dict[str, Any]]:
-        if recipe_id not in nutrition_cache:
+    def _nutrition_for_recipe(recipe_id: str, cooking_fat_g: float = 0.0) -> Optional[Dict[str, Any]]:
+        key = (recipe_id, cooking_fat_g)
+        if key not in nutrition_cache:
             content = _get_recipe_content(db, recipe_id)
             try:
-                nutrition_cache[recipe_id] = compute_recipe_nutrition(
-                    content, profile_id, llm_gateway=llm_gateway
+                nutrition_cache[key] = compute_recipe_nutrition(
+                    content, profile_id, llm_gateway=llm_gateway,
+                    add_cooking_fat_g=cooking_fat_g,
                 ) if content else None
             except Exception:
                 _LOGGER.exception(f"Nutrition computation failed for recipe {recipe_id}")
-                nutrition_cache[recipe_id] = None
-        return nutrition_cache[recipe_id]
+                nutrition_cache[key] = None
+        return nutrition_cache[key]
 
     # Pasti fissi (colazione/spuntini): assunti nei giorni senza eccezioni,
     # slot opt-in (es. dopo cena) contati solo se registrati.
@@ -460,7 +463,8 @@ def get_integration_summary(
             recipe_id = items[0].get("recipe_id")
             if not recipe_id:
                 continue
-            nutrition = _nutrition_for_recipe(recipe_id)
+            # pranzo/cena: stima il grasso di cottura se la ricetta non ne ha
+            nutrition = _nutrition_for_recipe(recipe_id, DEFAULT_COOKING_FAT_G)
             if nutrition:
                 if day_nutrition is None:
                     day_nutrition = {k: 0.0 for k in NUTRITION_KEYS}
