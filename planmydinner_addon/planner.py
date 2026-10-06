@@ -2524,14 +2524,26 @@ class PlannerEngine:
         return None
 
     def _recipe_protein_cat(self, recipe: "schemas.Recipe") -> Optional[str]:
-        """Returns protein category from an already-loaded Recipe object (no DB query)."""
+        """Returns protein category from an already-loaded Recipe object (no DB query).
+
+        Quando il food_group è generico ("proteina") deduce la categoria specifica
+        dal NOME dell'ingrediente (es. "Merluzzo" → pesce, "Manzo" → carne_rossa),
+        così le ricette importate col gruppo generico vengono comunque classificate
+        e possono rientrare nelle quote del piano.
+        """
         ingredients = recipe.content.components if recipe.is_composed_dish else recipe.content
+        fallback = None
         for ing in ingredients:
-            fg = (ing.food_group or "").lower()
+            fg0 = (ing.food_group or "").lower()
+            if fg0 not in self._PROTEIN_GROUPS:
+                continue   # salta carboidrati/verdure
+            fg = self._infer_protein_fg(ing.name, ing.food_group)
             cat = self._PROTEIN_CATEGORY_MAP.get(fg)
-            if cat:
-                return cat
-        return None
+            if cat and cat != "proteina":
+                return cat          # categoria specifica: vince
+            if cat and fallback is None:
+                fallback = cat      # generico: solo se non trovo di meglio
+        return fallback
 
     def _get_main_protein_item(self, recipe_id: str) -> Optional[str]:
         """Returns the name (lowercase) of the main protein ingredient, looked up by recipe_id."""
