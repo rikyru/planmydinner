@@ -417,6 +417,30 @@ def get_integration_summary(
                     total[k] += n[k]
         return total
 
+    # Merende extra (spuntini liberi fuori dai 5 slot fissi): sommate al giorno.
+    extras_by_date: Dict[str, Dict[str, float]] = {}
+    extra_rows = db.query(ConsumedEntry).filter(
+        ConsumedEntry.profile_id == profile_id,
+        ConsumedEntry.date >= start_date.isoformat(),
+        ConsumedEntry.date <= end_date.isoformat(),
+        ConsumedEntry.type == "extra",
+    ).all()
+    for e in extra_rows:
+        od = e.override_details or {}
+        content = [{
+            "name": i.get("name"), "food_group": i.get("food_group") or "altro",
+            "quantities": {profile_id: {"qty": i.get("qty") or 0, "unit": "g",
+                                        "grams_equiv": i.get("qty") or 0}},
+        } for i in (od.get("ingredients") or [])]
+        try:
+            n = compute_recipe_nutrition(content, profile_id, llm_gateway=llm_gateway)
+        except Exception:
+            n = None
+        if n:
+            agg = extras_by_date.setdefault(e.date, {k: 0.0 for k in NUTRITION_KEYS})
+            for k in NUTRITION_KEYS:
+                agg[k] += n[k]
+
     days = []
     totals = {k: 0.0 for k in NUTRITION_KEYS}
     days_with_data = 0
@@ -480,6 +504,14 @@ def get_integration_summary(
             for k in NUTRITION_KEYS:
                 day_nutrition[k] += routine_day[k]
 
+        # Merende extra del giorno
+        extra_day = extras_by_date.get(iso)
+        if extra_day is not None:
+            if day_nutrition is None:
+                day_nutrition = {k: 0.0 for k in NUTRITION_KEYS}
+            for k in NUTRITION_KEYS:
+                day_nutrition[k] += extra_day[k]
+
         # Un pasto libero SENZA stima ha calorie sconosciute: sommare solo gli
         # altri pasti del giorno lo farebbe apparire come se valesse 0 kcal,
         # abbassando artificialmente medie e confronto con l'obiettivo. Il
@@ -497,6 +529,7 @@ def get_integration_summary(
             "complete": is_complete,
             "has_estimated_meal": has_estimated_meal,
             "routine_kcal": round(routine_day["kcal"], 1) if routine_day else 0,
+            "extra_kcal": round(extra_day["kcal"], 1) if extra_day else 0,
         }
         if day_nutrition is not None:
             day_entry["nutrition"] = {k: round(day_nutrition[k], 1) for k in NUTRITION_KEYS}

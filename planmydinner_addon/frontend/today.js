@@ -1,6 +1,6 @@
 import { defineComponent } from 'vue';
 import MensaModal from './mensa.js?v=5';
-import RoutineStrip from './routine.js?v=1';
+import RoutineStrip from './routine.js?v=2';
 
 const TodayView = defineComponent({
     name: 'TodayView',
