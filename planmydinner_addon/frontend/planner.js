@@ -26,21 +26,27 @@ const WeekView = defineComponent({
                     <button @click.stop="goToToday" class="btn-today sidebar-btn">Oggi</button>
                     <template v-if="!loading && profiles.length >= 2">
                         <button @click.stop="generateWeek(false)" :disabled="generating"
-                                class="btn-regenerate sidebar-btn">
-                            {{ generating ? 'Generando...' : 'Rigenera' }}
+                                class="btn-regenerate sidebar-btn"
+                                title="Usa le tue ricette e dà priorità a quelle che mangi più spesso. Veloce, senza AI.">
+                            {{ generating ? 'Generando...' : '🍽️ Dal catalogo' }}
                         </button>
                         <button @click.stop="generateWithAI" :disabled="generating"
                                 class="btn-ai sidebar-btn"
-                                title="Genera il piano usando il LLM (modalità configurabile in Impostazioni)">
-                            {{ generating ? 'Generando...' : '🤖 Genera con AI' }}
+                                title="L'AI compone i pasti dai tuoi vincoli (modalità in Impostazioni).">
+                            {{ generating ? 'Generando...' : '🤖 Con AI' }}
                         </button>
                         <button @click.stop="generateWeek(true)" :disabled="generating"
                                 class="btn-fantasy sidebar-btn"
-                                title="Usa LLM per inventare ricette creative ad ogni slot">
-                            {{ generating ? 'Generando...' : '✨ ExtraFantasy' }}
+                                title="L'AI inventa ricette nuove e creative per ogni pasto.">
+                            {{ generating ? 'Generando...' : '✨ Fantasy' }}
                         </button>
+                        <p class="hint" style="margin:6px 2px 0;font-size:11px;line-height:1.35;">
+                            <strong>Dal catalogo</strong>: tue ricette, priorità a ciò che mangi di più ·
+                            <strong>AI</strong>: compone dai tuoi vincoli ·
+                            <strong>Fantasy</strong>: inventa nuove ricette.
+                        </p>
                         <button @click.stop="openDebugModal" class="btn-secondary sidebar-btn"
-                                title="Log LLM e trace generazione piano">
+                                title="Log LLM e trace generazione piano" style="margin-top:6px;">
                             🐛 Debug
                         </button>
                     </template>
@@ -58,20 +64,27 @@ const WeekView = defineComponent({
 
                 <!-- Nessun piano: la griglia resta comunque utilizzabile per registrare -->
                 <div v-if="!loading && profiles.length >= 2 && !weekPlan && !error" class="no-plan">
-                    <p>Nessun piano per questa settimana: puoi comunque registrare cosa hai mangiato,
-                       e generando poi il piano gli slot già segnati resteranno intatti.</p>
-                    <div style="display:flex; gap:8px; flex-wrap:wrap;">
-                        <button @click.stop="generateWeek(false)" :disabled="generating" class="btn-primary">
-                            {{ generating ? 'Generazione...' : 'Genera piano 7 giorni' }}
-                        </button>
-                        <button @click.stop="generateWithAI" :disabled="generating" class="btn-ai"
-                                title="Genera il piano usando il LLM (modalità configurabile in Impostazioni)">
-                            {{ generating ? 'Generando...' : '🤖 Genera con AI' }}
-                        </button>
-                        <button @click.stop="generateWeek(true)" :disabled="generating" class="btn-fantasy"
-                                title="Usa LLM per inventare ricette creative ad ogni slot">
-                            {{ generating ? 'Generando...' : '✨ ExtraFantasy' }}
-                        </button>
+                    <p>Nessun piano per questa settimana. Scegli come generarlo — puoi comunque
+                       registrare cosa mangi: gli slot già segnati restano intatti.</p>
+                    <div style="display:flex;flex-direction:column;gap:14px;max-width:440px;">
+                        <div style="display:flex;flex-direction:column;gap:4px;">
+                            <button @click.stop="generateWeek(false)" :disabled="generating" class="btn-primary">
+                                {{ generating ? 'Generazione...' : '🍽️ Genera dal catalogo' }}
+                            </button>
+                            <span class="hint">Consigliato — usa le tue ricette e dà priorità a quelle che mangi più spesso. Veloce, senza AI.</span>
+                        </div>
+                        <div style="display:flex;flex-direction:column;gap:4px;">
+                            <button @click.stop="generateWithAI" :disabled="generating" class="btn-ai">
+                                {{ generating ? 'Generando...' : '🤖 Genera con AI' }}
+                            </button>
+                            <span class="hint">L'AI compone i pasti rispettando i tuoi vincoli (modalità in Impostazioni).</span>
+                        </div>
+                        <div style="display:flex;flex-direction:column;gap:4px;">
+                            <button @click.stop="generateWeek(true)" :disabled="generating" class="btn-fantasy">
+                                {{ generating ? 'Generando...' : '✨ ExtraFantasy' }}
+                            </button>
+                            <span class="hint">L'AI inventa ricette nuove e creative per ogni pasto.</span>
+                        </div>
                     </div>
                 </div>
 
