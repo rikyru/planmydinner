@@ -12,8 +12,11 @@ from planmydinner_addon import schemas
 from planmydinner_addon.database import GeneratedWeeklyPlan, PlanRules
 from planmydinner_addon.scaling import apply_nutrition_scaling, SCALE_MIN, SCALE_MAX
 
+from planmydinner_addon.nutrition import DEFAULT_COOKING_FAT_G
+
 TODAY = "2026-02-24"
-MEAL_KCAL = 389.0
+# pasta_pomodoro = 389 kcal/pasto + olio di cottura stimato (ricetta senza grassi)
+MEAL_KCAL = 389.0 + DEFAULT_COOKING_FAT_G * 899 / 100.0
 DAY_KCAL = 2 * MEAL_KCAL
 
 

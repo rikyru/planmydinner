@@ -294,10 +294,30 @@ def _content_ingredients(content: Union[List, Dict, None]) -> List[Dict[str, Any
     return []
 
 
+# Grasso di cottura di default (g di olio) per i piatti salati inseriti senza
+# alcun condimento grasso: molte ricette del nutrizionista non elencano l'olio
+# pur assumendone l'uso, azzerando ~70-90 kcal a porzione. Allowance non
+# distruttiva (non modifica la ricetta), applicata solo da chi la richiede
+# esplicitamente (pranzo/cena), mai colazione/spuntini.
+DEFAULT_COOKING_FAT_G = 8.0
+_ADDED_FAT_KEYS = ("olio", "burro", "pesto", "avocado", "noci", "mandorle")
+
+
+def _has_added_fat(ingredients: List[Dict[str, Any]]) -> bool:
+    """True se la ricetta contiene già un grasso da condimento/cottura."""
+    for ing in ingredients:
+        if (ing.get("food_group") or "").strip().lower() in ("condimenti", "grasso"):
+            return True
+        if _match_table_key((ing.get("name") or "").strip().lower()) in _ADDED_FAT_KEYS:
+            return True
+    return False
+
+
 def compute_recipe_nutrition(
     content: Union[List, Dict, None],
     profile_id: str,
     llm_gateway: Any = None,
+    add_cooking_fat_g: float = 0.0,
 ) -> Optional[Dict[str, Any]]:
     """
     Calcola kcal e macro totali di una porzione (i grammi del profilo indicato).
@@ -308,6 +328,11 @@ def compute_recipe_nutrition(
          "coverage": matched/total, "sources": {"table": n, "llm": n, "manual": n}}
 
     oppure None se nessun ingrediente con grammi noti è risolvibile.
+
+    ``add_cooking_fat_g``: se > 0 e la ricetta non ha già un grasso aggiunto,
+    somma quel quantitativo di olio come stima del grasso di cottura. Pensato
+    per i soli pasti principali (pranzo/cena); i chiamanti di colazione/spuntini
+    lasciano 0 per non inventare olio dove non serve.
     """
     ingredients = _content_ingredients(content)
     totals = {k: 0.0 for k in NUTRITION_KEYS}
@@ -332,7 +357,16 @@ def compute_recipe_nutrition(
     if matched == 0:
         return None
 
+    cooking_fat_added = False
+    if add_cooking_fat_g and add_cooking_fat_g > 0 and not _has_added_fat(ingredients):
+        oil = NUTRITION_TABLE["olio"]
+        factor = add_cooking_fat_g / 100.0
+        for k in NUTRITION_KEYS:
+            totals[k] += oil[k] * factor
+        cooking_fat_added = True
+
     result: Dict[str, Any] = {k: round(totals[k], 1) for k in NUTRITION_KEYS}
     result["coverage"] = round(matched / with_grams, 2) if with_grams else 0.0
     result["sources"] = sources
+    result["cooking_fat_added"] = cooking_fat_added
     return result
