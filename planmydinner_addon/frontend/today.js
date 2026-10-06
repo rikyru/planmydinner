@@ -169,6 +169,8 @@ const TodayView = defineComponent({
 
                             <!-- Secondary actions -->
                             <div class="action-row-secondary">
+                                <button v-if="meal.items?.[0]?.recipe_id && recipeDetails[meal.meal_type]"
+                                        @click="openEditMeal(meal.meal_type)" class="btn-secondary">✎ Modifica / extra</button>
                                 <button @click="openChangeModal(meal.meal_type)" class="btn-secondary">↺ Cambia</button>
                                 <button v-if="recipeDetails[meal.meal_type]"
                                         @click="toggleDetail(meal.meal_type)"
@@ -795,6 +797,28 @@ const TodayView = defineComponent({
                     { name: '', food_group: 'proteina', grams: 150 },
                     { name: '', food_group: 'carboidrati', grams: 80 },
                 ],
+            };
+            this.showCustomModal = true;
+        },
+        openEditMeal(mealType) {
+            // Precompila il compositore dalla ricetta corrente: stesso titolo →
+            // set-custom-meal AGGIORNA la ricetta e la riapplica allo slot.
+            // Così puoi correggere le dosi o aggiungere extra (maionese, coca…).
+            const det = this.recipeDetails[mealType];
+            const pid = this.profileA?.id;
+            const components = (det?.content || []).map(ing => {
+                const q = (ing.quantities || {})[pid] || {};
+                return {
+                    name: ing.name,
+                    food_group: ing.food_group || 'altro',
+                    grams: Math.round(q.grams_equiv ?? q.qty ?? 0),
+                };
+            });
+            this.customMealType = mealType;
+            this.customForm = {
+                title: det?.name || '',
+                notes: det?.description || '',
+                components: components.length ? components : [{ name: '', food_group: 'proteina', grams: 150 }],
             };
             this.showCustomModal = true;
         },

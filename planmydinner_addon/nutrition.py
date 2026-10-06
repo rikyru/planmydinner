@@ -123,6 +123,17 @@ NUTRITION_TABLE: Dict[str, Dict[str, float]] = {
     "noci": _v(654, 15.2, 13.7, 65.2),
     "mandorle": _v(603, 22.0, 4.6, 55.3),
     "curry": _v(325, 13.0, 55.0, 14.0),
+    "maionese": _v(680, 1.1, 1.8, 75.0),
+    "ketchup": _v(110, 1.2, 25.0, 0.1),
+    "senape": _v(95, 6.0, 6.0, 4.0),
+    # Bevande (valori per 100 ml ≈ 100 g)
+    "coca cola": _v(42, 0.0, 10.6, 0.0),
+    "cola": _v(42, 0.0, 10.6, 0.0),
+    "bibita": _v(45, 0.0, 11.0, 0.0),
+    "aranciata": _v(45, 0.0, 11.0, 0.0),
+    "succo": _v(46, 0.2, 11.0, 0.1),
+    "birra": _v(43, 0.5, 3.6, 0.0),
+    "vino": _v(85, 0.1, 2.6, 0.0),
     # Zero-kcal: evitano stime LLM inutili e non abbassano la coverage
     "sale": _v(0, 0.0, 0.0, 0.0),
     "pepe": _v(0, 0.0, 0.0, 0.0),
