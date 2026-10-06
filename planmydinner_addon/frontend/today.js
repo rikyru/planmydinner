@@ -261,29 +261,40 @@ const TodayView = defineComponent({
                     <h3>Pasto personalizzato — {{ customMealType === 'pranzo' ? 'Pranzo' : 'Cena' }}</h3>
                     <div class="custom-form">
                         <label>Nome del pasto</label>
-                        <input v-model="customForm.title" placeholder="Es. Pollo arrostito con riso">
-                        <label>Proteina</label>
-                        <div class="custom-row">
-                            <input v-model="customForm.protein_name" placeholder="Es. pollo">
-                            <input v-model.number="customForm.protein_grams" type="number" placeholder="g">
+                        <input v-model="customForm.title" placeholder="Es. Pasta e pane con uova e legumi">
+                        <label>Componenti <span class="components-hint">(anche più proteine / carbi / verdure)</span></label>
+                        <div style="display:flex;gap:6px;flex-wrap:wrap;margin:4px 0 8px;">
+                            <button @click="addCustomComp('proteina')" class="btn-sm">+ Proteina</button>
+                            <button @click="addCustomComp('carboidrati')" class="btn-sm">+ Carbo</button>
+                            <button @click="addCustomComp('verdure')" class="btn-sm">+ Verdura</button>
+                            <button @click="addCustomComp('condimenti')" class="btn-sm">+ Condimento</button>
                         </div>
-                        <label>Carboidrato</label>
-                        <div class="custom-row">
-                            <input v-model="customForm.carb_name" placeholder="Es. riso">
-                            <input v-model.number="customForm.carb_grams" type="number" placeholder="g">
+                        <div v-for="(c, idx) in customForm.components" :key="idx" class="custom-row" style="margin-bottom:4px;gap:6px;">
+                            <input v-model="c.name" placeholder="Es. uova" style="flex:1">
+                            <select v-model="c.food_group" style="width:130px">
+                                <option value="carboidrati">Carboidrati</option>
+                                <option value="proteina">Proteina</option>
+                                <option value="carne_bianca">Carne bianca</option>
+                                <option value="carne_rossa">Carne rossa</option>
+                                <option value="pesce">Pesce</option>
+                                <option value="uova">Uova</option>
+                                <option value="legumi">Legumi</option>
+                                <option value="latticini">Latticini</option>
+                                <option value="verdure">Verdure</option>
+                                <option value="condimenti">Condimenti</option>
+                                <option value="altro">Altro</option>
+                            </select>
+                            <input v-model.number="c.grams" type="number" min="0" step="10" placeholder="g" style="width:70px">
+                            <button @click="customForm.components.splice(idx, 1)" class="btn-sm btn-danger">×</button>
                         </div>
-                        <label>Verdura (opzionale)</label>
-                        <div class="custom-row">
-                            <input v-model="customForm.veg_name" placeholder="Es. zucchine">
-                            <input v-model.number="customForm.veg_grams" type="number" min="0" step="10" placeholder="g" style="width:70px">
-                        </div>
+                        <div v-if="!customForm.components.length" class="components-hint">Aggiungi almeno un componente.</div>
                         <label>Note (opzionale)</label>
                         <input v-model="customForm.notes" placeholder="...">
                     </div>
                     <div style="display:flex;gap:10px;margin-top:16px;">
                         <button @click="submitCustomMeal"
                                 class="btn-consumed"
-                                :disabled="!customForm.title || !customForm.protein_name || !customForm.carb_name">
+                                :disabled="!customForm.title || !customValid">
                             Applica
                         </button>
                         <button @click="showCustomModal=false" class="btn-secondary">Annulla</button>
@@ -332,11 +343,15 @@ const TodayView = defineComponent({
             mensaMealType: null,
             // Custom meal
             showCustomModal: false,
-            customForm: { title: '', protein_name: '', protein_grams: 0, carb_name: '', carb_grams: 0, veg_name: '', veg_grams: 100, notes: '' },
+            customForm: { title: '', components: [], notes: '' },
             customMealType: null,
         };
     },
     computed: {
+        customValid() {
+            return (this.customForm.components || [])
+                .some(c => (c.name || '').trim() && c.grams > 0);
+        },
         formattedDate() {
             const d = new Date(this.today + 'T12:00:00');
             return d.toLocaleDateString('it-IT', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
@@ -740,13 +755,25 @@ const TodayView = defineComponent({
         },
 
         // --- Custom meal ---
+        addCustomComp(group = 'proteina') {
+            const defaults = { proteina: 150, carboidrati: 80, verdure: 150, condimenti: 10 };
+            this.customForm.components.push({ name: '', food_group: group, grams: defaults[group] ?? 100 });
+        },
         openCustomModal(mealType) {
             this.customMealType = mealType;
-            this.customForm = { title: '', protein_name: '', protein_grams: 0, carb_name: '', carb_grams: 0, veg_name: '', notes: '' };
+            this.customForm = {
+                title: '', notes: '',
+                components: [
+                    { name: '', food_group: 'proteina', grams: 150 },
+                    { name: '', food_group: 'carboidrati', grams: 80 },
+                ],
+            };
             this.showCustomModal = true;
         },
         async submitCustomMeal() {
-            if (!this.customForm.title || !this.customForm.protein_name || !this.customForm.carb_name) return;
+            const components = this.customForm.components
+                .filter(c => (c.name || '').trim() && c.grams > 0);
+            if (!this.customForm.title || !components.length) return;
             try {
                 const params = new URLSearchParams({
                     profile_id_A: this.profileA.id,
@@ -757,7 +784,11 @@ const TodayView = defineComponent({
                 const resp = await window.apiFetch('/planner/set-custom-meal?' + params, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(this.customForm),
+                    body: JSON.stringify({
+                        title: this.customForm.title,
+                        notes: this.customForm.notes,
+                        components,
+                    }),
                 });
                 if (!resp.ok) throw new Error(await resp.text());
                 this.showCustomModal = false;
