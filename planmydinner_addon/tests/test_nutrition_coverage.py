@@ -19,11 +19,27 @@ _NO_FAT_MEAL = [
 @pytest.mark.parametrize("name", [
     "Piadina", "Fregola sarda", "Speck", "Formaggio spalmabile",
     "Bietole", "Mela", "Curry",
+    # extra da aggiungere quando si segna un pasto
+    "Maionese", "Ketchup", "Coca Cola", "Birra", "Vino rosso", "Succo d'arancia",
 ])
 def test_new_ingredients_are_known(name):
     n = lookup_nutrition_table(name)
     assert n is not None, f"{name} non trovato in tabella"
     assert n["kcal"] > 0
+
+
+def test_mayo_and_cola_counted_in_a_logged_meal():
+    # "2 cucchiai di maionese" ~30 g + "una lattina di coca" ~330 ml
+    content = [
+        {"name": "Maionese", "food_group": "condimenti",
+         "quantities": {"persona_a": {"qty": 30, "unit": "g", "grams_equiv": 30.0}}},
+        {"name": "Coca Cola", "food_group": "altro",
+         "quantities": {"persona_a": {"qty": 330, "unit": "ml", "grams_equiv": 330.0}}},
+    ]
+    n = compute_recipe_nutrition(content, "persona_a")
+    assert n["coverage"] == 1.0
+    # maionese 30g (~204 kcal) + coca 330ml (~139 kcal)
+    assert n["kcal"] == pytest.approx(204 + 139, abs=6)
 
 
 def test_couscous_matches_despite_spacing():
