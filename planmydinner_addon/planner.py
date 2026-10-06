@@ -4343,13 +4343,17 @@ class PlannerEngine:
                 if not recipe_id:
                     continue
 
+                # Portion multiplier from the nutrition-scaling pass: the
+                # groceries must match the portions the plan actually serves.
+                scale = getattr(meal, "scale", 1.0) or 1.0
+
                 ingredients, _ = self._get_recipe_content(recipe_id)
 
                 for ingredient in ingredients:
                     qty_data_A = ingredient.quantities.get(profile_id_A)
                     qty_data_B = ingredient.quantities.get(profile_id_B) if profile_id_B else None
-                    qty_A = float(qty_data_A.grams_equiv or qty_data_A.qty) if qty_data_A else 0.0
-                    qty_B = float(qty_data_B.grams_equiv or qty_data_B.qty) if qty_data_B else 0.0
+                    qty_A = float(qty_data_A.grams_equiv or qty_data_A.qty) * scale if qty_data_A else 0.0
+                    qty_B = float(qty_data_B.grams_equiv or qty_data_B.qty) * scale if qty_data_B else 0.0
                     total_qty = qty_A + qty_B
 
                     is_free_vegetable = total_qty == 0 and self._normalize_food_group(ingredient.food_group) == "verdura"

@@ -372,6 +372,11 @@ def generate_weekly_plan(
     # Rete di sicurezza: i path LLM "full_week" e legacy non conoscono locked_slots,
     # quindi il ripristino degli slot registrati avviene comunque qui.
     weekly_plan = _restore_locked_slots(weekly_plan, locked_slots)
+    # Portion scaling toward the configured daily energy target (no-op when none).
+    from ..scaling import apply_nutrition_scaling
+    weekly_plan = apply_nutrition_scaling(
+        db, profile_id_A, weekly_plan,
+        llm_gateway=request.app.state.llm_gateway, today=current_date)
     _save_generated_plan(db, profile_id_A, profile_id_B, current_date, weekly_plan)
     return weekly_plan
 

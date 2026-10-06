@@ -115,6 +115,11 @@ PlannedItem.model_rebuild()
 class PlannedMeal(BaseModel):
     meal_type: str = Field(..., pattern="^(pranzo|cena)$")
     items: List[PlannedItem]
+    # Portion multiplier applied to this meal to hit a daily kcal/macro target
+    # (set by the nutrition-scaling pass from PlanRules.nutrition_targets). 1.0 =
+    # unscaled (the historical behaviour). Honoured by the nutrition computation
+    # and the shopping list so portions and groceries stay consistent.
+    scale: float = 1.0
 
 class DailyPlannedMeals(BaseModel):
     date: str
