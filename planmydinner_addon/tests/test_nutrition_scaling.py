@@ -97,6 +97,25 @@ def test_past_day_not_rescaled(setup_database):
     assert all(m.scale < 1.0 for dp in daily[1:] for m in dp.meals)  # today+ scaled down
 
 
+def test_cut_never_inflates(setup_database):
+    db = setup_database
+    # target well above the plan's base, but allow_upscale off (a cut)
+    _set_targets(db, kcal=5000, allow_upscale=0.0)
+    daily = [schemas.DailyPlannedMeals.model_validate(dp) for dp in _plan_rows()]
+    apply_nutrition_scaling(db, "persona_a", daily)
+    # portions are not grown beyond 1.0 even though the target is far higher
+    assert all(m.scale == 1.0 for dp in daily for m in dp.meals)
+
+
+def test_cut_still_shrinks(setup_database):
+    db = setup_database
+    _set_targets(db, kcal=600, allow_upscale=0.0)  # below base -> must shrink
+    daily = [schemas.DailyPlannedMeals.model_validate(dp) for dp in _plan_rows()]
+    apply_nutrition_scaling(db, "persona_a", daily)
+    expected = 600 / DAY_KCAL
+    assert all(m.scale == pytest.approx(expected, abs=0.01) for dp in daily for m in dp.meals)
+
+
 def test_apply_targets_endpoint_rescales_and_summary_reflects(client, setup_database):
     db = setup_database
     _save_plan(db)

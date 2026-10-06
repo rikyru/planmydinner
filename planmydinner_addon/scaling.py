@@ -96,6 +96,10 @@ def apply_nutrition_scaling(
     target_kcal = (targets or {}).get("kcal")
     if not target_kcal or target_kcal <= 0:
         return daily_plans
+    # In a cut the caller asks not to inflate portions (allow_upscale=0): a
+    # deficit may only shrink a meal, never grow it beyond its planned size,
+    # so a too-low base plan is never blown up to chase the target.
+    allow_upscale = bool((targets or {}).get("allow_upscale", 1.0))
 
     today = today or date.today()
     routine_kcal = _routine_kcal(db, profile_id, llm_gateway)
@@ -137,7 +141,10 @@ def apply_nutrition_scaling(
         if not scalable or planned_kcal <= 0:
             continue
 
-        scale = max(SCALE_MIN, min(SCALE_MAX, budget / planned_kcal))
+        scale = budget / planned_kcal
+        if not allow_upscale:
+            scale = min(scale, 1.0)
+        scale = max(SCALE_MIN, min(SCALE_MAX, scale))
         for meal in scalable:
             meal.scale = round(scale, 3)
 

@@ -256,6 +256,9 @@ class NutritionTargetsBody(BaseModel):
     protein_g: Optional[float] = Field(None, ge=0)
     carbs_g: Optional[float] = Field(None, ge=0)
     fat_g: Optional[float] = Field(None, ge=0)
+    # False in a cut: portions may only shrink toward the target, never grow,
+    # so a too-low base plan isn't inflated to chase a higher kcal goal.
+    allow_upscale: bool = True
     # Also re-scale the current saved plan so the target bites immediately,
     # without waiting for the next weekly generation.
     rescale_current: bool = True
@@ -288,6 +291,8 @@ def apply_targets(
         v = getattr(body, k)
         if v is not None:
             targets[k] = v
+    if not body.allow_upscale:
+        targets["allow_upscale"] = 0.0   # cut: portions only shrink
     plan_rules.nutrition_targets = targets
     plan_rules.imported_at = datetime.now().isoformat()
     db.add(plan_rules)
