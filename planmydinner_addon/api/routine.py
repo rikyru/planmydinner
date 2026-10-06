@@ -206,6 +206,108 @@ def toggle_skip(slot: str, profile_id: str, meal_date: str, db: Session = Depend
     return {"slot": slot, "date": meal_date, "state": "skipped"}
 
 
+# ----------------------------------------------------------------- merende extra
+# Spuntini liberi, SLEGATI dai 5 slot fissi: se ne possono annotare quanti si
+# vuole in un giorno (una barretta, un frutto, uno sgarro). Contano nei totali
+# del giorno come i pasti fissi. Salvate come ConsumedEntry type="extra".
+
+EXTRA_TYPE = "extra"
+EXTRA_MEAL_TYPE = "extra_snack"
+
+
+class ExtraSnackIngredient(_BaseModel):
+    name: str
+    food_group: str = "altro"
+    grams: float
+
+
+class ExtraSnackBody(_BaseModel):
+    name: str
+    ingredients: List[ExtraSnackIngredient]
+
+
+def _extra_content(entry: ConsumedEntry) -> list:
+    """Ricostruisce il content (per il calcolo nutrizionale) dagli ingredienti
+    salvati in override_details di una merenda extra."""
+    od = entry.override_details or {}
+    ings = od.get("ingredients") or []
+    content = []
+    for ing in ings:
+        grams = ing.get("qty") or 0
+        content.append({
+            "name": ing.get("name"),
+            "food_group": ing.get("food_group") or "altro",
+            "quantities": {entry.profile_id: {"qty": grams, "unit": "g", "grams_equiv": grams}},
+        })
+    return content
+
+
+def _extra_nutrition(entry: ConsumedEntry, llm_gateway=None):
+    try:
+        return compute_recipe_nutrition(_extra_content(entry), entry.profile_id,
+                                        llm_gateway=llm_gateway)
+    except Exception:
+        return None
+
+
+@router.post("/extra")
+def add_extra_snack(profile_id: str, meal_date: str, body: ExtraSnackBody,
+                    request: Request, db: Session = Depends(get_db)):
+    """Annota una merenda extra (fuori dai 5 slot fissi) per un giorno."""
+    ings = [i for i in body.ingredients if i.name.strip() and i.grams > 0]
+    if not ings:
+        raise HTTPException(status_code=422, detail="Serve almeno un ingrediente.")
+    entry = ConsumedEntry(
+        id=str(uuid.uuid4()), profile_id=profile_id, date=meal_date,
+        meal_type=EXTRA_MEAL_TYPE, type=EXTRA_TYPE,
+        override_details={
+            "free_text_name": body.name.strip() or "Merenda extra",
+            "ingredients": [{"name": i.name.strip(), "food_group": i.food_group,
+                             "qty": float(i.grams), "unit": "g"} for i in ings],
+            "notes": "extra",
+        },
+    )
+    db.add(entry)
+    db.commit()
+    db.refresh(entry)
+    gw = getattr(request.app.state, "llm_gateway", None)
+    return {"id": entry.id, "name": entry.override_details["free_text_name"],
+            "nutrition": _extra_nutrition(entry, gw)}
+
+
+@router.get("/extras")
+def list_extra_snacks(profile_id: str, meal_date: str, request: Request,
+                      db: Session = Depends(get_db)):
+    """Le merende extra annotate per un giorno, con i macro."""
+    gw = getattr(request.app.state, "llm_gateway", None)
+    rows = db.query(ConsumedEntry).filter(
+        ConsumedEntry.profile_id == profile_id,
+        ConsumedEntry.date == meal_date,
+        ConsumedEntry.type == EXTRA_TYPE,
+    ).all()
+    out = []
+    for e in rows:
+        od = e.override_details or {}
+        out.append({
+            "id": e.id,
+            "name": od.get("free_text_name"),
+            "ingredients": od.get("ingredients") or [],
+            "nutrition": _extra_nutrition(e, gw),
+        })
+    return {"date": meal_date, "extras": out}
+
+
+@router.delete("/extra/{entry_id}")
+def delete_extra_snack(entry_id: str, db: Session = Depends(get_db)):
+    e = db.query(ConsumedEntry).filter(
+        ConsumedEntry.id == entry_id, ConsumedEntry.type == EXTRA_TYPE).first()
+    if not e:
+        raise HTTPException(status_code=404, detail="Merenda extra non trovata.")
+    db.delete(e)
+    db.commit()
+    return {"deleted": entry_id}
+
+
 @router.post("/{slot}/log")
 def toggle_log(slot: str, profile_id: str, meal_date: str, db: Session = Depends(get_db)):
     """Toggle registrazione del pasto fisso (per gli slot opt-in, es. gelato dopo cena)."""

@@ -54,6 +54,33 @@ const RoutineStrip = defineComponent({
                 </div>
             </div>
 
+            <!-- Merende extra: spuntini liberi fuori dai 4 slot fissi -->
+            <div v-if="!loading" style="margin-top:10px;border-top:1px dashed var(--border);padding-top:8px;">
+                <div style="display:flex;align-items:center;gap:8px;">
+                    <strong style="font-size:13px;">🍫 Extra di oggi</strong>
+                    <span v-if="extrasKcal" class="hint">+{{ extrasKcal }} kcal</span>
+                    <button @click="showExtraForm = !showExtraForm" class="btn-sm btn-secondary" style="margin-left:auto;">+ Aggiungi</button>
+                </div>
+                <div v-for="x in extras" :key="x.id" class="routine-row" style="margin-top:6px;">
+                    <span>🍪</span>
+                    <span class="routine-row__name">{{ x.name }}<span v-if="x.nutrition" class="hint"> ~{{ Math.round(x.nutrition.kcal) }} kcal</span></span>
+                    <button @click="deleteExtra(x.id)" class="btn-sm btn-danger" title="Rimuovi">×</button>
+                </div>
+                <div v-if="showExtraForm" style="margin-top:8px;border:1px solid var(--border);border-radius:8px;padding:8px;">
+                    <input v-model="extraForm.name" placeholder="Nome (es. Barretta, Frutta, Gelato)" style="width:100%;margin-bottom:6px;">
+                    <div v-for="(ing, idx) in extraForm.ingredients" :key="idx" style="display:flex;gap:6px;margin-bottom:4px;">
+                        <input v-model="ing.name" placeholder="Ingrediente (es. mela)" style="flex:1;">
+                        <input v-model.number="ing.grams" type="number" min="0" step="10" placeholder="g" style="width:70px;">
+                        <button @click="extraForm.ingredients.splice(idx, 1)" class="btn-sm btn-danger">×</button>
+                    </div>
+                    <div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap;">
+                        <button @click="extraForm.ingredients.push({ name: '', food_group: 'altro', grams: 50 })" class="btn-sm">+ riga</button>
+                        <button @click="submitExtra" class="btn-sm btn-primary" :disabled="!extraCanSave">Salva merenda</button>
+                        <button @click="showExtraForm = false" class="btn-sm btn-secondary">Annulla</button>
+                    </div>
+                </div>
+            </div>
+
             <!-- Pasto diverso per uno slot -->
             <mensa-modal v-if="mensaSlot"
                          :profile-id="profileId"
@@ -131,10 +158,19 @@ const RoutineStrip = defineComponent({
             saving: false,
             editError: null,
             mensaSlot: null,
+            extras: [],
+            showExtraForm: false,
+            extraForm: { name: '', ingredients: [{ name: '', food_group: 'altro', grams: 50 }] },
         };
     },
     computed: {
         definedSlots() { return this.slots.filter(s => s.defined); },
+        extrasKcal() {
+            return Math.round(this.extras.reduce((s, x) => s + (x.nutrition ? x.nutrition.kcal : 0), 0));
+        },
+        extraCanSave() {
+            return this.extraForm.ingredients.some(i => (i.name || '').trim() && i.grams > 0);
+        },
         assumedKcal() {
             return Math.round(this.definedSlots.reduce((sum, s) => {
                 if (!s.nutrition) return sum;
@@ -144,7 +180,10 @@ const RoutineStrip = defineComponent({
             }, 0));
         },
     },
-    mounted() { this.load(); },
+    mounted() { this.load(); this.fetchExtras(); },
+    watch: {
+        mealDate() { this.load(); this.fetchExtras(); },
+    },
     methods: {
         async load() {
             this.loading = true;
@@ -156,6 +195,47 @@ const RoutineStrip = defineComponent({
                 this.slots = [];
             } finally {
                 this.loading = false;
+            }
+        },
+        async fetchExtras() {
+            try {
+                const params = new URLSearchParams({ profile_id: this.profileId, meal_date: this.mealDate });
+                const resp = await window.apiFetch('/routine/extras?' + params);
+                this.extras = resp.ok ? (await resp.json()).extras : [];
+            } catch (_) {
+                this.extras = [];
+            }
+        },
+        async submitExtra() {
+            const ingredients = this.extraForm.ingredients
+                .filter(i => (i.name || '').trim() && i.grams > 0)
+                .map(i => ({ name: i.name.trim(), food_group: i.food_group || 'altro', grams: i.grams }));
+            if (!ingredients.length) return;
+            try {
+                const params = new URLSearchParams({ profile_id: this.profileId, meal_date: this.mealDate });
+                const resp = await window.apiFetch('/routine/extra?' + params, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name: this.extraForm.name || 'Merenda extra', ingredients }),
+                });
+                if (!resp.ok) throw new Error(await resp.text());
+                this.showExtraForm = false;
+                this.extraForm = { name: '', ingredients: [{ name: '', food_group: 'altro', grams: 50 }] };
+                await this.fetchExtras();
+                this.$emit('changed');
+                this.toast.add('Merenda extra aggiunta!', 'success');
+            } catch (e) {
+                this.toast.add('Errore: ' + e.message, 'error');
+            }
+        },
+        async deleteExtra(id) {
+            try {
+                const resp = await window.apiFetch(`/routine/extra/${id}`, { method: 'DELETE' });
+                if (!resp.ok) throw new Error(await resp.text());
+                await this.fetchExtras();
+                this.$emit('changed');
+            } catch (e) {
+                this.toast.add('Errore: ' + e.message, 'error');
             }
         },
         async onChanged() {
