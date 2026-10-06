@@ -565,6 +565,14 @@ class PlannerEngine:
         if getattr(recipe, "_is_candidate", False):
             score += 1.0
 
+        # Affinità storica: pesca dal repertorio reale. Più spesso (e più di
+        # recente) hai mangiato questa ricetta nelle scorse settimane, più sale.
+        affinity = getattr(self, "_affinity", None)
+        if affinity:
+            a = affinity.get(recipe.id, 0.0)
+            if a > 0:
+                score += min(a * 0.25, 1.2)
+
         # Piccolo jitter casuale per rompere i pareggi e garantire varietà
         score += random.uniform(-0.05, 0.05)
 
@@ -2009,6 +2017,11 @@ class PlannerEngine:
         ai_mode override: "off" | "per_slot" | "full_week" | None.
         Se None, usa il valore salvato in AppSettings.
         """
+        # Affinità storica: favorisce le ricette che l'utente mangia davvero nelle
+        # ultime settimane (lo scoring vi aggiunge un boost). Calcolata una volta.
+        pids = [profile_id_A] + ([profile_id_B] if profile_id_B else [])
+        self._affinity = self._history_affinity_map(pids, start_date)
+
         # New path: if PlanRules exist, use rule-based generation (no fixed weekly schedule)
         plan_rules = self._get_latest_plan_rules(profile_id_A)
         if plan_rules:
@@ -2582,6 +2595,33 @@ class PlannerEngine:
             if start <= target_date <= start + timedelta(days=6):
                 return plan
         return None
+
+    def _history_affinity_map(self, profile_ids: List[str], before_date: date,
+                              days_back: int = 56) -> Dict[str, float]:
+        """Quante volte (pesate per recency) ogni ricetta è stata REALMENTE
+        consumata nelle ultime `days_back` giorni. Serve a far pescare la
+        generazione dal repertorio reale dell'utente invece che a caso."""
+        cutoff = (before_date - timedelta(days=days_back)).isoformat()
+        before = before_date.isoformat()
+        rows = self.db.query(ConsumedEntry).filter(
+            ConsumedEntry.profile_id.in_(profile_ids),
+            ConsumedEntry.date >= cutoff,
+            ConsumedEntry.date < before,
+            ConsumedEntry.consumed_recipe_id.isnot(None),
+        ).all()
+        counts: Dict[str, float] = {}
+        for e in rows:
+            try:
+                age = (before_date - date.fromisoformat(e.date)).days
+            except Exception:
+                age = days_back
+            # peso 1.0 (recente) → 0.5 (vecchio): ciò che mangi ORA pesa di più
+            w = 1.0 - 0.5 * (min(max(age, 0), days_back) / days_back)
+            counts[e.consumed_recipe_id] = counts.get(e.consumed_recipe_id, 0.0) + w
+        if counts:
+            _LOGGER.info(f"[affinità] {len(counts)} ricette dal consumo reale "
+                         f"(ultimi {days_back}g) usate per pesare la generazione")
+        return counts
 
     def _load_recent_plan_recipe_ids(self, profile_id_A: str, before_date: date, days_back: int = 14) -> set:
         """
