@@ -376,7 +376,8 @@ def generate_weekly_plan(
 
     planner = PlannerEngine(db, llm_gateway=request.app.state.llm_gateway)
     if from_history:
-        weekly_plan = planner.generate_from_history(profile_id_A, profile_id_B, current_date)
+        weekly_plan = planner.generate_from_history(
+            profile_id_A, profile_id_B, current_date, locked_slots=locked_slots)
         if not weekly_plan:
             raise HTTPException(
                 status_code=404,
