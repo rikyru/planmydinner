@@ -37,6 +37,20 @@ def test_affinity_ignores_future_and_old(setup_database):
     assert RID not in m
 
 
+def test_generate_from_history_uses_repertoire(setup_database):
+    db = setup_database
+    _seed_consumed(db, RID, [2, 5, 9])
+    plan = PlannerEngine(db).generate_from_history("persona_a", "persona_b", TODAY)
+    assert len(plan) == 7
+    ids = {it.recipe_id for d in plan for m in d.meals for it in m.items}
+    assert ids == {RID}          # il piano pesca solo dal repertorio reale
+
+
+def test_generate_from_history_empty_without_history(setup_database):
+    plan = PlannerEngine(setup_database).generate_from_history("persona_a", "persona_b", TODAY)
+    assert plan == []            # niente storico → fallback (gestito dall'API)
+
+
 def test_scoring_boosts_affine_recipe(setup_database):
     db = setup_database
     rec = db.query(Recipe).filter(Recipe.id == RID).first()

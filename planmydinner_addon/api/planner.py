@@ -337,10 +337,14 @@ def generate_weekly_plan(
     current_date: date = date.today(),
     fantasy_mode: bool = False,
     ai_mode: Optional[str] = None,   # "off" | "per_slot" | "full_week" | None (use setting)
+    from_history: bool = False,      # riempi dal repertorio reale (ignora quote/grammature)
     keep_logged: bool = True,
     db: Session = Depends(get_db)
 ):
     """Force-generate a 7-day plan from current_date and save it.
+
+    from_history: se true, riempie dal repertorio reale (ricette più mangiate),
+    ignorando quote proteiche e grammature del piano nutrizionista.
 
     ai_mode: if None, reads llm_generation_mode from AppSettings.
     Pass ai_mode explicitly to override the stored setting.
@@ -371,12 +375,19 @@ def generate_weekly_plan(
         )
 
     planner = PlannerEngine(db, llm_gateway=request.app.state.llm_gateway)
-    weekly_plan = planner.generate_weekly_plan(
-        profile_id_A, profile_id_B, current_date,
-        fantasy_mode=fantasy_mode,
-        ai_mode=planner_ai_mode,
-        locked_slots=locked_slots,
-    )
+    if from_history:
+        weekly_plan = planner.generate_from_history(profile_id_A, profile_id_B, current_date)
+        if not weekly_plan:
+            raise HTTPException(
+                status_code=404,
+                detail="Nessuno storico: registra qualche pasto, poi riprova.")
+    else:
+        weekly_plan = planner.generate_weekly_plan(
+            profile_id_A, profile_id_B, current_date,
+            fantasy_mode=fantasy_mode,
+            ai_mode=planner_ai_mode,
+            locked_slots=locked_slots,
+        )
     if not weekly_plan:
         raise HTTPException(status_code=404, detail="Could not generate a weekly plan.")
     # Rete di sicurezza: i path LLM "full_week" e legacy non conoscono locked_slots,

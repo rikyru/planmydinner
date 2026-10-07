@@ -2018,6 +2018,52 @@ class PlannerEngine:
         _LOGGER.info(f"[full_week_llm] Piano generato: {len(result)} giorni.")
         return result
 
+    def generate_from_history(self, profile_id_A: str, profile_id_B: Optional[str],
+                              start_date: date) -> List[schemas.DailyPlannedMeals]:
+        """Genera la settimana DIRETTAMENTE dal repertorio reale: riempie gli slot
+        con le ricette che l'utente ha mangiato più spesso (affinità storica),
+        distribuite sui giorni senza ripeterle di fila. Ignora quote proteiche,
+        grammature e ricette auto-generate — serve un piano che somigli a ciò che
+        si mangia davvero. Gli slot bloccati sono ripristinati a valle dall'API.
+        Ritorna [] se non c'è storico (il chiamante fa fallback alla normale)."""
+        rules = self._get_latest_plan_rules(profile_id_A)
+        slots_config = generation_slots_for(rules) if rules else {
+            mt: [0, 1, 2, 3, 4, 5, 6] for mt in MEAL_TYPES}
+        pids = [profile_id_A] + ([profile_id_B] if profile_id_B else [])
+        aff = self._history_affinity_map(pids, start_date)
+        # solo ricette VERE di catalogo, ordinate per quanto le mangi
+        ranked: List[schemas.Recipe] = []
+        for rid, _w in sorted(aff.items(), key=lambda x: -x[1]):
+            rec = self.db.query(Recipe).filter(Recipe.id == rid).first()
+            if rec:
+                ranked.append(schemas.Recipe.model_validate(rec))
+        if not ranked:
+            _LOGGER.info("[storico] nessuna ricetta di catalogo nello storico: fallback")
+            return []
+
+        plan: List[schemas.DailyPlannedMeals] = []
+        idx = 0
+        last_id: Optional[str] = None
+        for i in range(7):
+            day = start_date + timedelta(days=i)
+            weekday = day.weekday()
+            meals: List[schemas.PlannedMeal] = []
+            for mt in MEAL_TYPES:
+                if weekday not in slots_config.get(mt, []):
+                    continue
+                rec = ranked[idx % len(ranked)]
+                if len(ranked) > 1 and rec.id == last_id:
+                    idx += 1
+                    rec = ranked[idx % len(ranked)]
+                idx += 1
+                last_id = rec.id
+                meals.append(schemas.PlannedMeal(meal_type=mt, items=[schemas.PlannedItem(
+                    item_name=rec.name, food_group="recipe", quantity=0, unit="",
+                    recipe_id=rec.id)]))
+            plan.append(schemas.DailyPlannedMeals(date=day.isoformat(), meals=meals))
+        _LOGGER.info(f"[storico] piano da {len(ranked)} ricette del repertorio reale")
+        return plan
+
     def generate_weekly_plan(self, profile_id_A: str, profile_id_B: Optional[str], start_date: date, fantasy_mode: bool = False, ai_mode: Optional[str] = None, locked_slots: Optional[Dict[str, Dict[str, dict]]] = None) -> List[schemas.DailyPlannedMeals]:
         """
         ai_mode override: "off" | "per_slot" | "full_week" | None.
