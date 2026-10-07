@@ -396,17 +396,15 @@ const TodayView = defineComponent({
         profileA() { return this.profiles[0] || null; },
         profileB() { return this.profiles[1] || null; },
         displayPlan() {
-            // Senza piano si mostrano comunque pranzo e cena vuoti, così si può
-            // registrare cosa si è mangiato: il backend crea il piano al volo e la
-            // generazione successiva riempirà solo gli slot rimasti liberi.
-            if (this.todayPlan) return this.todayPlan;
+            // Mostra SEMPRE pranzo e cena: gli slot non generati (es. pranzo in
+            // mensa nei feriali) restano vuoti ma inseribili. Così non "sparisce"
+            // il pranzo quando il piano del giorno contiene la sola cena.
             if (!this.profiles.length || this.loading || this.error) return null;
+            const byType = {};
+            for (const m of (this.todayPlan && this.todayPlan.meals) || []) byType[m.meal_type] = m;
             return {
                 date: this.today,
-                meals: [
-                    { meal_type: 'pranzo', items: [] },
-                    { meal_type: 'cena', items: [] },
-                ],
+                meals: ['pranzo', 'cena'].map(t => byType[t] || { meal_type: t, items: [] }),
             };
         },
         filteredCatalogRecipes() {
