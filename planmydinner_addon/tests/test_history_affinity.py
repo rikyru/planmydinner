@@ -51,6 +51,26 @@ def test_generate_from_history_empty_without_history(setup_database):
     assert plan == []            # niente storico → fallback (gestito dall'API)
 
 
+def test_history_mode_skips_locked_and_no_weekly_repeat(setup_database):
+    db = setup_database
+    db.add(Recipe(id="rec2", name="Seconda", is_composed_dish=False,
+                  content=[{"name": "Pollo", "food_group": "proteina",
+                            "quantities": {"persona_a": {"qty": 150, "unit": "g", "grams_equiv": 150}}}],
+                  steps=[], total_time_minutes=20, difficulty="facile", tags={}))
+    db.commit()
+    _seed_consumed(db, RID, [2, 6])      # pasta_pomodoro mangiata più volte
+    _seed_consumed(db, "rec2", [3])
+    # lunedì (primo giorno generato) la pasta_pomodoro è già stata mangiata
+    locked = {TODAY.isoformat(): {"pranzo": {
+        "item_name": "Pasta", "food_group": "recipe", "quantity": 0, "unit": "",
+        "recipe_id": RID}}}
+    plan = PlannerEngine(db).generate_from_history("persona_a", "persona_b", TODAY, locked_slots=locked)
+    ids = [it.recipe_id for d in plan for m in d.meals for it in m.items]
+    assert RID not in ids                # già mangiata questa settimana → non riproposta
+    assert "rec2" in ids                 # usa l'altra del repertorio
+    assert len(ids) == len(set(ids))     # nessuna ripetizione nella settimana
+
+
 def test_scoring_boosts_affine_recipe(setup_database):
     db = setup_database
     rec = db.query(Recipe).filter(Recipe.id == RID).first()
