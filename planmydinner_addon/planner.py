@@ -4392,22 +4392,28 @@ class PlannerEngine:
                 _LOGGER.warning(f"Recipe {recipe_id} not found in Recipe or CandidateRecipe.")
                 return False
         updated = copy.deepcopy(plan.daily_plans)
+        item = {"item_name": recipe_name, "food_group": "recipe",
+                "quantity": 1, "unit": "recipe",
+                "is_estimated_unit": False, "alternatives": [],
+                "recipe_id": recipe_id}
         applied = False
         for day in updated:
             if day["date"] == current_date.isoformat():
-                for meal in day["meals"]:
-                    if meal["meal_type"] == meal_type:
-                        meal["items"] = [{"item_name": recipe_name, "food_group": "recipe",
-                                          "quantity": 1, "unit": "recipe",
-                                          "is_estimated_unit": False, "alternatives": [],
-                                          "recipe_id": recipe_id}]
-                        applied = True
+                slot = next((m for m in day["meals"] if m["meal_type"] == meal_type), None)
+                if slot is not None:
+                    slot["items"] = [item]
+                else:
+                    # Slot non generato (es. pranzo in mensa nei feriali): lo crea,
+                    # così si può aggiungere un pasto anche dove il piano non c'era.
+                    day["meals"].append({"meal_type": meal_type, "items": [item]})
+                applied = True
+                break
         if not applied:
-            # Meglio un errore che un "fatto!" a cui non corrisponde nulla: era
-            # cosi' che scrivere sul piano sbagliato passava per un successo.
+            # Il giorno non è coperto dal piano: meglio un errore che un "fatto!"
+            # a cui non corrisponde nulla.
             _LOGGER.warning(
-                f"[apply] Nessuno slot '{meal_type}' il {current_date.isoformat()} "
-                f"nel piano {plan.week_start_date}: niente da aggiornare."
+                f"[apply] Giorno {current_date.isoformat()} assente nel piano "
+                f"{plan.week_start_date}: niente da aggiornare."
             )
             return False
         plan.daily_plans = updated

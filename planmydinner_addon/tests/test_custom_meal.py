@@ -43,7 +43,38 @@ def _body(title="Piadina con manzo"):
     }
 
 
+def _make_plan_cena_only(db, profile_id="persona_a"):
+    """Piano in cui i giorni hanno SOLO la cena (pranzo non generato, es. mensa)."""
+    _ensure_profiles(db)
+    start = TODAY - timedelta(days=TODAY.weekday())
+    db.add(GeneratedWeeklyPlan(
+        id="plan-cena-only", profile_id_A=profile_id, profile_id_B="persona_b",
+        week_start_date=start.isoformat(), generated_at=start.isoformat(),
+        daily_plans=[{
+            "date": (start + timedelta(days=i)).isoformat(),
+            "meals": [{"meal_type": "cena", "items": []}],
+        } for i in range(7)]))
+    db.commit()
+
+
 class TestSetCustomMeal:
+    def test_adds_missing_lunch_slot(self, client, setup_database):
+        # Regressione: col pranzo non generato (solo cena nel piano), inserire un
+        # pranzo deve crearne lo slot, non fallire in silenzio.
+        _make_plan_cena_only(setup_database)
+        resp = client.post("/planner/set-custom-meal", params={
+            "profile_id_A": "persona_a", "profile_id_B": "persona_b",
+            "meal_type": "pranzo", "current_date": TODAY.isoformat(),
+        }, json=_body(title="Pranzo al volo"))
+        assert resp.status_code == 200, resp.text
+        plan = setup_database.query(GeneratedWeeklyPlan).filter(
+            GeneratedWeeklyPlan.id == "plan-cena-only").first()
+        setup_database.refresh(plan)
+        today = next(d for d in plan.daily_plans if d["date"] == TODAY.isoformat())
+        pranzo = next((m for m in today["meals"] if m["meal_type"] == "pranzo"), None)
+        assert pranzo is not None and pranzo["items"], "lo slot pranzo va creato e riempito"
+        assert pranzo["items"][0]["recipe_id"] == resp.json()["recipe_id"]
+
     def test_creates_real_recipe_visible_in_recipes_list(self, client, setup_database):
         _make_plan(setup_database)
         resp = client.post("/planner/set-custom-meal", params={
