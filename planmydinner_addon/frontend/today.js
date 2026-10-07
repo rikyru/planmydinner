@@ -15,6 +15,27 @@ const TodayView = defineComponent({
                 <button v-if="!isToday" class="btn-sm" @click="goToday()">Torna a oggi</button>
             </div>
 
+            <!-- Obiettivo energetico del giorno (da OpenFit) -->
+            <div v-if="dayTarget && dayTarget.kcal" class="card" style="padding:10px 14px;margin-bottom:10px;">
+                <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;">
+                    <strong style="font-size:15px;">🎯 Obiettivo {{ Math.round(dayTarget.kcal) }} kcal</strong>
+                    <span class="hint">stimato oggi <strong>{{ Math.round(dayKcal) }}</strong></span>
+                    <span :style="{color: dayRemaining >= 0 ? '#2a9d8f' : '#d62828', fontWeight:600}">
+                        {{ dayRemaining >= 0 ? 'restano ' + Math.round(dayRemaining) : (Math.round(-dayRemaining) + ' oltre') }} kcal
+                    </span>
+                </div>
+                <div class="adherence-bar-wrap" style="margin:6px 0;">
+                    <div class="adherence-bar-fill" :style="{width: Math.min(100, dayKcal / dayTarget.kcal * 100) + '%',
+                         background: dayKcal > dayTarget.kcal * 1.05 ? '#d62828' : undefined}"></div>
+                </div>
+                <div class="hint" v-if="dayMacros">
+                    P {{ Math.round(dayMacros.protein_g) }}{{ dayTarget.protein_g ? '/' + Math.round(dayTarget.protein_g) : '' }}g ·
+                    C {{ Math.round(dayMacros.carbs_g) }}{{ dayTarget.carbs_g ? '/' + Math.round(dayTarget.carbs_g) : '' }}g ·
+                    G {{ Math.round(dayMacros.fat_g) }}{{ dayTarget.fat_g ? '/' + Math.round(dayTarget.fat_g) : '' }}g
+                    <span v-if="dayTrainingNote"> · {{ dayTrainingNote }}</span>
+                </div>
+            </div>
+
             <!-- Adherence strip -->
             <div v-if="adherence && adherence.planned_slots > 0" class="adherence-strip">
                 <span>Questa settimana: {{ adherence.in_plan_consumed }}/{{ adherence.planned_slots }} pasti</span>
@@ -351,6 +372,7 @@ const TodayView = defineComponent({
             // Custom meal
             showCustomModal: false,
             customForm: { title: '', components: [], notes: '' },
+            daySummary: null,   // {nutrition, targets} del giorno (obiettivo energetico)
             customMealType: null,
         };
     },
@@ -358,6 +380,11 @@ const TodayView = defineComponent({
         isToday() {
             return this.today === new Date().toISOString().slice(0, 10);
         },
+        dayTarget() { return this.daySummary ? this.daySummary.targets : null; },
+        dayMacros() { return this.daySummary ? this.daySummary.nutrition : null; },
+        dayKcal() { return this.dayMacros ? (this.dayMacros.kcal || 0) : 0; },
+        dayRemaining() { return (this.dayTarget ? this.dayTarget.kcal : 0) - this.dayKcal; },
+        dayTrainingNote() { return this.daySummary ? this.daySummary.training_note : null; },
         customValid() {
             return (this.customForm.components || [])
                 .some(c => (c.name || '').trim() && c.grams > 0);
@@ -427,7 +454,21 @@ const TodayView = defineComponent({
             if (this.profileA && this.profileB) {
                 await this.loadWeeklyPlan();
                 await this.loadAdherence();
+                await this.fetchDaySummary();
             }
+        },
+        async fetchDaySummary() {
+            if (!this.profileA) return;
+            try {
+                const params = new URLSearchParams({
+                    profile_id: this.profileA.id, start_date: this.today, end_date: this.today });
+                const resp = await window.apiFetch('/integration/summary?' + params);
+                if (!resp.ok) { this.daySummary = null; return; }
+                const j = await resp.json();
+                const day = (j.days || [])[0] || {};
+                this.daySummary = { nutrition: day.nutrition, targets: j.targets,
+                                    training_note: j.training_note || null };
+            } catch (_) { this.daySummary = null; }
         },
         async loadData() {
             this.loading = true;
@@ -438,6 +479,7 @@ const TodayView = defineComponent({
                 if (this.profiles.length >= 2) {
                     await this.loadWeeklyPlan();
                     await this.loadAdherence();
+                    await this.fetchDaySummary();
                 }
             } catch (e) {
                 this.error = 'Errore nel caricamento dei profili: ' + e.message;
