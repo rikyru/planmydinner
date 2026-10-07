@@ -342,6 +342,17 @@ const Recipes = defineComponent({
                             <ul v-if="preview.issues.length" style="margin:6px 0 0;padding-left:18px;font-size:12px;color:#999">
                                 <li v-for="(it, i) in preview.issues" :key="i">{{ it.ingredient }}: {{ issueLabel(it.issue) }}</li>
                             </ul>
+                            <div v-if="preview.suggestions && preview.suggestions.length" style="margin-top:8px;">
+                                <div class="hint" style="margin-bottom:4px;">Suggerimenti</div>
+                                <div v-for="(sg, i) in preview.suggestions" :key="'sg'+i"
+                                     style="display:flex;align-items:center;gap:8px;margin-bottom:4px;flex-wrap:wrap;">
+                                    <button class="btn-sm" @click="applySuggestion(sg)">
+                                        <template v-if="sg.action === 'add_ingredient'">+ {{ sg.name }} {{ sg.grams }}g</template>
+                                        <template v-else>{{ sg.ingredient }}: usa {{ sg.grams }}g</template>
+                                    </button>
+                                    <span class="hint" style="font-size:11px;">{{ sg.reason }}</span>
+                                </div>
+                            </div>
                         </div>
                         <div v-else class="hint">Aggiungi ingredienti con grammi per vedere la stima.</div>
                     </div>
@@ -739,6 +750,16 @@ const Recipes = defineComponent({
         addIngredient(group = 'verdure') {
             const defaults = { proteina: 150, carboidrati: 80, verdure: 150, condimenti: 10, altro: 50 };
             this.editedRecipe.ingredients.push({ name: '', food_group: group, grams: defaults[group] ?? 100 });
+        },
+        applySuggestion(sg) {
+            if (sg.action === 'add_ingredient') {
+                this.editedRecipe.ingredients.push({
+                    name: sg.name, food_group: sg.food_group || 'altro', grams: sg.grams });
+            } else if (sg.action === 'set_grams') {
+                const ing = this.editedRecipe.ingredients.find(
+                    i => (i.name || '').trim().toLowerCase() === (sg.ingredient || '').trim().toLowerCase());
+                if (ing) ing.grams = sg.grams;
+            }
         },
         removeIngredient(idx) {
             this.editedRecipe.ingredients.splice(idx, 1);

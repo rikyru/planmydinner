@@ -310,15 +310,25 @@ def analyze_recipe(
 
         {"nutrition": {...} | None,
          "issues": [{"ingredient": nome, "issue": "no_grams"|"unknown"|"estimated_llm"}],
-         "warnings": ["no_added_fat", ...]}
+         "warnings": ["no_added_fat", "no_vegetables", ...],
+         "suggestions": [{"action": "add_ingredient"|"set_grams", ...}]}
+
+    `suggestions` sono azioni concrete che la UI può proporre con un click:
+    aggiungere l'olio di cottura, mettere una grammatura mancante, aggiungere la
+    verdura. Es. "verdure cotte ma niente olio? aggiungi 10 g".
     """
     ingredients = _content_ingredients(content)
     issues: List[Dict[str, str]] = []
+    suggestions: List[Dict[str, Any]] = []
     for ing in ingredients:
         name = (ing.get("name") or "?").strip()
         grams = _ingredient_grams(ing, profile_id)
         if not grams or grams <= 0:
             issues.append({"ingredient": name, "issue": "no_grams"})
+            fg = (ing.get("food_group") or "altro").strip().lower()
+            suggestions.append({"action": "set_grams", "ingredient": name,
+                                "grams": _SUGGESTED_GRAMS.get(fg, 50),
+                                "reason": "grammatura mancante"})
             continue
         n = resolve_ingredient_nutrition(ing, llm_gateway=llm_gateway)
         if not n:
@@ -328,10 +338,30 @@ def analyze_recipe(
 
     nutrition = compute_recipe_nutrition(
         content, profile_id, llm_gateway=llm_gateway, add_cooking_fat_g=add_cooking_fat_g)
+
     warnings: List[str] = []
+    groups = {(ing.get("food_group") or "").strip().lower() for ing in ingredients}
     if nutrition is not None and not _has_added_fat(ingredients):
         warnings.append("no_added_fat")
-    return {"nutrition": nutrition, "issues": issues, "warnings": warnings}
+        suggestions.append({"action": "add_ingredient", "name": "Olio extravergine d'oliva",
+                            "food_group": "condimenti", "grams": 10,
+                            "reason": "i piatti cotti assorbono olio: aggiungilo per kcal realistiche"})
+    if ingredients and not (groups & {"verdure", "verdura"}):
+        warnings.append("no_vegetables")
+        suggestions.append({"action": "add_ingredient", "name": "Verdure miste",
+                            "food_group": "verdure", "grams": 200,
+                            "reason": "nessuna verdura nel piatto"})
+    return {"nutrition": nutrition, "issues": issues, "warnings": warnings,
+            "suggestions": suggestions}
+
+
+# Grammature tipiche per gruppo, suggerite quando manca la dose di un ingrediente.
+_SUGGESTED_GRAMS = {
+    "carboidrati": 80, "carboidrato": 80, "proteina": 150, "proteine": 150,
+    "carne_bianca": 150, "carne_rossa": 150, "pesce": 150, "uova": 100,
+    "legumi": 120, "latticini": 60, "formaggio": 60, "verdure": 200, "verdura": 200,
+    "condimenti": 10, "grassi": 10, "frutta": 150, "altro": 50,
+}
 
 
 def _content_ingredients(content: Union[List, Dict, None]) -> List[Dict[str, Any]]:
