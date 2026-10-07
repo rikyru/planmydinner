@@ -743,22 +743,23 @@ const WeekView = defineComponent({
         profileA() { return this.profiles[0] || null; },
         profileB() { return this.profiles[1] || null; },
         displayWeek() {
-            // Senza piano si mostra comunque la griglia con gli slot vuoti: si può
-            // registrare cosa si è mangiato (il backend crea il piano al volo) e la
-            // generazione successiva riempirà solo gli slot rimasti liberi.
-            if (this.weekPlan) return this.weekPlan;
+            // Mostra SEMPRE pranzo e cena per ogni giorno: gli slot non generati
+            // (es. pranzo in mensa nei feriali) restano vuoti ma inseribili, così
+            // non "spariscono" quando il piano del giorno ha la sola cena.
             if (this.loading || this.error || this.profiles.length < 2) return null;
+            const ensure = (meals) => {
+                const byType = {};
+                for (const m of meals || []) byType[m.meal_type] = m;
+                return ['pranzo', 'cena'].map(t => byType[t] || { meal_type: t, items: [] });
+            };
+            if (this.weekPlan) {
+                return this.weekPlan.map(d => ({ date: d.date, meals: ensure(d.meals) }));
+            }
             const start = new Date(this.startDate + 'T12:00:00');
             return Array.from({ length: 7 }, (_, i) => {
                 const d = new Date(start);
                 d.setDate(start.getDate() + i);
-                return {
-                    date: d.toISOString().slice(0, 10),
-                    meals: [
-                        { meal_type: 'pranzo', items: [] },
-                        { meal_type: 'cena', items: [] },
-                    ],
-                };
+                return { date: d.toISOString().slice(0, 10), meals: ensure([]) };
             });
         },
         filteredCatalogRecipes() {
