@@ -19,6 +19,12 @@ def test_analyze_flags_missing_grams_and_unknown():
     assert issues["Ingrediente Misterioso"] == "unknown"
     assert res["nutrition"] is not None            # la pasta è comunque conteggiata
     assert "no_added_fat" in res["warnings"]        # nessun olio nella bozza
+    # suggerimenti azionabili: dose per il Pollo (proteina→150g) + aggiungi olio
+    acts = res["suggestions"]
+    grams_sg = next(s for s in acts if s["action"] == "set_grams" and s["ingredient"] == "Pollo")
+    assert grams_sg["grams"] == 150
+    assert any(s["action"] == "add_ingredient" and "oliva" in s["name"].lower() for s in acts)
+    assert any(s["action"] == "add_ingredient" and s["food_group"] == "verdure" for s in acts)  # manca verdura
 
 
 def test_analyze_no_warning_when_oil_present():
