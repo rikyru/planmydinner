@@ -86,6 +86,25 @@ def test_cooking_fat_added_to_meal_without_fat():
     assert withfat["fat_g"] == pytest.approx(base["fat_g"] + 8 * 0.999, abs=0.5)
 
 
+def test_split_scales_carbs_keeps_protein():
+    from planmydinner_addon.nutrition import recipe_nutrition_split, scaled_nutrition
+    content = [
+        {"name": "Pollo", "food_group": "proteina",
+         "quantities": {"persona_a": {"qty": 150, "unit": "g", "grams_equiv": 150}}},
+        {"name": "Pasta", "food_group": "carboidrati",
+         "quantities": {"persona_a": {"qty": 100, "unit": "g", "grams_equiv": 100}}},
+    ]
+    fixed, scal = recipe_nutrition_split(content, "persona_a")
+    # la proteina del pollo (23 g/100 × 150) è nel "fisso", i carbo della pasta nello "scalabile"
+    assert fixed["protein_g"] == pytest.approx(34.5, abs=1)
+    assert scal["carbs_g"] > 50 and fixed["carbs_g"] < 5
+    full = scaled_nutrition((fixed, scal), 1.0)
+    half = scaled_nutrition((fixed, scal), 0.5)
+    # dimezzando lo scale: i carbo crollano, le proteine del pollo restano quasi uguali
+    assert half["carbs_g"] < 0.6 * full["carbs_g"]
+    assert half["protein_g"] >= fixed["protein_g"]          # il pollo non si tocca
+
+
 def test_cooking_fat_not_added_when_oil_present():
     meal = _NO_FAT_MEAL + [
         {"name": "Olio extravergine d'oliva", "food_group": "condimenti",

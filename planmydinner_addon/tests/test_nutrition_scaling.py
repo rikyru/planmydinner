@@ -15,9 +15,18 @@ from planmydinner_addon.scaling import apply_nutrition_scaling, SCALE_MIN, SCALE
 from planmydinner_addon.nutrition import DEFAULT_COOKING_FAT_G
 
 TODAY = "2026-02-24"
-# pasta_pomodoro = 389 kcal/pasto + olio di cottura stimato (ricetta senza grassi)
-MEAL_KCAL = 389.0 + DEFAULT_COOKING_FAT_G * 899 / 100.0
+# pasta_pomodoro per pasto: carbo = Pasta 100g (353 kcal, SCALABILE),
+# fisso = Pomodoro 200g (36 kcal) + olio di cottura stimato (NON scalati).
+OIL_KCAL = DEFAULT_COOKING_FAT_G * 899 / 100.0
+MEAL_CARB = 353.0
+MEAL_FIXED = 36.0 + OIL_KCAL
+MEAL_KCAL = MEAL_CARB + MEAL_FIXED
 DAY_KCAL = 2 * MEAL_KCAL
+
+
+def _carb_scale(target, meals=2):
+    """Fattore atteso sui carboidrati per centrare `target` kcal nel giorno."""
+    return (target - meals * MEAL_FIXED) / (meals * MEAL_CARB)
 
 
 def _item(recipe_id="pasta_pomodoro_recipe", food_group="carboidrato", name="Pasta al Pomodoro"):
@@ -64,10 +73,11 @@ def test_no_target_is_noop(setup_database):
 
 def test_scale_hits_target(setup_database):
     db = setup_database
-    _set_targets(db, kcal=600)  # 600/778 = 0.771, within the band
+    _set_targets(db, kcal=800)   # centrabile scalando i soli carboidrati
     daily = [schemas.DailyPlannedMeals.model_validate(dp) for dp in _plan_rows()]
     apply_nutrition_scaling(db, "persona_a", daily)
-    expected = 600 / DAY_KCAL
+    expected = _carb_scale(800)   # fattore sui soli carboidrati
+    assert SCALE_MIN < expected < 1
     for dp in daily:
         for m in dp.meals:
             assert m.scale == pytest.approx(expected, abs=0.01)
@@ -112,10 +122,10 @@ def test_cut_never_inflates(setup_database):
 
 def test_cut_still_shrinks(setup_database):
     db = setup_database
-    _set_targets(db, kcal=600, allow_upscale=0.0)  # below base -> must shrink
+    _set_targets(db, kcal=800, allow_upscale=0.0)  # below base -> must shrink
     daily = [schemas.DailyPlannedMeals.model_validate(dp) for dp in _plan_rows()]
     apply_nutrition_scaling(db, "persona_a", daily)
-    expected = 600 / DAY_KCAL
+    expected = _carb_scale(800)
     assert all(m.scale == pytest.approx(expected, abs=0.01) for dp in daily for m in dp.meals)
 
 
@@ -123,20 +133,20 @@ def test_apply_targets_endpoint_rescales_and_summary_reflects(client, setup_data
     db = setup_database
     _save_plan(db)
     r = client.post("/integration/apply-targets", params={"profile_id": "persona_a"},
-                    json={"kcal": 600})
+                    json={"kcal": 800})
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["rescaled_current_plan"] is True
-    assert body["targets"]["kcal"] == 600
+    assert body["targets"]["kcal"] == 800
 
-    # summary over the scaled window shows the reduced day kcal (~600), not 778
+    # summary over the scaled window shows the day kcal at the target (scaling carbs)
     end = (date.fromisoformat(TODAY) + timedelta(days=2)).isoformat()
     s = client.get("/integration/summary", params={
         "profile_id": "persona_a", "start_date": TODAY, "end_date": end})
     assert s.status_code == 200
     day0 = s.json()["days"][0]
-    assert day0["nutrition"]["kcal"] == pytest.approx(600, abs=1.0)
-    assert s.json()["targets"]["kcal"] == 600
+    assert day0["nutrition"]["kcal"] == pytest.approx(800, abs=2.0)
+    assert s.json()["targets"]["kcal"] == 800
 
 
 def test_shopping_list_honours_scale(setup_database):
