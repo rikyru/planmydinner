@@ -341,28 +341,18 @@ def _apply_mensa_to_plan(db: Session, profile_id: str, meal_date: str, meal_type
     e non la ricetta suggerita. Se la settimana non ha ancora un piano ne crea
     uno vuoto, così si può registrare un pasto anche senza aver generato nulla.
     Ritorna False se la data non è valida."""
-    from .planner import ensure_plan_for_date
+    from .planner import ensure_plan_for_date, _set_day_slot
     try:
         target = date.fromisoformat(meal_date)
     except ValueError:
         return False
     plan = ensure_plan_for_date(db, profile_id, target)
     updated = copy.deepcopy(plan.daily_plans)
-    changed = False
-    for day in updated:
-        if day.get("date") == meal_date:
-            for meal in day.get("meals", []):
-                if meal.get("meal_type") == meal_type:
-                    meal["items"] = [{
-                        "item_name": f"🍱 {name}",
-                        "food_group": "mensa",
-                        "quantity": 1,
-                        "unit": "recipe",
-                        "is_estimated_unit": False,
-                        "alternatives": [],
-                        "recipe_id": recipe_id,
-                    }]
-                    changed = True
+    changed = _set_day_slot(updated, meal_date, meal_type, {
+        "item_name": f"🍱 {name}", "food_group": "mensa", "quantity": 1,
+        "unit": "recipe", "is_estimated_unit": False, "alternatives": [],
+        "recipe_id": recipe_id,
+    })
     if changed:
         plan.daily_plans = updated
         db.add(plan)

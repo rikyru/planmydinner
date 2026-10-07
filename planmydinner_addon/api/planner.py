@@ -1155,19 +1155,11 @@ def set_free_meal(
                 recipe_id = cand.id
 
     updated = copy.deepcopy(plan.daily_plans)
-    for day in updated:
-        if day["date"] == current_date.isoformat():
-            for meal in day.get("meals", []):
-                if meal["meal_type"] == meal_type:
-                    meal["items"] = [{
-                        "item_name": body.title,
-                        "food_group": "free_meal",
-                        "quantity": 0,
-                        "unit": "",
-                        "is_estimated_unit": False,
-                        "alternatives": [],
-                        "recipe_id": recipe_id,
-                    }]
+    _set_day_slot(updated, current_date.isoformat(), meal_type, {
+        "item_name": body.title, "food_group": "free_meal", "quantity": 0,
+        "unit": "", "is_estimated_unit": False, "alternatives": [],
+        "recipe_id": recipe_id,
+    })
     plan.daily_plans = updated
     db.add(plan)
     db.commit()
@@ -1539,19 +1531,10 @@ def set_not_eaten(
     """Mark a past meal slot as not eaten (reduces adherence score)."""
     plan = ensure_plan_for_date(db, profile_id_A, current_date, profile_id_B)
     updated = copy.deepcopy(plan.daily_plans)
-    for day in updated:
-        if day["date"] == current_date.isoformat():
-            for meal in day.get("meals", []):
-                if meal["meal_type"] == meal_type:
-                    meal["items"] = [{
-                        "item_name": "Non mangiato",
-                        "food_group": "not_eaten",
-                        "quantity": 0,
-                        "unit": "",
-                        "is_estimated_unit": False,
-                        "alternatives": [],
-                        "recipe_id": None,
-                    }]
+    _set_day_slot(updated, current_date.isoformat(), meal_type, {
+        "item_name": "Non mangiato", "food_group": "not_eaten", "quantity": 0,
+        "unit": "", "is_estimated_unit": False, "alternatives": [], "recipe_id": None,
+    })
     plan.daily_plans = updated
     db.add(plan)
     db.commit()
@@ -1580,6 +1563,22 @@ def cancel_not_eaten(
     db.add(plan)
     db.commit()
     return {"message": "Not-eaten mark cancelled."}
+
+
+def _set_day_slot(daily_plans: list, iso: str, meal_type: str, item: Optional[dict]) -> bool:
+    """Imposta l'item di uno slot (pranzo/cena) di un giorno; se lo slot non
+    esiste (es. pranzo non generato nei feriali) lo CREA. item=None svuota lo
+    slot. Ritorna True se il giorno è presente nel piano."""
+    for day in daily_plans:
+        if day.get("date") == iso:
+            items = [item] if item is not None else []
+            slot = next((m for m in day.get("meals", []) if m.get("meal_type") == meal_type), None)
+            if slot is not None:
+                slot["items"] = items
+            else:
+                day.setdefault("meals", []).append({"meal_type": meal_type, "items": items})
+            return True
+    return False
 
 
 def compute_adherence_stats(db: Session, profile_id_A: str, start_date: date, end_date: date) -> Dict[str, Any]:
