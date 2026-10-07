@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy.orm import Session
 
 from .database import CandidateRecipe, PlanRules, Recipe
-from .nutrition import DEFAULT_COOKING_FAT_G, compute_recipe_nutrition
+from .nutrition import DEFAULT_COOKING_FAT_G, compute_recipe_nutrition, recipe_nutrition_split
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -105,19 +105,19 @@ def apply_nutrition_scaling(
     routine_kcal = _routine_kcal(db, profile_id, llm_gateway)
     budget = max(target_kcal - routine_kcal, 0.0)
 
-    nut_cache: Dict[str, Optional[float]] = {}
+    # Per meal: (kcal fisse = proteine/verdure/grassi, kcal scalabili = carboidrati).
+    split_cache: Dict[str, Optional[tuple]] = {}
 
-    def _meal_kcal(recipe_id: str) -> Optional[float]:
-        if recipe_id not in nut_cache:
+    def _meal_split(recipe_id: str):
+        if recipe_id not in split_cache:
             content = _recipe_content(db, recipe_id)
             try:
-                n = compute_recipe_nutrition(
+                split_cache[recipe_id] = recipe_nutrition_split(
                     content, profile_id, llm_gateway=llm_gateway,
                     add_cooking_fat_g=DEFAULT_COOKING_FAT_G) if content else None
             except Exception:
-                n = None
-            nut_cache[recipe_id] = n["kcal"] if n else None
-        return nut_cache[recipe_id]
+                split_cache[recipe_id] = None
+        return split_cache[recipe_id]
 
     for dp in daily_plans:
         try:
@@ -127,23 +127,31 @@ def apply_nutrition_scaling(
         if day is not None and day < today:
             continue  # don't rewrite portions of already-consumed days
 
-        scalable = []
-        planned_kcal = 0.0
+        scalable = []           # (meal, fixed_kcal, carb_kcal)
+        fixed_kcal = 0.0
+        carb_kcal = 0.0
         for meal in dp.meals:
             if not meal.items:
                 continue
             first = meal.items[0]
             if first.food_group in _DEVIATION_FG or not first.recipe_id:
                 continue
-            kcal = _meal_kcal(first.recipe_id)
-            if kcal and kcal > 0:
-                scalable.append(meal)
-                planned_kcal += kcal
+            split = _meal_split(first.recipe_id)
+            if not split:
+                continue
+            fx, sc = split
+            scalable.append(meal)
+            fixed_kcal += fx["kcal"]
+            carb_kcal += sc["kcal"]
 
-        if not scalable or planned_kcal <= 0:
+        if not scalable:
             continue
 
-        scale = budget / planned_kcal
+        # Scala SOLO i carboidrati per centrare il budget, lasciando intatte
+        # proteine e verdure: carb_scale tale che fisse + carbo×s = budget.
+        if carb_kcal <= 0:
+            continue  # nessun carboidrato da regolare: niente da scalare
+        scale = (budget - fixed_kcal) / carb_kcal
         if not allow_upscale:
             scale = min(scale, 1.0)
         scale = max(SCALE_MIN, min(SCALE_MAX, scale))

@@ -419,3 +419,52 @@ def compute_recipe_nutrition(
     result["sources"] = sources
     result["cooking_fat_added"] = cooking_fat_added
     return result
+
+
+# Gruppi "scalabili": in un deficit/surplus si agisce sui CARBOIDRATI, lasciando
+# proteine e verdure intatte (scaling per-componente). È la leva energetica
+# principale e la più sensata da ridurre/aumentare per centrare le kcal.
+_SCALABLE_GROUPS = ("carboidrati", "carboidrato")
+
+
+def recipe_nutrition_split(
+    content: Union[List, Dict, None],
+    profile_id: str,
+    llm_gateway: Any = None,
+    add_cooking_fat_g: float = 0.0,
+) -> Optional[tuple]:
+    """Nutrizione divisa in (fissa, scalabile): 'scalabile' = ingredienti del
+    gruppo carboidrati (la leva per tagliare/aggiungere energia), 'fissa' = tutto
+    il resto (proteine, verdure, grassi) + l'olio di cottura stimato. La porzione
+    scalata vale fissa + scalabile × fattore. Entrambe hanno NUTRITION_KEYS.
+    None se nessun ingrediente è risolvibile."""
+    ingredients = _content_ingredients(content)
+    fixed = {k: 0.0 for k in NUTRITION_KEYS}
+    scal = {k: 0.0 for k in NUTRITION_KEYS}
+    matched = 0
+    for ing in ingredients:
+        grams = _ingredient_grams(ing, profile_id)
+        if not grams or grams <= 0:
+            continue
+        nutrition = resolve_ingredient_nutrition(ing, llm_gateway=llm_gateway)
+        if not nutrition:
+            continue
+        matched += 1
+        factor = grams / 100.0
+        bucket = scal if (ing.get("food_group") or "").strip().lower() in _SCALABLE_GROUPS else fixed
+        for k in NUTRITION_KEYS:
+            bucket[k] += nutrition[k] * factor
+    if matched == 0:
+        return None
+    if add_cooking_fat_g and add_cooking_fat_g > 0 and not _has_added_fat(ingredients):
+        oil = NUTRITION_TABLE["olio"]
+        f = add_cooking_fat_g / 100.0
+        for k in NUTRITION_KEYS:
+            fixed[k] += oil[k] * f   # l'olio di cottura è "fisso", non si taglia
+    return fixed, scal
+
+
+def scaled_nutrition(split: tuple, scale: float) -> Dict[str, float]:
+    """Combina (fissa, scalabile) applicando il fattore solo ai carboidrati."""
+    fixed, scal = split
+    return {k: round(fixed[k] + scal[k] * scale, 1) for k in NUTRITION_KEYS}

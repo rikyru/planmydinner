@@ -18,7 +18,8 @@ from sqlalchemy.orm import Session
 
 from .. import schemas
 from ..database import get_db, CandidateRecipe, ConsumedEntry, GeneratedWeeklyPlan, PlanRules, Recipe
-from ..nutrition import DEFAULT_COOKING_FAT_G, NUTRITION_KEYS, compute_recipe_nutrition
+from ..nutrition import (DEFAULT_COOKING_FAT_G, NUTRITION_KEYS, compute_recipe_nutrition,
+                         recipe_nutrition_split, scaled_nutrition)
 from ..scaling import apply_nutrition_scaling
 from .planner import compute_adherence_stats
 
@@ -198,13 +199,14 @@ def get_plan_targets(request: Request, profile_id: str, db: Session = Depends(ge
     if not plan:
         return {"targets": None, "detail": "Nessun piano generato."}
 
-    def _recipe_nutrition(recipe_id: str):
+    def _recipe_nutrition(recipe_id: str, scale: float = 1.0):
         content = _get_recipe_content(db, recipe_id)
         if not content:
             return None
         try:
-            return compute_recipe_nutrition(content, profile_id, llm_gateway=llm_gateway,
-                                            add_cooking_fat_g=DEFAULT_COOKING_FAT_G)
+            split = recipe_nutrition_split(content, profile_id, llm_gateway=llm_gateway,
+                                           add_cooking_fat_g=DEFAULT_COOKING_FAT_G)
+            return scaled_nutrition(split, scale) if split else None
         except Exception:
             return None
 
@@ -231,12 +233,12 @@ def get_plan_targets(request: Request, profile_id: str, db: Session = Depends(ge
                     items[0].get("food_group") in ("mensa", "free_meal", "not_eaten"):
                 continue   # solo il piano originale, non le deviazioni
             scale = meal.get("scale", 1.0) or 1.0
-            n = _recipe_nutrition(items[0]["recipe_id"])
+            n = _recipe_nutrition(items[0]["recipe_id"], scale)
             if n:
                 if day is None:
                     day = {k: 0.0 for k in NUTRITION_KEYS}
                 for k in NUTRITION_KEYS:
-                    day[k] += n[k] * scale
+                    day[k] += n[k]
         if day:
             day_totals.append(day)
 
@@ -375,6 +377,22 @@ def get_integration_summary(
                 nutrition_cache[key] = None
         return nutrition_cache[key]
 
+    split_cache: Dict[str, Optional[tuple]] = {}
+
+    def _planned_nutrition(recipe_id: str, scale: float) -> Optional[Dict[str, Any]]:
+        """Nutrizione di un pasto pianificato con lo scaling per-componente:
+        il fattore agisce solo sui carboidrati (proteine/verdure intatte)."""
+        if recipe_id not in split_cache:
+            content = _get_recipe_content(db, recipe_id)
+            try:
+                split_cache[recipe_id] = recipe_nutrition_split(
+                    content, profile_id, llm_gateway=llm_gateway,
+                    add_cooking_fat_g=DEFAULT_COOKING_FAT_G) if content else None
+            except Exception:
+                split_cache[recipe_id] = None
+        split = split_cache[recipe_id]
+        return scaled_nutrition(split, scale) if split else None
+
     # Pasti fissi (colazione/spuntini): assunti nei giorni senza eccezioni,
     # slot opt-in (es. dopo cena) contati solo se registrati.
     from .routine import SLOTS as ROUTINE_SLOTS, get_routine_meals
@@ -487,14 +505,14 @@ def get_integration_summary(
             recipe_id = items[0].get("recipe_id")
             if not recipe_id:
                 continue
-            # pranzo/cena: stima il grasso di cottura se la ricetta non ne ha
-            nutrition = _nutrition_for_recipe(recipe_id, DEFAULT_COOKING_FAT_G)
+            # pranzo/cena: scaling per-componente (solo carboidrati) + olio stimato
+            nutrition = _planned_nutrition(recipe_id, scale)
             if nutrition:
                 if day_nutrition is None:
                     day_nutrition = {k: 0.0 for k in NUTRITION_KEYS}
                 for k in NUTRITION_KEYS:
-                    day_nutrition[k] += nutrition[k] * scale
-                coverages.append(nutrition.get("coverage", 1.0))
+                    day_nutrition[k] += nutrition[k]
+                coverages.append(1.0)
 
         # Aggiungi i pasti fissi del giorno (colazione/spuntini assunti + opt-in registrati)
         routine_day = _routine_for_day(iso)
