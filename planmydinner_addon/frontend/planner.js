@@ -25,9 +25,14 @@ const WeekView = defineComponent({
                 <div class="sidebar-actions">
                     <button @click.stop="goToToday" class="btn-today sidebar-btn">Oggi</button>
                     <template v-if="!loading && profiles.length >= 2">
+                        <button @click.stop="generateFromHistory" :disabled="generating"
+                                class="btn-regenerate sidebar-btn"
+                                title="Riempie la settimana con le ricette che mangi davvero di più. Ignora quote e grammature del piano.">
+                            {{ generating ? 'Generando...' : '🔁 Dal mio storico' }}
+                        </button>
                         <button @click.stop="generateWeek(false)" :disabled="generating"
                                 class="btn-regenerate sidebar-btn"
-                                title="Usa le tue ricette e dà priorità a quelle che mangi più spesso. Veloce, senza AI.">
+                                title="Segue le quote del nutrizionista; dà priorità alle tue ricette dove può.">
                             {{ generating ? 'Generando...' : '🍽️ Dal catalogo' }}
                         </button>
                         <button @click.stop="generateWithAI" :disabled="generating"
@@ -41,8 +46,9 @@ const WeekView = defineComponent({
                             {{ generating ? 'Generando...' : '✨ Fantasy' }}
                         </button>
                         <p class="hint" style="margin:6px 2px 0;font-size:11px;line-height:1.35;">
-                            <strong>Dal catalogo</strong>: tue ricette, priorità a ciò che mangi di più ·
-                            <strong>AI</strong>: compone dai tuoi vincoli ·
+                            <strong>Dal mio storico</strong>: le ricette che mangi davvero ·
+                            <strong>Dal catalogo</strong>: segue le quote del piano ·
+                            <strong>AI</strong>: compone dai vincoli ·
                             <strong>Fantasy</strong>: inventa nuove ricette.
                         </p>
                         <button @click.stop="openDebugModal" class="btn-secondary sidebar-btn"
@@ -68,10 +74,16 @@ const WeekView = defineComponent({
                        registrare cosa mangi: gli slot già segnati restano intatti.</p>
                     <div style="display:flex;flex-direction:column;gap:14px;max-width:440px;">
                         <div style="display:flex;flex-direction:column;gap:4px;">
-                            <button @click.stop="generateWeek(false)" :disabled="generating" class="btn-primary">
-                                {{ generating ? 'Generazione...' : '🍽️ Genera dal catalogo' }}
+                            <button @click.stop="generateFromHistory" :disabled="generating" class="btn-primary">
+                                {{ generating ? 'Generazione...' : '🔁 Dal mio storico' }}
                             </button>
-                            <span class="hint">Consigliato — usa le tue ricette e dà priorità a quelle che mangi più spesso. Veloce, senza AI.</span>
+                            <span class="hint">Consigliato — riempie la settimana con le ricette che mangi davvero di più. Ignora quote e grammature del piano.</span>
+                        </div>
+                        <div style="display:flex;flex-direction:column;gap:4px;">
+                            <button @click.stop="generateWeek(false)" :disabled="generating" class="btn-ai">
+                                {{ generating ? 'Generazione...' : '🍽️ Dal catalogo (quote del piano)' }}
+                            </button>
+                            <span class="hint">Segue le quote del nutrizionista; dà priorità alle tue ricette dove può.</span>
                         </div>
                         <div style="display:flex;flex-direction:column;gap:4px;">
                             <button @click.stop="generateWithAI" :disabled="generating" class="btn-ai">
@@ -835,6 +847,31 @@ const WeekView = defineComponent({
                 if (!resp.ok) throw new Error(await resp.text());
                 this.weekPlan = await resp.json();
                 this.toast.add(fantasyMode ? '✨ Piano ExtraFantasy generato!' : 'Piano generato!', 'success');
+            } catch (e) {
+                this.error = 'Errore: ' + e.message;
+            } finally {
+                this.generating = false;
+            }
+        },
+        async generateFromHistory() {
+            if (!this.profileA || !this.profileB) return;
+            if (this.isPastWeek && !confirm('Stai generando un piano per una settimana già passata. Continuare?')) return;
+            this.generating = true;
+            this.error = null;
+            try {
+                const params = new URLSearchParams({
+                    profile_id_A: this.profileA.id,
+                    profile_id_B: this.profileB.id,
+                    current_date: this.startDate,
+                    from_history: true,
+                });
+                const resp = await window.apiFetch('/planner/generate-week?' + params, { method: 'POST' });
+                if (!resp.ok) {
+                    const t = await resp.text();
+                    throw new Error(t);
+                }
+                this.weekPlan = await resp.json();
+                this.toast.add('🔁 Piano dal tuo storico generato!', 'success');
             } catch (e) {
                 this.error = 'Errore: ' + e.message;
             } finally {
