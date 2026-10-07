@@ -140,6 +140,7 @@ class PlanRules(Base):
     free_meal_quota = Column(Integer, nullable=True)  # max pasti liberi a settimana
     meal_slots = Column(JSON, nullable=True)           # struttura giornaliera tipo (colazione, spuntini, ecc.)
     nutrition_targets = Column(JSON, nullable=True)    # obiettivi giornalieri {"kcal", "protein_g", "carbs_g", "fat_g"}
+    nutrition_targets_by_date = Column(JSON, nullable=True)  # periodizzazione: {"2026-10-07": {"kcal":..., "training_note":"Bici 2h"}}
     vacation_start = Column(String, nullable=True)     # ISO date: sospende promemoria/box pasti dimenticati
     vacation_end = Column(String, nullable=True)
     tracking_start_date = Column(String, nullable=True)  # ISO date: da quando la box "pasti dimenticati" cerca pasti
@@ -205,6 +206,7 @@ def create_db_and_tables():
             ("app_settings", "llm_generation_mode", "TEXT"),
             ("app_settings", "llm_vision_model", "TEXT"),
             ("plan_rules", "nutrition_targets", "JSON"),
+            ("plan_rules", "nutrition_targets_by_date", "JSON"),
             ("plan_rules", "vacation_start", "TEXT"),
             ("plan_rules", "vacation_end", "TEXT"),
             ("plan_rules", "tracking_start_date", "TEXT"),

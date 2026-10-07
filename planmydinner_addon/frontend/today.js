@@ -466,8 +466,11 @@ const TodayView = defineComponent({
                 if (!resp.ok) { this.daySummary = null; return; }
                 const j = await resp.json();
                 const day = (j.days || [])[0] || {};
-                this.daySummary = { nutrition: day.nutrition, targets: j.targets,
-                                    training_note: j.training_note || null };
+                // target del giorno: periodizzato (day.target_kcal) o piatto
+                const targets = Object.assign({}, j.targets || {});
+                if (day.target_kcal) targets.kcal = day.target_kcal;
+                this.daySummary = { nutrition: day.nutrition, targets,
+                                    training_note: day.training_note || null };
             } catch (_) { this.daySummary = null; }
         },
         async loadData() {
