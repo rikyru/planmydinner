@@ -20,7 +20,7 @@ from .. import schemas
 from ..database import get_db, CandidateRecipe, ConsumedEntry, GeneratedWeeklyPlan, PlanRules, Recipe
 from ..nutrition import (DEFAULT_COOKING_FAT_G, NUTRITION_KEYS, compute_recipe_nutrition,
                          recipe_nutrition_split, scaled_nutrition)
-from ..scaling import apply_nutrition_scaling
+from ..scaling import apply_nutrition_scaling, day_target_kcal
 from .planner import compute_adherence_stats
 
 _LOGGER = logging.getLogger(__name__)
@@ -262,6 +262,10 @@ class NutritionTargetsBody(BaseModel):
     # False in a cut: portions may only shrink toward the target, never grow,
     # so a too-low base plan isn't inflated to chase a higher kcal goal.
     allow_upscale: bool = True
+    # Periodizzazione (opzionale): target per singola data, es.
+    # {"2026-10-08": {"kcal": 2400, "training_note": "Bici 2h"}}. I giorni non
+    # elencati usano il target piatto (kcal qui sopra).
+    daily: Optional[Dict[str, Dict[str, Any]]] = None
     # Also re-scale the current saved plan so the target bites immediately,
     # without waiting for the next weekly generation.
     rescale_current: bool = True
@@ -297,6 +301,7 @@ def apply_targets(
     if not body.allow_upscale:
         targets["allow_upscale"] = 0.0   # cut: portions only shrink
     plan_rules.nutrition_targets = targets
+    plan_rules.nutrition_targets_by_date = body.daily or None   # periodizzazione
     plan_rules.imported_at = datetime.now().isoformat()
     db.add(plan_rules)
     db.commit()
@@ -436,6 +441,13 @@ def get_integration_summary(
         return total
 
     # Merende extra (spuntini liberi fuori dai 5 slot fissi): sommate al giorno.
+    # Target per-giorno (periodizzazione) dalle regole del profilo
+    rules_row = db.query(PlanRules).filter(
+        PlanRules.profile_id == profile_id
+    ).order_by(PlanRules.imported_at.desc()).first()
+    targets = rules_row.nutrition_targets if rules_row else None
+    targets_by_date = rules_row.nutrition_targets_by_date if rules_row else None
+
     extras_by_date: Dict[str, Dict[str, float]] = {}
     extra_rows = db.query(ConsumedEntry).filter(
         ConsumedEntry.profile_id == profile_id,
@@ -548,6 +560,8 @@ def get_integration_summary(
             "has_estimated_meal": has_estimated_meal,
             "routine_kcal": round(routine_day["kcal"], 1) if routine_day else 0,
             "extra_kcal": round(extra_day["kcal"], 1) if extra_day else 0,
+            "target_kcal": day_target_kcal(targets, targets_by_date, iso),
+            "training_note": (targets_by_date or {}).get(iso, {}).get("training_note"),
         }
         if day_nutrition is not None:
             day_entry["nutrition"] = {k: round(day_nutrition[k], 1) for k in NUTRITION_KEYS}
@@ -564,12 +578,7 @@ def get_integration_summary(
         averages = {k: round(totals[k] / days_with_data, 1) for k in NUTRITION_KEYS}
         averages["days_with_data"] = days_with_data
 
-    # Obiettivi giornalieri (se impostati nelle PlanRules del profilo)
-    rules_row = db.query(PlanRules).filter(
-        PlanRules.profile_id == profile_id
-    ).order_by(PlanRules.imported_at.desc()).first()
-    targets = rules_row.nutrition_targets if rules_row else None
-
+    # Obiettivi giornalieri (già letti in cima: targets piatto + per-data)
     return {
         "version": SUMMARY_VERSION,
         "profile_id": profile_id,

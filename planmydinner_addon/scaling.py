@@ -27,15 +27,31 @@ SCALE_MAX = 1.4
 _DEVIATION_FG = ("mensa", "free_meal", "not_eaten")
 
 
-def get_nutrition_targets(db: Session, profile_id: str) -> Optional[Dict[str, float]]:
-    """The daily kcal/macro targets stored for a profile (most recent rules)."""
-    row = (
+def _latest_rules(db: Session, profile_id: str):
+    return (
         db.query(PlanRules)
         .filter(PlanRules.profile_id == profile_id)
         .order_by(PlanRules.imported_at.desc())
         .first()
     )
+
+
+def get_nutrition_targets(db: Session, profile_id: str) -> Optional[Dict[str, float]]:
+    """The daily kcal/macro targets stored for a profile (most recent rules)."""
+    row = _latest_rules(db, profile_id)
     return row.nutrition_targets if row and row.nutrition_targets else None
+
+
+def day_target_kcal(flat: Optional[Dict[str, float]], by_date: Optional[Dict[str, Any]],
+                    iso: str) -> Optional[float]:
+    """Target kcal per uno specifico giorno: usa la periodizzazione (by_date) se
+    presente per quella data, altrimenti il target piatto. Così i giorni di
+    allenamento intenso possono avere più kcal del giorno di riposo."""
+    if by_date and iso in by_date and (by_date[iso] or {}).get("kcal"):
+        return float(by_date[iso]["kcal"])
+    if flat and flat.get("kcal"):
+        return float(flat["kcal"])
+    return None
 
 
 def _recipe_content(db: Session, recipe_id: str) -> Optional[Any]:
@@ -92,9 +108,10 @@ def apply_nutrition_scaling(
         for meal in dp.meals:
             meal.scale = 1.0
 
-    targets = get_nutrition_targets(db, profile_id)
-    target_kcal = (targets or {}).get("kcal")
-    if not target_kcal or target_kcal <= 0:
+    rules = _latest_rules(db, profile_id)
+    targets = rules.nutrition_targets if rules else None
+    by_date = rules.nutrition_targets_by_date if rules else None
+    if not (targets and targets.get("kcal")) and not by_date:
         return daily_plans
     # In a cut the caller asks not to inflate portions (allow_upscale=0): a
     # deficit may only shrink a meal, never grow it beyond its planned size,
@@ -103,7 +120,6 @@ def apply_nutrition_scaling(
 
     today = today or date.today()
     routine_kcal = _routine_kcal(db, profile_id, llm_gateway)
-    budget = max(target_kcal - routine_kcal, 0.0)
 
     # Per meal: (kcal fisse = proteine/verdure/grassi, kcal scalabili = carboidrati).
     split_cache: Dict[str, Optional[tuple]] = {}
@@ -126,6 +142,12 @@ def apply_nutrition_scaling(
             day = None
         if day is not None and day < today:
             continue  # don't rewrite portions of already-consumed days
+
+        # Target del giorno (periodizzazione: più kcal nei giorni di allenamento)
+        tk = day_target_kcal(targets, by_date, dp.date)
+        if not tk:
+            continue
+        budget = max(tk - routine_kcal, 0.0)
 
         scalable = []           # (meal, fixed_kcal, carb_kcal)
         fixed_kcal = 0.0

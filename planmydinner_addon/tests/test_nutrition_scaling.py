@@ -149,6 +149,27 @@ def test_apply_targets_endpoint_rescales_and_summary_reflects(client, setup_data
     assert s.json()["targets"]["kcal"] == 800
 
 
+def test_apply_targets_daily_periodization(client, setup_database):
+    db = setup_database
+    _save_plan(db)   # piano su oggi..+2
+    d1 = (date.fromisoformat(TODAY) + timedelta(days=1)).isoformat()
+    r = client.post("/integration/apply-targets", params={"profile_id": "persona_a"},
+                    json={"kcal": 800, "daily": {TODAY: {"kcal": 1000, "training_note": "Bici 2h"}}})
+    assert r.status_code == 200, r.text
+    end = (date.fromisoformat(TODAY) + timedelta(days=2)).isoformat()
+    s = client.get("/integration/summary", params={
+        "profile_id": "persona_a", "start_date": TODAY, "end_date": end}).json()
+    byd = {d["date"]: d for d in s["days"]}
+    # giorno allenamento: target più alto + nota
+    assert byd[TODAY]["target_kcal"] == 1000
+    assert byd[TODAY]["training_note"] == "Bici 2h"
+    # giorno normale: target piatto
+    assert byd[d1]["target_kcal"] == 800
+    assert byd[d1]["training_note"] is None
+    # le porzioni seguono: più kcal nel giorno di allenamento
+    assert byd[TODAY]["nutrition"]["kcal"] > byd[d1]["nutrition"]["kcal"]
+
+
 def test_shopping_list_honours_scale(setup_database):
     from planmydinner_addon.planner import PlannerEngine
     db = setup_database
