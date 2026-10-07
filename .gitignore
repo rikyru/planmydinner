@@ -31,3 +31,7 @@ context/
 
 # Dati persistenti runtime
 planmydinner_addon/data/
+
+test.db
+test.db-journal
+*.db-journal
