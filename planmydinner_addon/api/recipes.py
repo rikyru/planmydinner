@@ -4,10 +4,11 @@ from typing import List, Optional, Any, Dict
 import uuid
 
 from pydantic import BaseModel as _BaseModel
+from sqlalchemy.orm.attributes import flag_modified
 from .. import schemas
 from ..database import get_db, Recipe, CandidateRecipe, PlanRules, UserProfile
 from ..nutrition import (DEFAULT_COOKING_FAT_G, analyze_recipe, compute_recipe_nutrition,
-                         recipe_balance)
+                         recipe_balance, resolve_ingredient_nutrition, _PROTEIN_GROUPS_BAL)
 
 # Quota di proteine giornaliere attesa da un pasto principale (pranzo/cena);
 # il resto arriva da colazione/spuntini. Usata per il check di bilanciamento.
@@ -245,6 +246,52 @@ def preview_nutrition(body: PreviewNutritionBody, request: Request,
         for pid in pids
     }
     return {"by_profile": by_profile}
+
+
+@router.post("/{recipe_id}/apply-protein-target", response_model=schemas.Recipe)
+def apply_protein_target(recipe_id: str, request: Request, db: Session = Depends(get_db)):
+    """Aggiorna la ricetta per rispettare la dose di proteine: alza i grammi
+    dell'ingrediente proteico principale fino a raggiungere il target per pasto.
+    Applica l'aumento a tutti i profili. Ritorna la ricetta aggiornata."""
+    llm_gateway = getattr(request.app.state, "llm_gateway", None)
+    target = _per_meal_protein_target(db)
+    if not target:
+        raise HTTPException(status_code=400, detail="Nessun target proteico impostato.")
+    r = db.query(Recipe).filter(Recipe.id == recipe_id).first()
+    if not r:
+        raise HTTPException(status_code=404, detail="Ricetta non trovata.")
+    content = r.content
+    if not isinstance(content, list):
+        raise HTTPException(status_code=400, detail="Ricetta non adattabile (piatto composto).")
+
+    profile_ids = [p.id for p in db.query(UserProfile).all()]
+    pid0 = profile_ids[0] if profile_ids else (
+        list((content[0].get("quantities") or {}).keys()) or [None])[0]
+    # ingrediente proteico principale (con densità proteica nota)
+    prot = None
+    for ing in content:
+        if (ing.get("food_group") or "").strip().lower() in _PROTEIN_GROUPS_BAL:
+            n = resolve_ingredient_nutrition(ing, llm_gateway=llm_gateway)
+            if n and n.get("protein_g", 0) > 0:
+                prot, dens = ing, n["protein_g"]
+                break
+    if not prot:
+        raise HTTPException(status_code=400,
+                            detail="Nessun ingrediente proteico riconosciuto da aumentare.")
+    cur = (compute_recipe_nutrition(content, pid0, llm_gateway=llm_gateway) or {}).get("protein_g", 0)
+    if cur >= target:
+        raise HTTPException(status_code=400, detail="La ricetta è già a target.")
+    delta_g = (target - cur) / (dens / 100.0)   # grammi di proteina-food da aggiungere
+    for q in (prot.get("quantities") or {}).values():
+        base = q.get("grams_equiv") or q.get("qty") or 0
+        q["grams_equiv"] = round(base + delta_g)
+        q["qty"] = round(base + delta_g)
+    r.content = content
+    flag_modified(r, "content")
+    db.commit()
+    db.refresh(r)
+    validated = schemas.Recipe.model_validate(r)
+    return _attach_nutrition_per_portion(validated, db, llm_gateway, target)
 
 
 @router.get("/detail/{recipe_id}", response_model=schemas.Recipe)

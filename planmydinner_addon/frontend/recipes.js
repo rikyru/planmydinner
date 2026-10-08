@@ -227,6 +227,10 @@ const Recipes = defineComponent({
                                   style="background:#b26b00;color:#fff;border-radius:4px;padding:1px 6px;font-size:11px;margin-left:4px;">⚠️ da sistemare</span>
                             <div v-if="r.balance && !r.balance.ok" class="hint" style="font-size:11px;color:#b26b00;margin-top:2px;">
                                 {{ balanceLine(r) }}
+                                <button v-if="hasLowProtein(r)" class="btn-sm" style="margin-left:6px;"
+                                        :disabled="fixingId === r.id" @click="applyProteinTarget(r)">
+                                    {{ fixingId === r.id ? '…' : 'Applica adattamento' }}
+                                </button>
                             </div>
                         </td>
                         <td>{{ mainIngredientLabel(r) }}</td>
@@ -392,6 +396,7 @@ const Recipes = defineComponent({
             preview: null,          // anteprima nutrizionale della bozza
             previewLoading: false,
             onlyToFix: false,       // filtro: solo ricette da sistemare
+            fixingId: null,         // ricetta in corso di adattamento proteico
             // Catalogo pasti mensa
             showMensa: false,
             mensaMeals: [],
@@ -882,6 +887,22 @@ const Recipes = defineComponent({
                 this.bulkError = 'Errore: ' + e.message;
             } finally {
                 this.bulkLoading = false;
+            }
+        },
+        hasLowProtein(r) {
+            return !!(r.balance && (r.balance.warnings || []).some(w => w.type === 'low_protein'));
+        },
+        async applyProteinTarget(r) {
+            this.fixingId = r.id;
+            try {
+                const resp = await window.apiFetch(`/recipes/${r.id}/apply-protein-target`, { method: 'POST' });
+                if (!resp.ok) throw new Error((await resp.json()).detail || await resp.text());
+                await this.fetchRecipes();
+                this.toast.add('Proteine portate a target ✓', 'success');
+            } catch (e) {
+                this.toast.add('Errore: ' + e.message, 'error');
+            } finally {
+                this.fixingId = null;
             }
         },
         balanceTitle(r) {
