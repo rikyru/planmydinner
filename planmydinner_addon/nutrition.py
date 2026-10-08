@@ -519,6 +519,21 @@ def _protein_add_hint(content, profile_id, add_protein_g, llm_gateway=None) -> s
     return f"aggiungi ~{round(add_protein_g)} g di proteine"
 
 
+# Spuntini proteici suggeriti per integrare le proteine nella giornata (g proteine/100 g).
+_PROTEIN_SNACKS = [
+    ("yogurt greco", 9.0), ("fiocchi di latte", 12.0), ("grana", 33.0),
+    ("bresaola", 32.0), ("uova sode", 12.4),
+]
+
+
+def _protein_snack_hint(add_protein_g: float) -> str:
+    """Suggerisce uno spuntino proteico dimensionato per colmare il deficit del
+    pasto, pensando alla giornata (es. 'merenda: ~150 g di yogurt greco')."""
+    name, dens = _PROTEIN_SNACKS[0]   # yogurt greco: lo spuntino più comune
+    grams = round(add_protein_g / (dens / 100.0))
+    return f"oppure uno spuntino: ~{grams} g di {name} (+{round(add_protein_g)} g proteine)"
+
+
 def recipe_balance(content, profile_id: str, protein_target_g: Optional[float] = None,
                    llm_gateway: Any = None,
                    add_cooking_fat_g: float = DEFAULT_COOKING_FAT_G) -> Optional[Dict[str, Any]]:
@@ -551,7 +566,8 @@ def recipe_balance(content, profile_id: str, protein_target_g: Optional[float] =
             warnings.append({
                 "type": "low_protein",
                 "text": f"non rispetta la dose di proteine (~{round(n['protein_g'])}/{round(protein_target_g)} g)",
-                "adapt": _protein_add_hint(content, profile_id, add, llm_gateway)})
+                "adapt": _protein_add_hint(content, profile_id, add, llm_gateway),
+                "extra": _protein_snack_hint(add)})
 
     out["warnings"] = warnings
     out["ok"] = not warnings
