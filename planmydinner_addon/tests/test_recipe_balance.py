@@ -42,3 +42,28 @@ def test_too_much_fat():
 def test_no_protein_target_skips_protein_check():
     b = recipe_balance([_ing("Pasta", "carboidrati", 80)], "persona_a", protein_target_g=None)
     assert all(w["type"] != "low_protein" for w in b["warnings"])
+
+
+def test_apply_protein_target_endpoint(client, setup_database):
+    import uuid
+    from datetime import datetime
+    from planmydinner_addon.database import Recipe, PlanRules
+    db = setup_database
+    # target: 120 g/die → 42 g/pasto (×0.35)
+    db.add(PlanRules(id=str(uuid.uuid4()), profile_id="persona_a",
+                     imported_at=datetime.now().isoformat(),
+                     nutrition_targets={"kcal": 2000, "protein_g": 120}))
+    db.add(Recipe(id="rec_lowprot", name="Pollo scarso con pasta", is_composed_dish=False,
+                  content=[_ing("Pollo", "proteina", 50), _ing("Pasta", "carboidrati", 80)],
+                  steps=[], total_time_minutes=20, difficulty="facile", tags={}))
+    db.commit()
+
+    r = client.post("/recipes/rec_lowprot/apply-protein-target")
+    assert r.status_code == 200, r.text
+    # il pollo è stato aumentato e le proteine ora rispettano il target (~42 g)
+    rec = db.query(Recipe).filter(Recipe.id == "rec_lowprot").first()
+    db.refresh(rec)
+    pollo = next(i for i in rec.content if i["name"] == "Pollo")
+    assert pollo["quantities"]["persona_a"]["grams_equiv"] > 50
+    bal = r.json()["balance"]
+    assert all(w["type"] != "low_protein" for w in bal["warnings"])
