@@ -197,6 +197,14 @@ const Recipes = defineComponent({
                 <p>Nessuna ricetta nel catalogo. Aggiungine una!</p>
             </div>
 
+            <div v-if="toFix.length" style="margin:8px 0;padding:8px 12px;border:1px solid #b26b0055;border-radius:8px;background:#b26b000d;">
+                ⚠️ <strong>{{ toFix.length }}</strong> ricette da sistemare
+                <span class="hint">(proteine basse o pasto sbilanciato)</span>
+                <button class="btn-sm" style="margin-left:8px;" @click="onlyToFix = !onlyToFix">
+                    {{ onlyToFix ? 'Mostra tutte' : 'Mostra solo queste' }}
+                </button>
+            </div>
+
             <table v-if="!loading && recipes.length > 0" class="recipe-table">
                 <thead>
                     <tr>
@@ -209,11 +217,17 @@ const Recipes = defineComponent({
                     </tr>
                 </thead>
                 <tbody>
-                    <tr v-for="r in recipes" :key="r.id">
+                    <tr v-for="r in visibleRecipes" :key="r.id" :class="{'row-to-fix': r.balance && !r.balance.ok}">
                         <td>
                             <span class="recipe-name-cell">{{ r.name }}</span>
                             <span v-if="r.tags && r.tags.manual" class="badge-manual">⭐ Personale</span>
                             <span v-if="r.tags && r.tags.imported" class="badge-imported">📥 Importata</span>
+                            <span v-if="r.balance && !r.balance.ok" class="badge-warn"
+                                  :title="balanceTitle(r)"
+                                  style="background:#b26b00;color:#fff;border-radius:4px;padding:1px 6px;font-size:11px;margin-left:4px;">⚠️ da sistemare</span>
+                            <div v-if="r.balance && !r.balance.ok" class="hint" style="font-size:11px;color:#b26b00;margin-top:2px;">
+                                {{ balanceLine(r) }}
+                            </div>
                         </td>
                         <td>{{ mainIngredientLabel(r) }}</td>
                         <td :title="recipeKcalTitle(r)">
@@ -377,6 +391,7 @@ const Recipes = defineComponent({
             editedRecipe: this._emptyRecipe(),
             preview: null,          // anteprima nutrizionale della bozza
             previewLoading: false,
+            onlyToFix: false,       // filtro: solo ricette da sistemare
             // Catalogo pasti mensa
             showMensa: false,
             mensaMeals: [],
@@ -426,6 +441,12 @@ const Recipes = defineComponent({
         };
     },
     computed: {
+        toFix() {
+            return this.recipes.filter(r => r.balance && !r.balance.ok);
+        },
+        visibleRecipes() {
+            return this.onlyToFix ? this.toFix : this.recipes;
+        },
         groupSummary() {
             const label = (fg) => {
                 if (['proteina', 'carne_bianca', 'carne_rossa', 'pesce', 'uova', 'legumi'].includes(fg)) return 'proteine';
@@ -862,6 +883,16 @@ const Recipes = defineComponent({
             } finally {
                 this.bulkLoading = false;
             }
+        },
+        balanceTitle(r) {
+            const ws = (r.balance && r.balance.warnings) || [];
+            return ws.map(w => w.text + (w.adapt ? ' — ' + w.adapt : '')).join(' · ');
+        },
+        balanceLine(r) {
+            const ws = (r.balance && r.balance.warnings) || [];
+            if (!ws.length) return '';
+            const w = ws[0];
+            return w.text + (w.adapt ? ' — ' + w.adapt : '');
         },
         mainIngredientLabel(recipe) {
             if (!recipe.content || recipe.content.length === 0) return '—';

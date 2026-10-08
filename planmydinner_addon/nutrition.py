@@ -498,3 +498,61 @@ def scaled_nutrition(split: tuple, scale: float) -> Dict[str, float]:
     """Combina (fissa, scalabile) applicando il fattore solo ai carboidrati."""
     fixed, scal = split
     return {k: round(fixed[k] + scal[k] * scale, 1) for k in NUTRITION_KEYS}
+
+
+# Soglie di bilanciamento di un pasto (su % delle kcal).
+BALANCE_FAT_PCT = 0.40     # oltre → troppi grassi
+BALANCE_CARB_PCT = 0.65    # oltre → troppi carboidrati
+PROTEIN_LOW_RATIO = 0.80   # sotto l'80% del target → proteine insufficienti
+_PROTEIN_GROUPS_BAL = ("proteina", "proteine", "carne_bianca", "carne_rossa",
+                       "pesce", "uova", "legumi", "latticini", "formaggio")
+
+
+def _protein_add_hint(content, profile_id, add_protein_g, llm_gateway=None) -> str:
+    """Quanti grammi della proteina del piatto aggiungere per colmare il deficit."""
+    for ing in _content_ingredients(content):
+        if (ing.get("food_group") or "").strip().lower() in _PROTEIN_GROUPS_BAL:
+            n = resolve_ingredient_nutrition(ing, llm_gateway=llm_gateway)
+            if n and n.get("protein_g", 0) > 0:
+                grams = add_protein_g / (n["protein_g"] / 100.0)
+                return f"aggiungi ~{round(grams)} g di {ing.get('name')}"
+    return f"aggiungi ~{round(add_protein_g)} g di proteine"
+
+
+def recipe_balance(content, profile_id: str, protein_target_g: Optional[float] = None,
+                   llm_gateway: Any = None,
+                   add_cooking_fat_g: float = DEFAULT_COOKING_FAT_G) -> Optional[Dict[str, Any]]:
+    """Valuta l'equilibrio di un pasto a porzione: proteine vs target e split
+    macro. Ritorna {protein_g, protein_target_g, protein_to_add_g, pct, warnings,
+    ok}. `warnings` sono {type, text, adapt?}: low_protein / too_much_fat /
+    too_many_carbs. None se la nutrizione non è calcolabile."""
+    n = compute_recipe_nutrition(content, profile_id, llm_gateway=llm_gateway,
+                                 add_cooking_fat_g=add_cooking_fat_g)
+    if not n:
+        return None
+    out: Dict[str, Any] = {"protein_g": round(n["protein_g"], 1)}
+    warnings: List[Dict[str, Any]] = []
+
+    pk, ck, fk = n["protein_g"] * 4, n["carbs_g"] * 4, n["fat_g"] * 9
+    tot = pk + ck + fk
+    if tot > 0:
+        out["pct"] = {"protein": round(pk / tot * 100), "carbs": round(ck / tot * 100),
+                      "fat": round(fk / tot * 100)}
+        if fk / tot > BALANCE_FAT_PCT:
+            warnings.append({"type": "too_much_fat", "text": "pasto sbilanciato: troppi grassi"})
+        elif ck / tot > BALANCE_CARB_PCT:
+            warnings.append({"type": "too_many_carbs", "text": "pasto sbilanciato: troppi carboidrati"})
+
+    if protein_target_g and protein_target_g > 0:
+        out["protein_target_g"] = round(protein_target_g)
+        if n["protein_g"] < PROTEIN_LOW_RATIO * protein_target_g:
+            add = protein_target_g - n["protein_g"]
+            out["protein_to_add_g"] = round(add)
+            warnings.append({
+                "type": "low_protein",
+                "text": f"non rispetta la dose di proteine (~{round(n['protein_g'])}/{round(protein_target_g)} g)",
+                "adapt": _protein_add_hint(content, profile_id, add, llm_gateway)})
+
+    out["warnings"] = warnings
+    out["ok"] = not warnings
+    return out

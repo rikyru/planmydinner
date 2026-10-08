@@ -184,6 +184,9 @@ class Recipe(RecipeBase):
     # Macro per porzione calcolati on-the-fly (chiave = profile_id), non persistiti.
     # {"<profile_id>": {"kcal": .., "protein_g": .., "carbs_g": .., "fat_g": .., "coverage": .., "sources": {...}}}
     nutrition_per_portion: Optional[Dict[str, Any]] = None
+    # Bilanciamento del pasto (proteine vs target, macro): calcolato on-the-fly.
+    # {"protein_g":.., "protein_target_g":.., "warnings":[{type,text,adapt?}], "ok":bool}
+    balance: Optional[Dict[str, Any]] = None
     class Config:
         from_attributes = True
 

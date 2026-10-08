@@ -88,6 +88,14 @@ const TodayView = defineComponent({
                         <div v-else>
                             <div class="recipe-name">{{ meal.items[0].item_name }}</div>
 
+                            <!-- Avviso bilanciamento (proteine basse / pasto sbilanciato) -->
+                            <div v-if="mealBalance(meal) && !mealBalance(meal).ok"
+                                 style="color:#b26b00;font-size:12px;margin:4px 0;padding:4px 8px;background:#b26b000d;border-radius:6px;">
+                                <span v-for="(w, i) in mealBalance(meal).warnings" :key="i" style="display:block;">
+                                    ⚠️ {{ w.text }}<template v-if="w.adapt"> — <strong>{{ w.adapt }}</strong></template>
+                                </span>
+                            </div>
+
                             <!-- Componenti inline: protein / carb / verdure -->
                             <div v-if="recipeDetails[meal.meal_type]" class="meal-components">
                                 <div v-for="p in getProteins(meal.meal_type)" :key="'p-' + p.name" class="component component-protein">
@@ -896,6 +904,10 @@ const TodayView = defineComponent({
         },
 
         // --- Helper per i componenti del pasto ---
+        mealBalance(meal) {
+            const d = this.recipeDetails[meal.meal_type];
+            return d ? d.balance : null;
+        },
         getProteins(mealType) {
             const d = this.recipeDetails[mealType];
             if (!d) return [];

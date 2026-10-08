@@ -5,8 +5,23 @@ import uuid
 
 from pydantic import BaseModel as _BaseModel
 from .. import schemas
-from ..database import get_db, Recipe, CandidateRecipe, UserProfile
-from ..nutrition import DEFAULT_COOKING_FAT_G, analyze_recipe, compute_recipe_nutrition
+from ..database import get_db, Recipe, CandidateRecipe, PlanRules, UserProfile
+from ..nutrition import (DEFAULT_COOKING_FAT_G, analyze_recipe, compute_recipe_nutrition,
+                         recipe_balance)
+
+# Quota di proteine giornaliere attesa da un pasto principale (pranzo/cena);
+# il resto arriva da colazione/spuntini. Usata per il check di bilanciamento.
+PROTEIN_SHARE_PER_MEAL = 0.35
+
+
+def _per_meal_protein_target(db: Session) -> Optional[float]:
+    """Target proteico per pasto principale: proteine giornaliere (da OpenFit,
+    in PlanRules.nutrition_targets) × quota pasto. None se non impostato."""
+    row = (db.query(PlanRules)
+             .filter(PlanRules.nutrition_targets.isnot(None))
+             .order_by(PlanRules.imported_at.desc()).first())
+    daily = (row.nutrition_targets or {}).get("protein_g") if row else None
+    return daily * PROTEIN_SHARE_PER_MEAL if daily else None
 
 
 class BulkIngredient(_BaseModel):
@@ -143,12 +158,13 @@ def read_recipes(request: Request, skip: int = 0, limit: int = 100, db: Session 
     sbagliate si notano subito invece di restare nascoste nel dettaglio.
     """
     llm_gateway = getattr(request.app.state, "llm_gateway", None)
+    protein_target = _per_meal_protein_target(db)
     db_recipes = db.query(Recipe).offset(skip).limit(limit).all()
     result = []
     for r in db_recipes:
         try:
             validated = schemas.Recipe.from_orm(r)
-            validated = _attach_nutrition_per_portion(validated, db, llm_gateway)
+            validated = _attach_nutrition_per_portion(validated, db, llm_gateway, protein_target)
             result.append(validated.model_dump())
         except Exception:
             # Ricetta con dati non conformi: restituisce raw per permettere la visualizzazione/modifica
@@ -176,8 +192,10 @@ def delete_all_recipes(db: Session = Depends(get_db)):
     return {"deleted": count}
 
 
-def _attach_nutrition_per_portion(validated: schemas.Recipe, db: Session, llm_gateway=None) -> schemas.Recipe:
-    """Calcola i macro per porzione per ogni profilo e li allega alla risposta (best-effort)."""
+def _attach_nutrition_per_portion(validated: schemas.Recipe, db: Session, llm_gateway=None,
+                                  protein_target_g=None) -> schemas.Recipe:
+    """Calcola i macro per porzione per ogni profilo e il bilanciamento del pasto
+    (proteine vs target, macro) e li allega alla risposta (best-effort)."""
     try:
         profile_ids = [p.id for p in db.query(UserProfile).all()]
         content = validated.model_dump()["content"]
@@ -189,6 +207,11 @@ def _attach_nutrition_per_portion(validated: schemas.Recipe, db: Session, llm_ga
             if nutrition:
                 per_portion[pid] = nutrition
         validated.nutrition_per_portion = per_portion or None
+        # Bilanciamento sul profilo principale (il primo)
+        if profile_ids:
+            validated.balance = recipe_balance(
+                content, profile_ids[0], protein_target_g=protein_target_g,
+                llm_gateway=llm_gateway)
     except Exception:
         validated.nutrition_per_portion = None
     return validated
@@ -232,18 +255,19 @@ def get_recipe_detail(recipe_id: str, request: Request, db: Session = Depends(ge
     Includes nutrition_per_portion (kcal + macro per profilo) when computable.
     """
     llm_gateway = getattr(request.app.state, "llm_gateway", None)
+    protein_target = _per_meal_protein_target(db)
 
     db_recipe = db.query(Recipe).filter(Recipe.id == recipe_id).first()
     if db_recipe:
         validated = schemas.Recipe.model_validate(db_recipe)
-        return _attach_nutrition_per_portion(validated, db, llm_gateway)
+        return _attach_nutrition_per_portion(validated, db, llm_gateway, protein_target)
 
     candidate = db.query(CandidateRecipe).filter(CandidateRecipe.id == recipe_id).first()
     if candidate:
         data = candidate.recipe_data if isinstance(candidate.recipe_data, dict) else candidate.recipe_data.model_dump()
         # Inject the candidate's own id so schemas.Recipe validation passes
         validated = schemas.Recipe.model_validate({**data, "id": recipe_id})
-        return _attach_nutrition_per_portion(validated, db, llm_gateway)
+        return _attach_nutrition_per_portion(validated, db, llm_gateway, protein_target)
 
     raise HTTPException(status_code=404, detail=f"Recipe {recipe_id} not found")
 
