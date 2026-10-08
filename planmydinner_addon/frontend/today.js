@@ -93,6 +93,7 @@ const TodayView = defineComponent({
                                  style="color:#b26b00;font-size:12px;margin:4px 0;padding:4px 8px;background:#b26b000d;border-radius:6px;">
                                 <span v-for="(w, i) in mealBalance(meal).warnings" :key="i" style="display:block;">
                                     ⚠️ {{ w.text }}<template v-if="w.adapt"> — <strong>{{ w.adapt }}</strong></template>
+                                    <span v-if="w.extra" style="display:block;margin-left:16px;opacity:.9;">↳ {{ w.extra }}</span>
                                 </span>
                             </div>
 
@@ -925,14 +926,21 @@ const TodayView = defineComponent({
             if (!d) return [];
             return d.content.filter(i => i.food_group === 'verdure');
         },
+        _qtyFor(ingredient, profileId) {
+            // Ricette vecchie/importate usano le chiavi persona_a/persona_b invece
+            // dell'id profilo reale: stesso fallback del backend, così i grammi non
+            // diventano "?".
+            const q = ingredient.quantities || {};
+            return q[profileId] || q.persona_a || q.persona_b || q[Object.keys(q)[0]] || null;
+        },
         getGrams(mealType, ingredient) {
             if (!ingredient || !this.profileA) return '?';
-            const qty = ingredient.quantities?.[this.profileA.id];
-            const g = qty?.grams_equiv ?? qty?.qty ?? null;
-            return g !== null ? Math.round(g) : '?';
+            const qty = this._qtyFor(ingredient, this.profileA.id);
+            const g = qty ? (qty.grams_equiv ?? qty.qty ?? null) : null;
+            return g !== null && g !== undefined ? Math.round(g) : '?';
         },
         formatQty(ingredient, profileId) {
-            const qty = ingredient.quantities?.[profileId];
+            const qty = this._qtyFor(ingredient, profileId);
             if (!qty) return '—';
             const g = qty.grams_equiv ?? qty.qty;
             return `${Math.round(g)}${qty.unit !== 'g' ? ' ' + qty.unit : 'g'}`;
