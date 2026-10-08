@@ -526,12 +526,25 @@ _PROTEIN_SNACKS = [
 ]
 
 
-def _protein_snack_hint(add_protein_g: float) -> str:
-    """Suggerisce uno spuntino proteico dimensionato per colmare il deficit del
-    pasto, pensando alla giornata (es. 'merenda: ~150 g di yogurt greco')."""
-    name, dens = _PROTEIN_SNACKS[0]   # yogurt greco: lo spuntino più comune
-    grams = round(add_protein_g / (dens / 100.0))
-    return f"oppure uno spuntino: ~{grams} g di {name} (+{round(add_protein_g)} g proteine)"
+_SNACK_FOOD_GROUP = {"yogurt greco": "latticini", "fiocchi di latte": "latticini",
+                     "grana": "latticini", "bresaola": "carne_rossa", "uova sode": "uova"}
+
+
+def _protein_snack_hint(add_protein_g: float) -> Dict[str, Any]:
+    """Spuntino proteico sensato per colmare il deficit: yogurt greco se la
+    porzione resta ragionevole (≤200 g), altrimenti un formaggio più compatto.
+    Ritorna {text, name, food_group, grams, protein_g} per il bottone 'aggiungi'."""
+    name, dens = _PROTEIN_SNACKS[0]              # yogurt greco
+    grams = add_protein_g / (dens / 100.0)
+    if grams > 200:                              # porzione troppo grande → formaggio
+        name, dens = "grana", 33.0
+        grams = add_protein_g / (dens / 100.0)
+    grams = round(grams)
+    return {
+        "name": name.capitalize(), "food_group": _SNACK_FOOD_GROUP.get(name, "altro"),
+        "grams": grams, "protein_g": round(add_protein_g),
+        "text": f"oppure uno spuntino: ~{grams} g di {name} (+{round(add_protein_g)} g proteine)",
+    }
 
 
 def recipe_balance(content, profile_id: str, protein_target_g: Optional[float] = None,

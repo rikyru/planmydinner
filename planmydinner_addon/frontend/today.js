@@ -55,7 +55,7 @@ const TodayView = defineComponent({
             </div>
 
             <!-- Pasti fissi: colazione & spuntini (opt-out) -->
-            <routine-strip v-if="profileA" :profile-id="profileA.id" :meal-date="today"
+            <routine-strip v-if="profileA" ref="routineStrip" :profile-id="profileA.id" :meal-date="today"
                            @changed="loadAdherence" />
 
             <div v-if="loading" class="loading">Caricamento...</div>
@@ -90,11 +90,21 @@ const TodayView = defineComponent({
 
                             <!-- Avviso bilanciamento (proteine basse / pasto sbilanciato) -->
                             <div v-if="mealBalance(meal) && !mealBalance(meal).ok"
-                                 style="color:#b26b00;font-size:12px;margin:4px 0;padding:4px 8px;background:#b26b000d;border-radius:6px;">
-                                <span v-for="(w, i) in mealBalance(meal).warnings" :key="i" style="display:block;">
+                                 style="color:#b26b00;font-size:12px;margin:4px 0;padding:6px 8px;background:#b26b000d;border-radius:6px;">
+                                <div v-for="(w, i) in mealBalance(meal).warnings" :key="i" style="margin-bottom:4px;">
                                     ⚠️ {{ w.text }}<template v-if="w.adapt"> — <strong>{{ w.adapt }}</strong></template>
-                                    <span v-if="w.extra" style="display:block;margin-left:16px;opacity:.9;">↳ {{ w.extra }}</span>
-                                </span>
+                                    <span v-if="w.extra" style="display:block;margin-left:16px;opacity:.9;">↳ {{ w.extra.text }}</span>
+                                    <div v-if="w.type === 'low_protein'" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;">
+                                        <button v-if="meal.items[0].recipe_id" class="btn-sm"
+                                                :disabled="balanceBusy" @click="applyProteinToMeal(meal)">
+                                            {{ w.adapt ? w.adapt.replace('aggiungi', '+') : '+ proteina' }}
+                                        </button>
+                                        <button v-if="w.extra" class="btn-sm"
+                                                :disabled="balanceBusy" @click="addSnackExtra(w.extra)">
+                                            + Merenda: {{ w.extra.name }} {{ w.extra.grams }}g
+                                        </button>
+                                    </div>
+                                </div>
                             </div>
 
                             <!-- Componenti inline: protein / carb / verdure -->
@@ -382,6 +392,7 @@ const TodayView = defineComponent({
             showCustomModal: false,
             customForm: { title: '', components: [], notes: '' },
             daySummary: null,   // {nutrition, targets} del giorno (obiettivo energetico)
+            balanceBusy: false, // azione bilanciamento (adatta proteine / aggiungi merenda) in corso
             customMealType: null,
         };
     },
@@ -908,6 +919,46 @@ const TodayView = defineComponent({
         mealBalance(meal) {
             const d = this.recipeDetails[meal.meal_type];
             return d ? d.balance : null;
+        },
+        async applyProteinToMeal(meal) {
+            const rid = meal.items?.[0]?.recipe_id;
+            if (!rid) return;
+            this.balanceBusy = true;
+            try {
+                const resp = await window.apiFetch(`/recipes/${rid}/apply-protein-target`, { method: 'POST' });
+                if (!resp.ok) throw new Error((await resp.json()).detail || await resp.text());
+                // ricarica i dettagli ricetta (grammi + balance aggiornati) e il giorno
+                this.recipeDetails = {};
+                await this.fetchRecipeDetails();
+                await this.fetchDaySummary();
+                this.toast.add('Proteine portate a target ✓', 'success');
+            } catch (e) {
+                this.toast.add('Errore: ' + e.message, 'error');
+            } finally {
+                this.balanceBusy = false;
+            }
+        },
+        async addSnackExtra(extra) {
+            this.balanceBusy = true;
+            try {
+                const params = new URLSearchParams({ profile_id: this.profileA.id, meal_date: this.today });
+                const resp = await window.apiFetch('/routine/extra?' + params, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        name: extra.name,
+                        ingredients: [{ name: extra.name, food_group: extra.food_group || 'altro', grams: extra.grams }],
+                    }),
+                });
+                if (!resp.ok) throw new Error(await resp.text());
+                await this.fetchDaySummary();
+                if (this.$refs.routineStrip) await this.$refs.routineStrip.fetchExtras();
+                this.toast.add(`Merenda aggiunta: ${extra.name} ${extra.grams}g`, 'success');
+            } catch (e) {
+                this.toast.add('Errore: ' + e.message, 'error');
+            } finally {
+                this.balanceBusy = false;
+            }
         },
         getProteins(mealType) {
             const d = this.recipeDetails[mealType];

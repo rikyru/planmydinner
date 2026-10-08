@@ -17,7 +17,8 @@ def test_low_protein_and_too_many_carbs():
     assert b["ok"] is False
     low = next(w for w in b["warnings"] if w["type"] == "low_protein")
     assert "adapt" in low and low["adapt"]          # adattamento della ricetta
-    assert "yogurt greco" in low["extra"].lower()   # alternativa: spuntino proteico
+    assert low["extra"]["grams"] > 0 and low["extra"]["name"]  # spuntino proteico
+    assert low["extra"]["protein_g"] > 0
     assert b["protein_to_add_g"] > 0
 
 
