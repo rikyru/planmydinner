@@ -28,6 +28,8 @@ class PantryItemBase(BaseModel):
     category: Optional[str] = None
     expiration_date: Optional[str] = None
     synonyms: Optional[List[str]] = []
+    barcode: Optional[str] = None                 # EAN/UPC del prodotto scansionato
+    nutrition: Optional[Dict[str, Any]] = None    # {kcal, protein_g, carbs_g, fat_g} per 100g
 
 class PantryItemCreate(PantryItemBase):
     pass

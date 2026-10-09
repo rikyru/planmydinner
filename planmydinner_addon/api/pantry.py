@@ -4,6 +4,7 @@ from typing import List
 import uuid
 
 from .. import schemas
+from ..barcode import lookup_barcode
 from ..database import get_db, PantryItem
 from pydantic import BaseModel as _BaseModel
 
@@ -11,6 +12,17 @@ router = APIRouter(
     prefix="/pantry",
     tags=["pantry"],
 )
+
+
+@router.get("/barcode/{code}")
+def pantry_barcode_lookup(code: str):
+    """Cerca un prodotto da codice a barre (Open Food Facts): nome, marca,
+    quantità confezione e valori nutrizionali per 100 g, per pre-compilare
+    l'aggiunta in dispensa (stile Yuka)."""
+    res = lookup_barcode(code)
+    if res is None:
+        raise HTTPException(status_code=502, detail="Servizio barcode non raggiungibile.")
+    return res
 
 @router.post("/items", response_model=schemas.PantryItem)
 def create_pantry_item(item: schemas.PantryItemCreate, db: Session = Depends(get_db)):
