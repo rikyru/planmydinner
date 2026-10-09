@@ -114,10 +114,16 @@ const RoutineStrip = defineComponent({
                                        placeholder="es. caffè, 2 fette biscottate con marmellata, yogurt greco"
                                        :disabled="analyzing" @keyup.enter="analyzeDescription">
                                 <button @click="analyzeDescription" class="btn-primary btn-sm"
-                                        :disabled="analyzing || editForm.description.trim().length < 3" style="flex-shrink:0;">
+                                        :disabled="analyzing || editForm.description.trim().length < 3" style="flex-shrink:0;"
+                                        title="Struttura il testo che hai scritto">
                                     {{ analyzing ? '…' : '✨' }}
                                 </button>
                             </div>
+                            <button @click="suggestMeal(s)" class="btn-secondary btn-sm"
+                                    :disabled="suggesting" style="align-self:flex-start;"
+                                    title="Proponi una nuova idea con l'AI">
+                                {{ suggesting ? 'Proposta…' : '🍳 Proponi ' + s.label.toLowerCase() }}
+                            </button>
                             <input v-model="editForm.name" placeholder="Nome (es. Colazione tipo)">
                             <div v-for="(ing, idx) in editForm.ingredients" :key="idx"
                                  style="display:grid;grid-template-columns:1fr 80px auto;gap:8px;align-items:center;">
@@ -153,6 +159,7 @@ const RoutineStrip = defineComponent({
             loading: false,
             editorOpen: false,
             editSlot: null,
+            suggesting: false,
             editForm: { description: '', name: '', ingredients: [], default_on: true },
             analyzing: false,
             saving: false,
@@ -301,6 +308,21 @@ const RoutineStrip = defineComponent({
                 this.editError = e.message;
             } finally {
                 this.analyzing = false;
+            }
+        },
+        async suggestMeal(s) {
+            this.suggesting = true;
+            try {
+                const resp = await window.apiFetch('/routine/suggest?slot=' + encodeURIComponent(s.slot));
+                if (!resp.ok) throw new Error((await resp.json()).detail || 'errore');
+                const p = await resp.json();
+                this.editForm.name = p.name || this.editForm.name;
+                this.editForm.ingredients = p.ingredients || [];
+                this.toast.add('Proposta pronta: rivedi e salva', 'success');
+            } catch (e) {
+                this.toast.add('Errore: ' + e.message, 'error');
+            } finally {
+                this.suggesting = false;
             }
         },
         async saveSlot(s) {
