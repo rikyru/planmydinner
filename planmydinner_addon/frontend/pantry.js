@@ -16,8 +16,10 @@ const Pantry = defineComponent({
                 <span class="hint"> — {{ expiringInfo.expiring.map(e => e.name + (e.days < 0 ? ' (scaduto)' : ' (' + e.days + 'g)')).join(', ') }}</span>
                 <div v-if="expiringInfo.recipes.length" style="margin-top:8px;">
                     <div class="hint" style="margin-bottom:4px;">Ricette che li usano:</div>
-                    <div v-for="r in expiringInfo.recipes" :key="r.id" style="margin-bottom:3px;">
+                    <div v-for="r in expiringInfo.recipes" :key="r.id" style="margin-bottom:5px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
                         🍽 <strong>{{ r.name }}</strong> <span class="hint">— usa {{ r.uses.join(', ') }}</span>
+                        <button class="btn-sm" :disabled="assigning" @click="assignToday(r.id, 'pranzo')">+ Pranzo oggi</button>
+                        <button class="btn-sm" :disabled="assigning" @click="assignToday(r.id, 'cena')">+ Cena oggi</button>
                     </div>
                 </div>
                 <div v-else class="hint" style="margin-top:6px;">Nessuna ricetta in catalogo usa questi prodotti.</div>
@@ -96,6 +98,8 @@ const Pantry = defineComponent({
     data() {
         return {
             items: [],
+            profiles: [],
+            assigning: false,
             expiringInfo: { expiring: [], recipes: [] },
             showModal: false,
             editedItem: {},
@@ -125,6 +129,28 @@ const Pantry = defineComponent({
             window.apiFetch('/pantry/expiring-recipes')
                 .then(r => r.json()).then(d => { this.expiringInfo = d; })
                 .catch(() => {});
+        },
+        fetchProfiles() {
+            window.apiFetch('/profiles/').then(r => r.json()).then(d => { this.profiles = d || []; }).catch(() => {});
+        },
+        async assignToday(recipeId, mealType) {
+            if (!this.profiles.length) { this.toast && this.toast.add('Nessun profilo configurato.', 'error'); return; }
+            const pA = this.profiles[0].id;
+            const pB = (this.profiles[1] || this.profiles[0]).id;
+            const today = new Date().toISOString().slice(0, 10);
+            this.assigning = true;
+            try {
+                const params = new URLSearchParams({
+                    profile_id_A: pA, profile_id_B: pB, meal_type: mealType,
+                    current_date: today, recipe_id: recipeId });
+                const resp = await window.apiFetch('/planner/apply-recipe-option?' + params, { method: 'POST' });
+                if (!resp.ok) throw new Error((await resp.json()).detail || 'errore');
+                this.toast && this.toast.add(`Assegnata a ${mealType} di oggi ✓`, 'success');
+            } catch (e) {
+                this.toast && this.toast.add('Errore: ' + e.message, 'error');
+            } finally {
+                this.assigning = false;
+            }
         },
         _daysTo(item) {
             if (!item.expiration_date) return null;
@@ -273,7 +299,7 @@ const Pantry = defineComponent({
         },
     },
     beforeUnmount() { this.stopScan(); },
-    mounted() { this.fetchItems(); },
+    mounted() { this.fetchItems(); this.fetchProfiles(); },
 });
 
 export default Pantry;
