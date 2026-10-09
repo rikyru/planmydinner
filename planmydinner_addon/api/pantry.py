@@ -14,6 +14,43 @@ router = APIRouter(
 )
 
 
+@router.get("/expiring-recipes")
+def expiring_recipes(days: int = 5, limit: int = 6, db: Session = Depends(get_db)):
+    """Ricette del catalogo che usano i prodotti in dispensa in scadenza entro
+    `days` giorni (o già scaduti), ordinate per quanti ne consumano. Aiuta a non
+    buttare via nulla."""
+    from datetime import date
+    from ..planner import PlannerEngine
+    today = date.today()
+    expiring = []
+    for it in db.query(PantryItem).all():
+        if not it.expiration_date or (it.quantity or 0) <= 0:
+            continue
+        try:
+            d = date.fromisoformat(it.expiration_date)
+        except ValueError:
+            continue
+        if (d - today).days <= days:            # in scadenza o già scaduto
+            expiring.append((it, (d - today).days))
+    if not expiring:
+        return {"expiring": [], "recipes": []}
+    eng = PlannerEngine(db)
+    items_only = [it for it, _ in expiring]
+    scored = []
+    for r in eng._get_all_recipes():
+        ings = r.content.components if r.is_composed_dish else r.content
+        uses = [it.name for it in items_only
+                if any(eng._pantry_matches(getattr(i, "name", "") or "", [it]) for i in ings)]
+        if uses:
+            scored.append({"id": r.id, "name": r.name, "uses": uses, "n": len(uses)})
+    scored.sort(key=lambda x: -x["n"])
+    return {
+        "expiring": [{"name": it.name, "expiration_date": it.expiration_date, "days": n}
+                     for it, n in sorted(expiring, key=lambda x: x[1])],
+        "recipes": scored[:limit],
+    }
+
+
 @router.get("/barcode/{code}")
 def pantry_barcode_lookup(code: str):
     """Cerca un prodotto da codice a barre (Open Food Facts): nome, marca,

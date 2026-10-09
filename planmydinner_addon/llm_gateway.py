@@ -164,6 +164,45 @@ class LLMGateway:
             _LOGGER.error(f"Error during LLM call for structured recipe generation: {e}")
             return None
 
+    def suggest_meal(self, slot_label: str, avoid: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Propone un pasto fisso (es. colazione) sano e bilanciato. Ritorna
+        {name, ingredients:[{name, food_group, grams}]} o None."""
+        if not self._client:
+            return None
+        task = (
+            f"Proponi una {slot_label} italiana sana, semplice e bilanciata, con una "
+            "buona quota di proteine. Rispondi SOLO con JSON: "
+            '{"name": "<nome breve>", "ingredients": [{"name": "<ingrediente>", '
+            '"food_group": "carboidrati|proteina|latticini|frutta|grassi|verdure|altro", '
+            '"grams": <numero>}]}. 3-5 ingredienti, grammi realistici. Nessun testo extra.'
+        )
+        if avoid:
+            task += f" Evita qualcosa di simile a: {avoid}."
+        messages = [{"role": "system", "content": self._get_system_message(task)},
+                    {"role": "user", "content": f"Proponi la {slot_label}."}]
+        try:
+            if self.provider == "openai":
+                r = self._client.chat.completions.create(
+                    model=self.model, messages=messages, temperature=self.temperature,
+                    response_format={"type": "json_object"})
+                raw = r.choices[0].message.content
+            elif self.provider == "ollama":
+                r = self._client.chat(model=self.model, messages=messages, temperature=self.temperature)
+                raw = r["message"]["content"]
+            else:
+                return None
+            data = json.loads(raw)
+            ings = [{"name": i.get("name"), "food_group": i.get("food_group") or "altro",
+                     "grams": float(i.get("grams") or 0)}
+                    for i in data.get("ingredients", []) if i.get("name")]
+            ings = [i for i in ings if i["grams"] > 0]
+            if not ings:
+                return None
+            return {"name": data.get("name") or slot_label.capitalize(), "ingredients": ings}
+        except Exception as e:
+            _LOGGER.warning(f"suggest_meal fallito per {slot_label}: {e}")
+            return None
+
     def estimate_nutrition(self, ingredient_name: str) -> Optional[Dict[str, Any]]:
         """Stima i valori nutrizionali PER 100 g di un ingrediente sconosciuto
         (non presente nella tabella locale). Ritorna {kcal, protein_g, carbs_g,

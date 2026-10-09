@@ -10,12 +10,29 @@ const Pantry = defineComponent({
                 <button class="btn-secondary" @click="addItem">+ Aggiungi a mano</button>
             </div>
 
+            <!-- In scadenza → ricette che li consumano -->
+            <div v-if="expiringInfo.expiring.length" class="card" style="margin-top:12px;border:1px solid #d6282855;">
+                <strong>⏰ In scadenza</strong>
+                <span class="hint"> — {{ expiringInfo.expiring.map(e => e.name + (e.days < 0 ? ' (scaduto)' : ' (' + e.days + 'g)')).join(', ') }}</span>
+                <div v-if="expiringInfo.recipes.length" style="margin-top:8px;">
+                    <div class="hint" style="margin-bottom:4px;">Ricette che li usano:</div>
+                    <div v-for="r in expiringInfo.recipes" :key="r.id" style="margin-bottom:3px;">
+                        🍽 <strong>{{ r.name }}</strong> <span class="hint">— usa {{ r.uses.join(', ') }}</span>
+                    </div>
+                </div>
+                <div v-else class="hint" style="margin-top:6px;">Nessuna ricetta in catalogo usa questi prodotti.</div>
+            </div>
+
             <!-- Scanner fotocamera -->
             <div v-if="scanning" class="modal-overlay" @click.self="stopScan">
                 <div class="modal" style="max-width:420px;">
                     <h3>Inquadra il codice a barre</h3>
                     <video ref="video" autoplay playsinline muted
                            style="width:100%;border-radius:8px;background:#000;max-height:50vh;"></video>
+                    <label style="display:flex;align-items:center;gap:6px;margin:8px 0;font-size:13px;">
+                        <input type="checkbox" v-model="continuous"> Scansione continua (aggiungi al volo, poi metti le scadenze)
+                    </label>
+                    <div v-if="continuous && addedCount" class="hint" style="color:#2a9d8f;">✓ aggiunti: {{ addedCount }}</div>
                     <p class="hint">Oppure inserisci il codice a mano:</p>
                     <div style="display:flex;gap:6px;">
                         <input v-model="manualCode" placeholder="Es. 8001120..." style="flex:1;" @keyup.enter="lookup(manualCode)">
@@ -79,12 +96,17 @@ const Pantry = defineComponent({
     data() {
         return {
             items: [],
+            expiringInfo: { expiring: [], recipes: [] },
             showModal: false,
             editedItem: {},
             scanning: false,
+            continuous: false,
+            addedCount: 0,
             manualCode: '',
             _stream: null,
             _detectTimer: null,
+            _lastCode: null,
+            _lastAt: 0,
         };
     },
     computed: {
@@ -97,6 +119,12 @@ const Pantry = defineComponent({
     methods: {
         fetchItems() {
             window.apiFetch('/pantry/items').then(r => r.json()).then(d => { this.items = d; });
+            this.fetchExpiring();
+        },
+        fetchExpiring() {
+            window.apiFetch('/pantry/expiring-recipes')
+                .then(r => r.json()).then(d => { this.expiringInfo = d; })
+                .catch(() => {});
         },
         _daysTo(item) {
             if (!item.expiration_date) return null;
@@ -150,6 +178,8 @@ const Pantry = defineComponent({
         // --- Barcode ---
         async startScan() {
             this.manualCode = '';
+            this.addedCount = 0;
+            this._lastCode = null;
             this.scanning = true;
             if (!('BarcodeDetector' in window)) {
                 this.toast && this.toast.add('Scanner non supportato dal browser: inserisci il codice a mano.', 'info');
@@ -167,9 +197,15 @@ const Pantry = defineComponent({
                     if (!this.scanning) return;
                     try {
                         const codes = await detector.detect(video);
-                        if (codes && codes.length) { this.lookup(codes[0].rawValue); return; }
+                        if (codes && codes.length) {
+                            if (this.continuous) {
+                                await this.quickAdd(codes[0].rawValue);   // aggiunge e continua
+                            } else {
+                                this.lookup(codes[0].rawValue); return;   // prefill + stop
+                            }
+                        }
                     } catch (_) { /* frame non pronto */ }
-                    this._detectTimer = setTimeout(tick, 400);
+                    this._detectTimer = setTimeout(tick, this.continuous ? 900 : 400);
                 };
                 this._detectTimer = setTimeout(tick, 600);
             } catch (e) {
@@ -190,6 +226,26 @@ const Pantry = defineComponent({
             if (u === 'l') return { quantity: q * 1000, unit: 'ml' };
             if (u === 'cl') return { quantity: q * 10, unit: 'ml' };
             return { quantity: q, unit: u };
+        },
+        async quickAdd(code) {
+            const now = Date.now();
+            if (code === this._lastCode && now - this._lastAt < 4000) return;  // dedupe stesso prodotto
+            this._lastCode = code; this._lastAt = now;
+            try {
+                const p = await (await window.apiFetch('/pantry/barcode/' + encodeURIComponent(code))).json();
+                if (!p.found) { this.toast && this.toast.add('Non trovato: ' + code, 'info'); return; }
+                const pack = this._parsePack(p.quantity_text);
+                await window.apiFetch('/pantry/items', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        name: [p.name, p.brands].filter(Boolean).join(' · ') || ('Prodotto ' + code),
+                        quantity: pack.quantity, unit: pack.unit, barcode: code,
+                        nutrition: p.nutrition || null, synonyms: [] }),
+                });
+                this.addedCount++;
+                this.toast && this.toast.add('+ ' + (p.name || code), 'success');
+                this.fetchItems();
+            } catch (e) { this.toast && this.toast.add('Errore: ' + e.message, 'error'); }
         },
         async lookup(code) {
             code = (code || '').trim();
