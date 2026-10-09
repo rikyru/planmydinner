@@ -96,14 +96,15 @@ def _slot_today_state(entries, meal) -> str:
 
 
 @router.get("/suggest")
-def suggest_routine(request: Request, slot: str):
-    """Propone (via AI) un pasto fisso per lo slot, da rivedere e salvare."""
+def suggest_routine(request: Request, slot: str, avoid: Optional[str] = None):
+    """Propone (via AI) un pasto fisso per lo slot, da rivedere e salvare.
+    `avoid`: pasto attuale da NON riproporre, per avere varietà."""
     if slot not in SLOTS:
         raise HTTPException(status_code=404, detail=f"Slot sconosciuto: {slot}")
     gw = getattr(request.app.state, "llm_gateway", None)
     if gw is None or getattr(gw, "_client", None) is None:
         raise HTTPException(status_code=503, detail="AI non disponibile.")
-    proposal = gw.suggest_meal(SLOTS[slot]["label"].lower())
+    proposal = gw.suggest_meal(SLOTS[slot]["label"].lower(), avoid=avoid or None)
     if not proposal:
         raise HTTPException(status_code=502, detail="Nessuna proposta generata.")
     return proposal

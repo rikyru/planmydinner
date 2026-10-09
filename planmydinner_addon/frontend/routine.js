@@ -313,7 +313,11 @@ const RoutineStrip = defineComponent({
         async suggestMeal(s) {
             this.suggesting = true;
             try {
-                const resp = await window.apiFetch('/routine/suggest?slot=' + encodeURIComponent(s.slot));
+                const params = new URLSearchParams({ slot: s.slot });
+                // evita di riproporre il pasto attuale (varietà)
+                const cur = s.name || this.editForm.name;
+                if (cur) params.set('avoid', cur);
+                const resp = await window.apiFetch('/routine/suggest?' + params);
                 if (!resp.ok) throw new Error((await resp.json()).detail || 'errore');
                 const p = await resp.json();
                 this.editForm.name = p.name || this.editForm.name;
