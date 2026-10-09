@@ -41,6 +41,8 @@ class PantryItem(Base):
     category = Column(String, nullable=True)
     expiration_date = Column(String, nullable=True)
     synonyms = Column(JSON)
+    barcode = Column(String, nullable=True, index=True)   # EAN/UPC del prodotto
+    nutrition = Column(JSON, nullable=True)               # {kcal, protein_g, carbs_g, fat_g} per 100g
 
 class ConsumedEntry(Base):
     __tablename__ = "consumed_entries"
@@ -212,6 +214,8 @@ def create_db_and_tables():
             ("plan_rules", "tracking_start_date", "TEXT"),
             ("plan_rules", "generation_slots", "JSON"),
             ("candidate_recipes", "created_at", "TEXT"),
+            ("pantry_items", "barcode", "TEXT"),
+            ("pantry_items", "nutrition", "JSON"),
         ]:
             try:
                 conn.execute(__import__("sqlalchemy").text(
