@@ -1,12 +1,56 @@
 from fastapi import APIRouter, Depends
 from fastapi.responses import Response
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from ..planner import PlannerEngine
-from ..database import get_db
+from ..database import get_db, ShoppingCheck
 from .. import schemas
 from datetime import date
 
 router = APIRouter(prefix="/shopping-list", tags=["shopping-list"])
+
+
+class CheckBody(BaseModel):
+    start_date: date
+    item_key: str
+
+
+@router.get("/checks")
+async def get_checks(start_date: date, db: Session = Depends(get_db)):
+    """Item keys ticked as taken for the given week (persistent check-off)."""
+    rows = db.query(ShoppingCheck).filter(
+        ShoppingCheck.week_start == start_date.isoformat()).all()
+    return {"checked": [r.item_key for r in rows]}
+
+
+@router.post("/checks")
+async def add_check(body: CheckBody, db: Session = Depends(get_db)):
+    key = (body.item_key or "").strip().lower()
+    ws = body.start_date.isoformat()
+    if key:
+        exists = db.query(ShoppingCheck).filter(
+            ShoppingCheck.week_start == ws, ShoppingCheck.item_key == key).first()
+        if not exists:
+            db.add(ShoppingCheck(week_start=ws, item_key=key))
+            db.commit()
+    return {"ok": True}
+
+
+@router.delete("/checks")
+async def delete_check(start_date: date, item_key: str, db: Session = Depends(get_db)):
+    db.query(ShoppingCheck).filter(
+        ShoppingCheck.week_start == start_date.isoformat(),
+        ShoppingCheck.item_key == (item_key or "").strip().lower()).delete()
+    db.commit()
+    return {"ok": True}
+
+
+@router.post("/checks/clear")
+async def clear_checks(start_date: date, db: Session = Depends(get_db)):
+    db.query(ShoppingCheck).filter(
+        ShoppingCheck.week_start == start_date.isoformat()).delete()
+    db.commit()
+    return {"ok": True}
 
 
 @router.get("", response_model=schemas.AggregatedShoppingList)

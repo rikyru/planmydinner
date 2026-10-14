@@ -1,5 +1,13 @@
 import { defineComponent } from 'vue';
 
+// Ordine dei reparti seguendo il giro tipico del supermercato (ortofrutta →
+// freschi → dispensa). Le categorie non elencate finiscono in fondo.
+const REPARTO_ORDER = [
+    'verdura', 'verdure', 'frutta', 'carne', 'pesce', 'proteina', 'proteine',
+    'latticini', 'uova', 'legumi', 'carboidrati', 'carboidrato', 'grasso',
+    'grassi', 'dispensa', 'altro',
+];
+
 const ShoppingList = defineComponent({
     name: 'ShoppingList',
     inject: ['toast'],
@@ -152,7 +160,14 @@ const ShoppingList = defineComponent({
                 if (!grouped[cat]) grouped[cat] = [];
                 grouped[cat].push(item);
             }
-            return grouped;
+            // ordina i reparti secondo il giro del supermercato
+            const ordered = {};
+            Object.keys(grouped).sort((a, b) => {
+                const ia = REPARTO_ORDER.indexOf(a.toLowerCase());
+                const ib = REPARTO_ORDER.indexOf(b.toLowerCase());
+                return (ia < 0 ? 999 : ia) - (ib < 0 ? 999 : ib);
+            }).forEach(k => { ordered[k] = grouped[k]; });
+            return ordered;
         },
         availableCategories() {
             return [...new Set(this.localItems.map(i => i.category).filter(Boolean))];
@@ -192,9 +207,38 @@ const ShoppingList = defineComponent({
                 if (!resp.ok) return;
                 this.shoppingData = await resp.json();
                 this.buildLocalItems();
+                await this.applyChecks();
             } catch (e) {
                 this.error = 'Errore: ' + e.message;
             }
+        },
+        itemKey(item) { return (item.name || '').trim().toLowerCase(); },
+        async applyChecks() {
+            // marca "preso" ciò che era già spuntato per questa settimana (persistente)
+            try {
+                const resp = await window.apiFetch(
+                    '/shopping-list/checks?start_date=' + this.startDate);
+                if (!resp.ok) return;
+                const { checked } = await resp.json();
+                const set = new Set(checked || []);
+                for (const item of this.localItems) {
+                    if (set.has(this.itemKey(item))) item.done = true;
+                }
+            } catch {}
+        },
+        async persistCheck(item, on) {
+            try {
+                if (on) {
+                    await window.apiFetch('/shopping-list/checks', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ start_date: this.startDate, item_key: this.itemKey(item) }),
+                    });
+                } else {
+                    await window.apiFetch('/shopping-list/checks?start_date=' + this.startDate
+                        + '&item_key=' + encodeURIComponent(this.itemKey(item)), { method: 'DELETE' });
+                }
+            } catch {}
         },
         buildLocalItems() {
             this.localItems = [];
@@ -219,12 +263,14 @@ const ShoppingList = defineComponent({
         // ── Interazioni ───────────────────────────────────────────────────
         async toggleDone(item) {
             if (item.done) {
-                // de-seleziona senza toccare dispensa
+                // de-seleziona senza toccare dispensa; rimuovi la spunta persistente
                 item.done = false;
+                await this.persistCheck(item, false);
                 return;
             }
-            // Segna come preso → manda in dispensa
+            // Segna come preso → manda in dispensa e persisti la spunta
             item.done = true;
+            await this.persistCheck(item, true);
             await this.addToPantry(item);
         },
         async addToPantry(item) {
@@ -250,8 +296,12 @@ const ShoppingList = defineComponent({
         removeItem(item) {
             this.localItems = this.localItems.filter(i => i._id !== item._id);
         },
-        clearDone() {
+        async clearDone() {
             this.localItems = this.localItems.filter(i => !i.done);
+            try {
+                await window.apiFetch('/shopping-list/checks/clear?start_date=' + this.startDate,
+                    { method: 'POST' });
+            } catch {}
         },
 
         // ── Aggiunta manuale ──────────────────────────────────────────────

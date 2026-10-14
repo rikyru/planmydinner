@@ -163,6 +163,16 @@ class AppSettings(Base):
     llm_generation_mode = Column(String, nullable=True, default="off")  # "off" | "per_slot" | "full_week"
 
 
+class ShoppingCheck(Base):
+    """A shopping-list item ticked as taken, persisted per week so the check-off
+    survives reloads and is shared across devices."""
+    __tablename__ = "shopping_checks"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    week_start = Column(String, index=True)   # ISO date of the week start
+    item_key = Column(String, index=True)     # normalized (lowercased) item name
+
+
 def consume_ingredients_from_pantry(db: Session, ingredients_data: List[Dict[str, Any]]):
     """
     Deducts quantities of ingredients from the pantry.
