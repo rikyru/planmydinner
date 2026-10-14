@@ -124,7 +124,13 @@ const WeekView = defineComponent({
                             <template v-if="day.meals && day.meals.length > 0">
                                 <div v-for="meal in day.meals" :key="meal.meal_type"
                                      class="meal-row"
-                                     :class="{ 'meal-row--not-eaten': isNotEaten(meal), 'meal-row--free': isFree(meal) }">
+                                     draggable="true"
+                                     @dragstart="onDragStart(day, meal, $event)"
+                                     @dragend="dragOver = null"
+                                     @dragover.prevent
+                                     @dragenter.prevent="dragOver = day.date + '_' + meal.meal_type"
+                                     @drop.prevent="onDrop(day, meal)"
+                                     :class="{ 'meal-row--not-eaten': isNotEaten(meal), 'meal-row--free': isFree(meal), 'meal-row--dragover': dragOver === day.date + '_' + meal.meal_type }">
                                     <div class="meal-row__info" @click.stop="openMealModal(day.date, meal)">
                                         <span class="meal-row__icon">{{ meal.meal_type === 'pranzo' ? '☀️' : '🌙' }}</span>
                                         <span class="meal-row__type">{{ meal.meal_type === 'pranzo' ? 'Pranzo' : 'Cena' }}</span>
@@ -722,6 +728,9 @@ const WeekView = defineComponent({
             fantasyApplying: null,
             // Rigenerazione AI del singolo giorno (contesto-aware)
             regeneratingDay: null,
+            // Drag & drop pasti
+            dragSrc: null,
+            dragOver: null,
             // Non mangiato / Pasto libero (pasti passati)
             freeMealModalTitle: '',
             showFreeMealInput: false,
@@ -802,6 +811,34 @@ const WeekView = defineComponent({
         document.removeEventListener('click', this._outsideClick);
     },
     methods: {
+        // ── Drag & drop pasti (sposta/scambia tra slot) ───────────────────────
+        onDragStart(day, meal, ev) {
+            this.dragSrc = { date: day.date, meal_type: meal.meal_type };
+            try { ev.dataTransfer.effectAllowed = 'move'; } catch {}
+        },
+        async onDrop(day, meal) {
+            const src = this.dragSrc;
+            this.dragSrc = null;
+            this.dragOver = null;
+            if (!src || !this.profileA) return;
+            if (src.date === day.date && src.meal_type === meal.meal_type) return;
+            try {
+                const resp = await window.apiFetch('/planner/move-meal', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        profile_id_A: this.profileA.id,
+                        profile_id_B: this.profileB?.id || null,
+                        from_date: src.date, from_meal: src.meal_type,
+                        to_date: day.date, to_meal: meal.meal_type,
+                    }),
+                });
+                if (!resp.ok) throw new Error(await resp.text());
+                await this.loadWeekPlan();
+                this.toast.add('Pasto spostato', 'success');
+            } catch (e) {
+                this.toast.add('Errore spostamento: ' + e.message, 'error');
+            }
+        },
         // ── Dati ─────────────────────────────────────────────────────────────
         async loadData() {
             this.loading = true;

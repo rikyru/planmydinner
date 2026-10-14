@@ -326,8 +326,9 @@ input[type="checkbox"] { accent-color: var(--primary); }
 .day-card__meals { flex: 1; padding: 4px 0; }
 
 /* Meal row */
-.meal-row { display: flex; align-items: center; padding: 10px 14px; gap: 8px; border-bottom: 1px solid var(--surface-2); }
+.meal-row { display: flex; align-items: center; padding: 10px 14px; gap: 8px; border-bottom: 1px solid var(--surface-2); cursor: grab; }
 .meal-row:last-child { border-bottom: none; }
+.meal-row--dragover { background: var(--accent-soft, rgba(76,141,255,.14)); outline: 2px dashed var(--accent, #4c8dff); outline-offset: -2px; }
 .meal-row__info { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; cursor: pointer; border-radius: var(--radius-xs); padding: 3px 5px; transition: background .12s; }
 .meal-row__info:hover { background: var(--surface-2); }
 .meal-row__info:hover .meal-row__name { color: var(--primary); }

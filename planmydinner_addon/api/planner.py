@@ -1565,6 +1565,49 @@ def cancel_not_eaten(
     return {"message": "Not-eaten mark cancelled."}
 
 
+class MoveMealBody(_BaseModel):
+    profile_id_A: str
+    profile_id_B: Optional[str] = None
+    from_date: date
+    from_meal: str
+    to_date: date
+    to_meal: str
+
+
+@router.post("/move-meal")
+def move_meal(body: MoveMealBody, db: Session = Depends(get_db)):
+    """Sposta/scambia un pasto tra due slot della settimana (drag & drop),
+    preservando ricetta e scaling. Se la destinazione ha già un pasto, i due si
+    scambiano; se è vuota, è uno spostamento."""
+    plan = _find_plan_covering_date(db, body.profile_id_A, body.from_date)
+    if not plan:
+        raise HTTPException(status_code=404, detail="Nessun piano copre la data di partenza.")
+    if body.from_date == body.to_date and body.from_meal == body.to_meal:
+        return {"moved": False}
+    updated = copy.deepcopy(plan.daily_plans)
+
+    def slot_item(iso, meal):
+        for day in updated:
+            if day.get("date") == iso:
+                slot = next((m for m in day.get("meals", []) if m.get("meal_type") == meal), None)
+                items = (slot or {}).get("items") or []
+                return items[0] if items else None
+        return None
+
+    src = slot_item(body.from_date.isoformat(), body.from_meal)
+    dst = slot_item(body.to_date.isoformat(), body.to_meal)
+    if src is None and dst is None:
+        return {"moved": False}
+    ok1 = _set_day_slot(updated, body.to_date.isoformat(), body.to_meal, src)
+    ok2 = _set_day_slot(updated, body.from_date.isoformat(), body.from_meal, dst)
+    if not (ok1 and ok2):
+        raise HTTPException(status_code=400, detail="Giorno non presente nel piano.")
+    plan.daily_plans = updated
+    db.add(plan)
+    db.commit()
+    return {"moved": True}
+
+
 def _set_day_slot(daily_plans: list, iso: str, meal_type: str, item: Optional[dict]) -> bool:
     """Imposta l'item di uno slot (pranzo/cena) di un giorno; se lo slot non
     esiste (es. pranzo non generato nei feriali) lo CREA. item=None svuota lo
