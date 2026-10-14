@@ -206,7 +206,10 @@ const WeekView = defineComponent({
                             </li>
                         </ul>
                         <div v-if="mealRecipeDetail.steps && mealRecipeDetail.steps.length > 0">
-                            <h4 style="margin:12px 0 8px; font-size:14px;">Preparazione</h4>
+                            <div style="display:flex;align-items:center;justify-content:space-between;margin:12px 0 8px;">
+                                <h4 style="margin:0; font-size:14px;">Preparazione</h4>
+                                <button class="btn-sm btn-primary" @click="openCookMode(mealRecipeDetail)">👨‍🍳 Cucina</button>
+                            </div>
                             <ol class="recipe-detail-steps">
                                 <li v-for="step in mealRecipeDetail.steps" :key="step">{{ step }}</li>
                             </ol>
@@ -383,6 +386,23 @@ const WeekView = defineComponent({
                     </div>
 
                     <button @click="closeMealModal" class="btn-secondary" style="margin-top:14px">Chiudi</button>
+                </div>
+            </div>
+
+            <!-- ── Cook mode (schermo intero, passo-passo, schermo sveglio) ── -->
+            <div v-if="cookMode" class="cook-overlay">
+                <div class="cook-head">
+                    <span class="cook-title">{{ cookMode.name }}</span>
+                    <button class="cook-close" @click="closeCookMode" aria-label="Chiudi">✕</button>
+                </div>
+                <div class="cook-body">
+                    <div class="cook-step-num">Passo {{ cookIndex + 1 }} / {{ cookMode.steps.length }}</div>
+                    <p class="cook-step-text">{{ cookMode.steps[cookIndex] }}</p>
+                </div>
+                <div class="cook-nav">
+                    <button class="btn-secondary" :disabled="cookIndex === 0" @click="cookPrev">← Indietro</button>
+                    <button v-if="cookIndex < cookMode.steps.length - 1" class="btn-primary" @click="cookNext">Avanti →</button>
+                    <button v-else class="btn-primary" @click="closeCookMode">✓ Fine</button>
                 </div>
             </div>
 
@@ -731,6 +751,10 @@ const WeekView = defineComponent({
             // Drag & drop pasti
             dragSrc: null,
             dragOver: null,
+            // Cook mode (schermo intero passo-passo)
+            cookMode: null,
+            cookIndex: 0,
+            _wakeLock: null,
             // Non mangiato / Pasto libero (pasti passati)
             freeMealModalTitle: '',
             showFreeMealInput: false,
@@ -811,6 +835,28 @@ const WeekView = defineComponent({
         document.removeEventListener('click', this._outsideClick);
     },
     methods: {
+        // ── Cook mode: passo-passo a schermo intero, schermo che resta acceso ──
+        async openCookMode(recipe) {
+            if (!recipe || !recipe.steps || !recipe.steps.length) return;
+            this.cookMode = recipe;
+            this.cookIndex = 0;
+            try {
+                if ('wakeLock' in navigator) {
+                    this._wakeLock = await navigator.wakeLock.request('screen');
+                }
+            } catch {}
+        },
+        async closeCookMode() {
+            this.cookMode = null;
+            try { if (this._wakeLock) { await this._wakeLock.release(); } } catch {}
+            this._wakeLock = null;
+        },
+        cookNext() {
+            if (this.cookMode && this.cookIndex < this.cookMode.steps.length - 1) this.cookIndex++;
+        },
+        cookPrev() {
+            if (this.cookIndex > 0) this.cookIndex--;
+        },
         // ── Drag & drop pasti (sposta/scambia tra slot) ───────────────────────
         onDragStart(day, meal, ev) {
             this.dragSrc = { date: day.date, meal_type: meal.meal_type };
