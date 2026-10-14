@@ -55,3 +55,14 @@ def test_delete_pantry_item(client, setup_database):
     # Verify it's gone
     get_response = client.get(f"/pantry/items/{item_id}")
     assert get_response.status_code == 404
+
+
+def test_pantry_min_quantity_and_low_stock(client, setup_database):
+    r = client.post("/pantry/items", json={"name": "Olio", "quantity": 50, "unit": "ml", "min_quantity": 200})
+    assert r.status_code == 200 and r.json()["min_quantity"] == 200
+    low = client.get("/pantry/low-stock").json()
+    assert any(i["name"] == "Olio" for i in low)
+    # un item sopra soglia non deve comparire
+    client.post("/pantry/items", json={"name": "Riso", "quantity": 1000, "unit": "g", "min_quantity": 300})
+    low2 = client.get("/pantry/low-stock").json()
+    assert not any(i["name"] == "Riso" for i in low2)

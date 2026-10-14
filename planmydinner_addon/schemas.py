@@ -30,6 +30,7 @@ class PantryItemBase(BaseModel):
     synonyms: Optional[List[str]] = []
     barcode: Optional[str] = None                 # EAN/UPC del prodotto scansionato
     nutrition: Optional[Dict[str, Any]] = None    # {kcal, protein_g, carbs_g, fat_g} per 100g
+    min_quantity: Optional[float] = None          # soglia: sotto questa va in lista spesa
 
 class PantryItemCreate(PantryItemBase):
     pass

@@ -5,7 +5,7 @@ import { defineComponent } from 'vue';
 const REPARTO_ORDER = [
     'verdura', 'verdure', 'frutta', 'carne', 'pesce', 'proteina', 'proteine',
     'latticini', 'uova', 'legumi', 'carboidrati', 'carboidrato', 'grasso',
-    'grassi', 'dispensa', 'altro',
+    'grassi', 'dispensa', 'scorte', 'altro',
 ];
 
 const ShoppingList = defineComponent({
@@ -346,7 +346,7 @@ const ShoppingList = defineComponent({
                 verdure: '🥦', verdura: '🥦',
                 frutta: '🍎', latticini: '🧀',
                 grasso: '🫒', grassi: '🫒',
-                altro: '📦',
+                scorte: '⚠️', altro: '📦',
             };
             return map[cat?.toLowerCase()] || '🛒';
         },

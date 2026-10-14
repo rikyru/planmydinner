@@ -54,7 +54,9 @@ const Pantry = defineComponent({
                             {{ item.name }}
                             <span v-if="item.barcode" class="hint" style="font-size:11px;">· {{ item.barcode }}</span>
                         </td>
-                        <td>{{ item.quantity }} {{ item.unit }}</td>
+                        <td>{{ item.quantity }} {{ item.unit }}
+                            <span v-if="isLow(item)" class="hint" style="color:#d62828;font-weight:600;display:block;font-size:11px;">⚠ in esaurimento</span>
+                        </td>
                         <td>
                             <span v-if="item.expiration_date" :style="isExpiring(item) ? 'color:#d62828;font-weight:600' : ''">
                                 {{ item.expiration_date }}{{ daysLabel(item) }}
@@ -85,6 +87,8 @@ const Pantry = defineComponent({
                         <label style="flex:1;">Quantità<input v-model.number="editedItem.quantity" type="number" min="0" step="10"></label>
                         <label style="width:90px;">Unità<input v-model="editedItem.unit" placeholder="g"></label>
                     </div>
+                    <label>Soglia minima <span class="hint">(sotto → va in lista spesa)</span></label>
+                    <input v-model.number="editedItem.min_quantity" type="number" min="0" step="10" placeholder="es. 200">
                     <label>Scadenza</label>
                     <input v-model="editedItem.expiration_date" type="date">
                     <div style="display:flex;gap:10px;margin-top:14px;">
@@ -161,6 +165,9 @@ const Pantry = defineComponent({
             const n = this._daysTo(item);
             return n !== null && n <= 3;
         },
+        isLow(item) {
+            return item.min_quantity > 0 && (item.quantity || 0) <= item.min_quantity;
+        },
         daysLabel(item) {
             const n = this._daysTo(item);
             if (n === null) return '';
@@ -190,6 +197,8 @@ const Pantry = defineComponent({
                 synonyms: this.editedItem.synonyms || [],
                 barcode: this.editedItem.barcode || null,
                 nutrition: this.editedItem.nutrition || null,
+                min_quantity: (this.editedItem.min_quantity || this.editedItem.min_quantity === 0)
+                    ? Number(this.editedItem.min_quantity) : null,
             };
             window.apiFetch(url, {
                 method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),

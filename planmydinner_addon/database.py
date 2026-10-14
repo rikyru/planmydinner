@@ -43,6 +43,7 @@ class PantryItem(Base):
     synonyms = Column(JSON)
     barcode = Column(String, nullable=True, index=True)   # EAN/UPC del prodotto
     nutrition = Column(JSON, nullable=True)               # {kcal, protein_g, carbs_g, fat_g} per 100g
+    min_quantity = Column(Float, nullable=True)           # soglia minima → sotto va in spesa
 
 class ConsumedEntry(Base):
     __tablename__ = "consumed_entries"
@@ -226,6 +227,7 @@ def create_db_and_tables():
             ("candidate_recipes", "created_at", "TEXT"),
             ("pantry_items", "barcode", "TEXT"),
             ("pantry_items", "nutrition", "JSON"),
+            ("pantry_items", "min_quantity", "FLOAT"),
         ]:
             try:
                 conn.execute(__import__("sqlalchemy").text(

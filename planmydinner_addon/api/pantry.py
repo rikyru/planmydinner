@@ -51,6 +51,14 @@ def expiring_recipes(days: int = 5, limit: int = 6, db: Session = Depends(get_db
     }
 
 
+@router.get("/low-stock", response_model=List[schemas.PantryItem])
+def low_stock_items(db: Session = Depends(get_db)):
+    """Articoli scesi a/sotto la loro soglia minima (da ricomprare)."""
+    items = db.query(PantryItem).all()
+    return [i for i in items
+            if i.min_quantity and i.min_quantity > 0 and (i.quantity or 0) <= i.min_quantity]
+
+
 @router.get("/barcode/{code}")
 def pantry_barcode_lookup(code: str):
     """Cerca un prodotto da codice a barre (Open Food Facts): nome, marca,

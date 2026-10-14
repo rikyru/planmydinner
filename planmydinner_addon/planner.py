@@ -4439,7 +4439,7 @@ class PlannerEngine:
 
         return [], False
 
-    def generate_shopping_list_for_week(self, profile_id_A: str, profile_id_B: str, start_date: date, exclude_consumed: bool = False) -> schemas.AggregatedShoppingList:
+    def generate_shopping_list_for_week(self, profile_id_A: str, profile_id_B: str, start_date: date, exclude_consumed: bool = False, include_low_stock: bool = True) -> schemas.AggregatedShoppingList:
         # Find plan by exact start_date (rolling, no Monday-snapping)
         cached = self.db.query(GeneratedWeeklyPlan).filter(
             GeneratedWeeklyPlan.profile_id_A == profile_id_A,
@@ -4552,6 +4552,27 @@ class PlannerEngine:
             if cat not in items_by_category:
                 items_by_category[cat] = []
             items_by_category[cat].append(item)
+
+        # Scorte sotto soglia (stile Grocy): stapli che sono scesi sotto la loro
+        # min_quantity vanno ricomprati anche se non usati dalle ricette della
+        # settimana. Esclude ciò che è già in lista.
+        if include_low_stock:
+            already = {i.name.lower() for lst in items_by_category.values() for i in lst}
+            low = []
+            for p in pantry_items:
+                mq = getattr(p, "min_quantity", None)
+                if not mq or mq <= 0:
+                    continue
+                if (p.quantity or 0) > mq:
+                    continue
+                if p.name.lower() in already:
+                    continue
+                needed = max(round(mq - (p.quantity or 0)), 1)
+                low.append(schemas.ShoppingListItem(
+                    name=p.name, quantity=needed, unit=p.unit or "g",
+                    category="scorte", notes="⚠ scorta in esaurimento"))
+            if low:
+                items_by_category.setdefault("scorte", []).extend(low)
 
         return schemas.AggregatedShoppingList(
             generated_at=date.today().isoformat(),
