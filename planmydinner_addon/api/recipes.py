@@ -294,6 +294,30 @@ def apply_protein_target(recipe_id: str, request: Request, db: Session = Depends
     return _attach_nutrition_per_portion(validated, db, llm_gateway, target)
 
 
+class RateBody(_BaseModel):
+    rating: str   # "up" (preferita) | "down" (non proporre più) | "none" (azzera)
+
+
+@router.post("/{recipe_id}/rate")
+def rate_recipe(recipe_id: str, body: RateBody, db: Session = Depends(get_db)):
+    """Preferenza esplicita sulla ricetta: 'up' la premia nel planner, 'down' la
+    esclude di fatto, 'none' azzera. Memorizzata nei tag della ricetta."""
+    r = db.query(Recipe).filter(Recipe.id == recipe_id).first()
+    if not r:
+        raise HTTPException(status_code=404, detail="Ricetta non trovata")
+    tags = dict(r.tags or {})
+    tags.pop("favorite", None)
+    tags.pop("disliked", None)
+    if body.rating == "up":
+        tags["favorite"] = ["true"]
+    elif body.rating == "down":
+        tags["disliked"] = ["true"]
+    r.tags = tags
+    flag_modified(r, "tags")
+    db.commit()
+    return {"id": recipe_id, "rating": body.rating}
+
+
 @router.get("/detail/{recipe_id}", response_model=schemas.Recipe)
 def get_recipe_detail(recipe_id: str, request: Request, db: Session = Depends(get_db)):
     """

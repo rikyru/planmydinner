@@ -117,3 +117,17 @@ def test_delete_recipe(client, setup_database):
 
     get_response = client.get(f"/recipes/{recipe_data['id']}")
     assert get_response.status_code == 404
+
+def test_recipe_rating(client, setup_database):
+    rid = client.post("/recipes/", json=get_sample_recipe_data()).json()["id"]
+    # up -> favorite
+    assert client.post(f"/recipes/{rid}/rate", json={"rating": "up"}).status_code == 200
+    assert client.get(f"/recipes/{rid}").json()["tags"].get("favorite") == ["true"]
+    # down -> disliked, favorite cleared
+    client.post(f"/recipes/{rid}/rate", json={"rating": "down"})
+    tags = client.get(f"/recipes/{rid}").json()["tags"]
+    assert tags.get("disliked") == ["true"] and "favorite" not in tags
+    # none -> cleared
+    client.post(f"/recipes/{rid}/rate", json={"rating": "none"})
+    tags = client.get(f"/recipes/{rid}").json()["tags"]
+    assert "disliked" not in tags and "favorite" not in tags

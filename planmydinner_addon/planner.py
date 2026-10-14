@@ -560,6 +560,11 @@ class PlannerEngine:
         recipe_tags = recipe.tags or {}
         if recipe_tags.get("manual"):
             score += 1.5
+        # Feedback esplicito: preferite salgono, "non proporre più" sprofondano
+        if recipe_tags.get("favorite"):
+            score += 2.5
+        if recipe_tags.get("disliked"):
+            score -= 100.0
 
         affinity = getattr(self, "_affinity", None)
         a = affinity.get(recipe.id, 0.0) if affinity else 0.0

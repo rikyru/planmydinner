@@ -205,6 +205,12 @@ const Recipes = defineComponent({
                 </button>
             </div>
 
+            <div v-if="!loading && recipes.length > 0" style="margin:8px 0;">
+                <button class="btn-sm" @click="onlyFav = !onlyFav">
+                    {{ onlyFav ? '★ Solo preferiti: ON' : '☆ Solo preferiti' }}
+                </button>
+            </div>
+
             <table v-if="!loading && recipes.length > 0" class="recipe-table">
                 <thead>
                     <tr>
@@ -222,6 +228,8 @@ const Recipes = defineComponent({
                             <span class="recipe-name-cell">{{ r.name }}</span>
                             <span v-if="r.tags && r.tags.manual" class="badge-manual">⭐ Personale</span>
                             <span v-if="r.tags && r.tags.imported" class="badge-imported">📥 Importata</span>
+                            <span v-if="r.tags && r.tags.favorite" class="badge-manual" style="background:#2e7d32;color:#fff;">👍 Preferita</span>
+                            <span v-if="r.tags && r.tags.disliked" class="badge-imported" style="background:#777;color:#fff;">🚫 Esclusa</span>
                             <span v-if="r.balance && !r.balance.ok" class="badge-warn"
                                   :title="balanceTitle(r)"
                                   style="background:#b26b00;color:#fff;border-radius:4px;padding:1px 6px;font-size:11px;margin-left:4px;">⚠️ da sistemare</span>
@@ -241,6 +249,14 @@ const Recipes = defineComponent({
                         <td>{{ r.total_time_minutes ? r.total_time_minutes + ' min' : '—' }}</td>
                         <td>{{ r.difficulty || '—' }}</td>
                         <td>
+                            <button @click="rate(r, r.tags && r.tags.favorite ? 'none' : 'up')" class="btn-sm"
+                                    :title="r.tags && r.tags.favorite ? 'Togli dai preferiti' : 'Preferita'">
+                                {{ r.tags && r.tags.favorite ? '★' : '☆' }}
+                            </button>
+                            <button @click="rate(r, r.tags && r.tags.disliked ? 'none' : 'down')" class="btn-sm"
+                                    :title="r.tags && r.tags.disliked ? 'Riattiva nel planner' : 'Non proporre più'">
+                                {{ r.tags && r.tags.disliked ? '🚫' : '👎' }}
+                            </button>
                             <button @click="openEdit(r)" class="btn-sm">Modifica</button>
                             <button @click="deleteRecipe(r.id)" class="btn-sm btn-danger">Elimina</button>
                         </td>
@@ -396,6 +412,7 @@ const Recipes = defineComponent({
             preview: null,          // anteprima nutrizionale della bozza
             previewLoading: false,
             onlyToFix: false,       // filtro: solo ricette da sistemare
+            onlyFav: false,         // filtro: solo preferiti
             fixingId: null,         // ricetta in corso di adattamento proteico
             // Catalogo pasti mensa
             showMensa: false,
@@ -450,7 +467,9 @@ const Recipes = defineComponent({
             return this.recipes.filter(r => r.balance && !r.balance.ok);
         },
         visibleRecipes() {
-            return this.onlyToFix ? this.toFix : this.recipes;
+            let list = this.onlyToFix ? this.toFix : this.recipes;
+            if (this.onlyFav) list = list.filter(r => r.tags && r.tags.favorite);
+            return list;
         },
         groupSummary() {
             const label = (fg) => {
@@ -841,6 +860,26 @@ const Recipes = defineComponent({
                 const result = await resp.json();
                 await this.fetchRecipes();
                 this.toast.add(`🗑️ ${result.deleted} ricette eliminate.`, 'success');
+            } catch (e) {
+                this.toast.add('Errore: ' + e.message, 'error');
+            }
+        },
+        async rate(r, rating) {
+            try {
+                const resp = await window.apiFetch(`/recipes/${r.id}/rate`, {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ rating }),
+                });
+                if (!resp.ok) throw new Error(await resp.text());
+                // aggiorna i tag locali senza ricaricare tutto
+                const tags = { ...(r.tags || {}) };
+                delete tags.favorite; delete tags.disliked;
+                if (rating === 'up') tags.favorite = ['true'];
+                else if (rating === 'down') tags.disliked = ['true'];
+                r.tags = tags;
+                const msg = rating === 'up' ? 'Aggiunta ai preferiti ⭐'
+                    : rating === 'down' ? 'Non verrà più proposta' : 'Preferenza azzerata';
+                this.toast.add(msg, 'success');
             } catch (e) {
                 this.toast.add('Errore: ' + e.message, 'error');
             }
