@@ -205,10 +205,26 @@ const Recipes = defineComponent({
                 </button>
             </div>
 
-            <div v-if="!loading && recipes.length > 0" style="margin:8px 0;">
+            <div v-if="!loading && recipes.length > 0" class="recipe-filters" style="margin:8px 0;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+                <input v-model="search" type="search" placeholder="🔍 Cerca ricetta o ingrediente"
+                       style="flex:1;min-width:180px;" />
+                <select v-model.number="maxTime" style="width:130px;">
+                    <option :value="0">Tempo: tutti</option>
+                    <option :value="15">≤ 15 min</option>
+                    <option :value="30">≤ 30 min</option>
+                    <option :value="45">≤ 45 min</option>
+                    <option :value="60">≤ 60 min</option>
+                </select>
+                <select v-model="diffFilter" style="width:130px;">
+                    <option value="">Difficoltà: tutte</option>
+                    <option value="facile">Facile</option>
+                    <option value="media">Media</option>
+                    <option value="difficile">Difficile</option>
+                </select>
                 <button class="btn-sm" @click="onlyFav = !onlyFav">
                     {{ onlyFav ? '★ Solo preferiti: ON' : '☆ Solo preferiti' }}
                 </button>
+                <span class="hint">{{ visibleRecipes.length }}/{{ recipes.length }}</span>
             </div>
 
             <table v-if="!loading && recipes.length > 0" class="recipe-table">
@@ -413,6 +429,9 @@ const Recipes = defineComponent({
             previewLoading: false,
             onlyToFix: false,       // filtro: solo ricette da sistemare
             onlyFav: false,         // filtro: solo preferiti
+            search: '',             // ricerca per nome/ingrediente
+            maxTime: 0,             // filtro tempo max (0 = tutti)
+            diffFilter: '',         // filtro difficoltà
             fixingId: null,         // ricetta in corso di adattamento proteico
             // Catalogo pasti mensa
             showMensa: false,
@@ -469,6 +488,10 @@ const Recipes = defineComponent({
         visibleRecipes() {
             let list = this.onlyToFix ? this.toFix : this.recipes;
             if (this.onlyFav) list = list.filter(r => r.tags && r.tags.favorite);
+            if (this.maxTime) list = list.filter(r => (r.total_time_minutes || 0) <= this.maxTime);
+            if (this.diffFilter) list = list.filter(r => (r.difficulty || '').toLowerCase() === this.diffFilter);
+            const q = (this.search || '').trim().toLowerCase();
+            if (q) list = list.filter(r => this._matchesQuery(r, q));
             return list;
         },
         groupSummary() {
@@ -863,6 +886,12 @@ const Recipes = defineComponent({
             } catch (e) {
                 this.toast.add('Errore: ' + e.message, 'error');
             }
+        },
+        _matchesQuery(r, q) {
+            if ((r.name || '').toLowerCase().includes(q)) return true;
+            const c = r.content;
+            const ings = Array.isArray(c) ? c : (c && c.components) || [];
+            return ings.some(i => (i && i.name || '').toLowerCase().includes(q));
         },
         async rate(r, rating) {
             try {
