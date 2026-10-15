@@ -4453,7 +4453,10 @@ class PlannerEngine:
         if cached:
             weekly_plan = [schemas.DailyPlannedMeals.model_validate(dp) for dp in cached.daily_plans]
         else:
-            weekly_plan = self.generate_weekly_plan(profile_id_A, profile_id_B, start_date)
+            # Nessun piano generato per questa settimana: la lista spesa deve
+            # coprire SOLO i giorni che hai fatto generare, quindi non generiamo
+            # nulla al volo (restano comunque le scorte sotto soglia).
+            weekly_plan = []
         pantry_items = self._get_pantry_items()
 
         # Raccogli pasti da escludere dalla spesa:

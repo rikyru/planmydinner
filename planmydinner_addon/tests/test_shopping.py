@@ -25,3 +25,15 @@ def test_shopping_checks_persist(client, setup_database):
     client.post("/shopping-list/checks", json={"start_date": sd, "item_key": "uova"})
     client.post("/shopping-list/checks/clear", params={"start_date": sd})
     assert client.get("/shopping-list/checks", params={"start_date": sd}).json()["checked"] == []
+
+
+def test_shopping_no_plan_does_not_autogenerate(client, setup_database):
+    # Nessun piano generato per questa settimana → la spesa non deve inventare
+    # ricette per i giorni non pianificati (prima le generava al volo).
+    r = client.get("/shopping-list", params={
+        "profile_id_A": "persona_a", "profile_id_B": "persona_b",
+        "start_date": "2026-02-24"})
+    assert r.status_code == 200
+    cats = r.json()["items_by_category"]
+    # al massimo la categoria "scorte" (dispensa sotto soglia); nessuna categoria-ricetta
+    assert all(c == "scorte" for c in cats.keys()), cats

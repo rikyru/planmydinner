@@ -164,9 +164,11 @@ class LLMGateway:
             _LOGGER.error(f"Error during LLM call for structured recipe generation: {e}")
             return None
 
-    def suggest_meal(self, slot_label: str, avoid: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    def suggest_meal(self, slot_label: str, avoid: Optional[str] = None,
+                     pantry: Optional[List[str]] = None) -> Optional[Dict[str, Any]]:
         """Propone un pasto fisso (es. colazione) sano e bilanciato. Ritorna
-        {name, ingredients:[{name, food_group, grams}]} o None."""
+        {name, ingredients:[{name, food_group, grams}]} o None. Se `pantry` è
+        fornito, compone il pasto usando PRINCIPALMENTE quegli ingredienti."""
         if not self._client:
             return None
         task = (
@@ -176,6 +178,11 @@ class LLMGateway:
             '"food_group": "carboidrati|proteina|latticini|frutta|grassi|verdure|altro", '
             '"grams": <numero>}]}. 3-5 ingredienti, grammi realistici. Nessun testo extra.'
         )
+        if pantry:
+            items = ", ".join(pantry[:40])
+            task += (f" USA PRINCIPALMENTE gli ingredienti che ho gia' in dispensa: {items}. "
+                     f"Scegli quelli adatti a una {slot_label}; aggiungi al massimo 1-2 "
+                     "ingredienti base solo se indispensabili.")
         if avoid:
             task += f" Evita qualcosa di simile a: {avoid}."
         messages = [{"role": "system", "content": self._get_system_message(task)},

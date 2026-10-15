@@ -17,7 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel as _BaseModel
 from sqlalchemy.orm import Session
 
-from ..database import get_db, CandidateRecipe, ConsumedEntry
+from ..database import get_db, CandidateRecipe, ConsumedEntry, PantryItem
 from ..nutrition import compute_recipe_nutrition
 
 _LOGGER = logging.getLogger(__name__)
@@ -96,15 +96,24 @@ def _slot_today_state(entries, meal) -> str:
 
 
 @router.get("/suggest")
-def suggest_routine(request: Request, slot: str, avoid: Optional[str] = None):
+def suggest_routine(request: Request, slot: str, avoid: Optional[str] = None,
+                    from_pantry: bool = False, db: Session = Depends(get_db)):
     """Propone (via AI) un pasto fisso per lo slot, da rivedere e salvare.
-    `avoid`: pasto attuale da NON riproporre, per avere varietà."""
+    `avoid`: pasto attuale da NON riproporre, per varietà.
+    `from_pantry=true`: compone usando PRINCIPALMENTE ciò che hai in dispensa
+    (es. muesli proteico + latte di mandorla)."""
     if slot not in SLOTS:
         raise HTTPException(status_code=404, detail=f"Slot sconosciuto: {slot}")
     gw = getattr(request.app.state, "llm_gateway", None)
     if gw is None or getattr(gw, "_client", None) is None:
         raise HTTPException(status_code=503, detail="AI non disponibile.")
-    proposal = gw.suggest_meal(SLOTS[slot]["label"].lower(), avoid=avoid or None)
+    pantry = None
+    if from_pantry:
+        pantry = [p.name for p in db.query(PantryItem).all()
+                  if p.name and (p.quantity or 0) > 0]
+        if not pantry:
+            raise HTTPException(status_code=422, detail="Dispensa vuota: aggiungi prima qualche prodotto.")
+    proposal = gw.suggest_meal(SLOTS[slot]["label"].lower(), avoid=avoid or None, pantry=pantry)
     if not proposal:
         raise HTTPException(status_code=502, detail="Nessuna proposta generata.")
     return proposal

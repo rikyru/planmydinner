@@ -119,11 +119,18 @@ const RoutineStrip = defineComponent({
                                     {{ analyzing ? '…' : '✨' }}
                                 </button>
                             </div>
-                            <button @click="suggestMeal(s)" class="btn-secondary btn-sm"
-                                    :disabled="suggesting" style="align-self:flex-start;"
-                                    title="Proponi una nuova idea con l'AI">
-                                {{ suggesting ? 'Proposta…' : '🍳 Proponi ' + s.label.toLowerCase() }}
-                            </button>
+                            <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                                <button @click="suggestMeal(s, false)" class="btn-secondary btn-sm"
+                                        :disabled="suggesting"
+                                        title="Proponi una nuova idea con l'AI">
+                                    {{ suggesting ? 'Proposta…' : '🍳 Proponi' }}
+                                </button>
+                                <button @click="suggestMeal(s, true)" class="btn-secondary btn-sm"
+                                        :disabled="suggesting"
+                                        title="Proponi usando ciò che hai in dispensa">
+                                    {{ suggesting ? '…' : '🧺 Dalla dispensa' }}
+                                </button>
+                            </div>
                             <input v-model="editForm.name" placeholder="Nome (es. Colazione tipo)">
                             <div v-for="(ing, idx) in editForm.ingredients" :key="idx"
                                  style="display:grid;grid-template-columns:1fr 80px auto;gap:8px;align-items:center;">
@@ -310,19 +317,21 @@ const RoutineStrip = defineComponent({
                 this.analyzing = false;
             }
         },
-        async suggestMeal(s) {
+        async suggestMeal(s, fromPantry = false) {
             this.suggesting = true;
             try {
                 const params = new URLSearchParams({ slot: s.slot });
                 // evita di riproporre il pasto attuale (varietà)
                 const cur = s.name || this.editForm.name;
                 if (cur) params.set('avoid', cur);
+                if (fromPantry) params.set('from_pantry', 'true');
                 const resp = await window.apiFetch('/routine/suggest?' + params);
                 if (!resp.ok) throw new Error((await resp.json()).detail || 'errore');
                 const p = await resp.json();
                 this.editForm.name = p.name || this.editForm.name;
                 this.editForm.ingredients = p.ingredients || [];
-                this.toast.add('Proposta pronta: rivedi e salva', 'success');
+                this.toast.add(fromPantry ? 'Proposta dalla dispensa: rivedi e salva'
+                                          : 'Proposta pronta: rivedi e salva', 'success');
             } catch (e) {
                 this.toast.add('Errore: ' + e.message, 'error');
             } finally {
