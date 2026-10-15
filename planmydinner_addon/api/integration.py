@@ -487,6 +487,7 @@ def get_integration_summary(
     days = []
     totals = {k: 0.0 for k in NUTRITION_KEYS}
     days_with_data = 0
+    today_iso = date.today().isoformat()
     current = start_date
     while current <= end_date:
         iso = current.isoformat()
@@ -576,6 +577,7 @@ def get_integration_summary(
             "not_eaten": not_eaten,
             "nutrition": None,
             "complete": is_complete,
+            "future": iso > today_iso,
             "has_estimated_meal": has_estimated_meal,
             "routine_kcal": round(routine_day["kcal"], 1) if routine_day else 0,
             "extra_kcal": round(extra_day["kcal"], 1) if extra_day else 0,
@@ -585,7 +587,8 @@ def get_integration_summary(
         if day_nutrition is not None:
             day_entry["nutrition"] = {k: round(day_nutrition[k], 1) for k in NUTRITION_KEYS}
             day_entry["nutrition"]["coverage"] = round(sum(coverages) / len(coverages), 2) if coverages else 1.0
-            if is_complete:
+            # i giorni FUTURI (non ancora vissuti) non entrano nella media "a oggi"
+            if is_complete and iso <= today_iso:
                 for k in NUTRITION_KEYS:
                     totals[k] += day_nutrition[k]
                 days_with_data += 1

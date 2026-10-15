@@ -82,7 +82,8 @@ const HistoryView = defineComponent({
                 <div v-for="d in summary.days" :key="'card-' + d.date" class="card hist-daycard" :id="'hist-' + d.date">
                     <div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;">
                         <strong style="text-transform:capitalize;">{{ dayLabel(d.date) }}</strong>
-                        <span v-if="d.nutrition" class="hint">
+                        <span v-if="d.future" class="hint" title="Giorno futuro: escluso dalle medie">· previsto</span>
+                        <span v-if="d.nutrition && !d.future" class="hint">
                             {{ Math.round(d.nutrition.kcal) }} kcal ·
                             P {{ Math.round(d.nutrition.protein_g) }}g ·
                             C {{ Math.round(d.nutrition.carbs_g) }}g ·
@@ -90,7 +91,7 @@ const HistoryView = defineComponent({
                             <template v-if="!d.complete">(parziale)</template>
                             <template v-else-if="d.has_estimated_meal">(≈ stima AI)</template>
                         </span>
-                        <span v-if="d.meals_planned" class="hint"
+                        <span v-if="d.meals_planned && !d.future" class="hint"
                               :style="d.main_consumed < d.meals_planned ? 'color:var(--text-3)' : 'color:var(--success)'"
                               title="Pranzo/cena segnati come mangiati (le medie contano solo i registrati)">
                             {{ d.main_consumed === d.meals_planned ? '✓' : '•' }}

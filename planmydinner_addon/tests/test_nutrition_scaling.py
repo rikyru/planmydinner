@@ -225,3 +225,11 @@ def test_summary_consumed_only_counts_only_eaten(client, setup_database):
     # indicatore "X/Y registrati"
     assert eaten["main_consumed"] == 1 and eaten["meals_planned"] == 2
     assert sched["main_consumed"] == 0              # disponibile anche senza consumed_only
+
+    # i giorni futuri sono marcati ed esclusi dalle medie "a oggi"
+    multi = client.get("/integration/summary", params={
+        "profile_id": "persona_a", "start_date": TODAY, "end_date": "2026-02-26",
+        "consumed_only": "true"}).json()
+    assert multi["days"][0]["future"] is False          # oggi
+    assert multi["days"][1]["future"] is True           # domani
+    assert multi["days"][2]["future"] is True
