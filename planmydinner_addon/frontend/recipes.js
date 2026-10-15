@@ -16,6 +16,9 @@ const Recipes = defineComponent({
                                :disabled="photoAnalyzing" @change="recipeFromPhoto">
                     </label>
                     <button @click="openAdd" class="btn-primary">+ Aggiungi ricetta</button>
+                    <button @click="importFromUrl" class="btn-secondary" :disabled="importing">
+                        {{ importing ? '📥 Importo…' : '📥 Importa da URL' }}
+                    </button>
                 </div>
             </div>
 
@@ -427,6 +430,7 @@ const Recipes = defineComponent({
             editedRecipe: this._emptyRecipe(),
             preview: null,          // anteprima nutrizionale della bozza
             previewLoading: false,
+            importing: false,       // import ricetta da URL in corso
             onlyToFix: false,       // filtro: solo ricette da sistemare
             onlyFav: false,         // filtro: solo preferiti
             search: '',             // ricerca per nome/ingrediente
@@ -848,7 +852,7 @@ const Recipes = defineComponent({
                 total_time_minutes: this.editedRecipe.total_time_minutes,
                 difficulty: this.editedRecipe.difficulty,
                 content,
-                steps: [],
+                steps: this.editedRecipe.steps || [],
                 tags: {
                     mood: [this.editedRecipe.mood],
                     cooking_methods: [this.editedRecipe.cooking_method],
@@ -885,6 +889,40 @@ const Recipes = defineComponent({
                 this.toast.add(`🗑️ ${result.deleted} ricette eliminate.`, 'success');
             } catch (e) {
                 this.toast.add('Errore: ' + e.message, 'error');
+            }
+        },
+        async importFromUrl() {
+            const url = (window.prompt('Incolla il link della ricetta da importare:') || '').trim();
+            if (!url) return;
+            this.importing = true;
+            try {
+                const resp = await window.apiFetch('/recipes/import-url', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ url }),
+                });
+                if (!resp.ok) {
+                    let msg = 'Errore import';
+                    try { msg = (await resp.json()).detail || msg; } catch {}
+                    throw new Error(msg);
+                }
+                const d = await resp.json();
+                const ings = (d.ingredients || []).map(i => ({
+                    name: i.name || '', food_group: i.food_group || 'altro', grams: i.grams || 0,
+                }));
+                this.editedRecipe = {
+                    id: null, name: d.name || '',
+                    total_time_minutes: d.total_time_minutes || 30,
+                    difficulty: d.difficulty || 'facile', mood: 'normale',
+                    cooking_method: 'tegame',
+                    ingredients: ings.length ? ings : [{ name: '', food_group: 'proteina', grams: 150 }],
+                    steps: d.steps || [],
+                };
+                this.showModal = true;
+                this.toast.add('Ricetta importata: controlla grammi/gruppi e salva.', 'success');
+            } catch (e) {
+                this.toast.add('Import fallito: ' + e.message, 'error');
+            } finally {
+                this.importing = false;
             }
         },
         _matchesQuery(r, q) {

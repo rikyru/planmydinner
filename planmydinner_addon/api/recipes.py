@@ -2,6 +2,10 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from typing import List, Optional, Any, Dict
 import uuid
+import json as _json
+import re as _re
+import html as _html
+import urllib.request as _urlreq
 
 from pydantic import BaseModel as _BaseModel
 from sqlalchemy.orm.attributes import flag_modified
@@ -49,6 +53,162 @@ router = APIRouter(
     prefix="/recipes",
     tags=["recipes"],
 )
+
+
+# ── Import ricetta da URL (Schema.org JSON-LD + LLM per strutturare) ──────────
+
+def _fetch_url(url: str) -> str:
+    req = _urlreq.Request(url, headers={"User-Agent": "Mozilla/5.0 (PlanMyDinner recipe import)"})
+    with _urlreq.urlopen(req, timeout=12) as resp:
+        charset = resp.headers.get_content_charset() or "utf-8"
+        raw = resp.read(2_000_000)   # cap 2 MB
+    return raw.decode(charset, errors="replace")
+
+
+def _strip_tags(s: str) -> str:
+    return _html.unescape(_re.sub(r"<[^>]+>", " ", s or "")).strip()
+
+
+def _as_str_list(val) -> List[str]:
+    if not val:
+        return []
+    if isinstance(val, str):
+        return [_strip_tags(val)]
+    out = []
+    for x in val:
+        if isinstance(x, str):
+            out.append(_strip_tags(x))
+        elif isinstance(x, dict):
+            out.append(_strip_tags(x.get("text") or x.get("name") or ""))
+    return [s for s in out if s]
+
+
+def _parse_instructions(val) -> List[str]:
+    if not val:
+        return []
+    if isinstance(val, str):
+        # a volte è un unico blocco: spezza su a capo / punti elenco
+        parts = _re.split(r"\n+|\r+", _strip_tags(val))
+        return [p.strip() for p in parts if p.strip()]
+    steps: List[str] = []
+    for x in val:
+        if isinstance(x, str):
+            steps.append(_strip_tags(x))
+        elif isinstance(x, dict):
+            if x.get("@type") == "HowToSection" and x.get("itemListElement"):
+                steps.extend(_parse_instructions(x["itemListElement"]))
+            else:
+                t = x.get("text") or x.get("name")
+                if t:
+                    steps.append(_strip_tags(t))
+    return [s for s in steps if s]
+
+
+def _iso_minutes(val) -> Optional[int]:
+    if not val or not isinstance(val, str):
+        return None
+    m = _re.match(r"P(?:\d+D)?T?(?:(\d+)H)?(?:(\d+)M)?", val.strip())
+    if not m:
+        return None
+    h, mi = int(m.group(1) or 0), int(m.group(2) or 0)
+    total = h * 60 + mi
+    return total or None
+
+
+def _find_recipe_node(obj) -> Optional[dict]:
+    found: List[dict] = []
+
+    def walk(o):
+        if isinstance(o, list):
+            for x in o:
+                walk(x)
+        elif isinstance(o, dict):
+            if "@graph" in o:
+                walk(o["@graph"])
+            t = o.get("@type")
+            types = t if isinstance(t, list) else [t]
+            if any(str(x).lower() == "recipe" for x in types):
+                found.append(o)
+
+    walk(obj)
+    return found[0] if found else None
+
+
+def _parse_jsonld_recipe(html_text: str) -> Optional[dict]:
+    for m in _re.finditer(r'<script[^>]+application/ld\+json[^>]*>(.*?)</script>',
+                          html_text, _re.S | _re.I):
+        try:
+            data = _json.loads(m.group(1).strip())
+        except Exception:
+            continue
+        node = _find_recipe_node(data)
+        if node:
+            return {
+                "name": _strip_tags(node.get("name") or ""),
+                "ingredients": _as_str_list(node.get("recipeIngredient") or node.get("ingredients")),
+                "steps": _parse_instructions(node.get("recipeInstructions")),
+                "minutes": _iso_minutes(node.get("totalTime") or node.get("cookTime")),
+            }
+    return None
+
+
+def _visible_text(html_text: str) -> str:
+    body = _re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", html_text, flags=_re.S | _re.I)
+    return _re.sub(r"\s+", " ", _strip_tags(body))
+
+
+class ImportUrlBody(_BaseModel):
+    url: str
+
+
+@router.post("/import-url")
+def import_recipe_from_url(body: ImportUrlBody, request: Request):
+    """Importa una ricetta da un link: estrae i dati Schema.org (JSON-LD) e, se
+    disponibile l'LLM, struttura gli ingredienti in food_group + grammi. Ritorna
+    una BOZZA (non salvata) da rivedere e salvare dall'editor ricette."""
+    url = (body.url or "").strip()
+    if not url.startswith(("http://", "https://")):
+        raise HTTPException(status_code=422, detail="Inserisci un URL valido (http/https).")
+    try:
+        html_text = _fetch_url(url)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Impossibile scaricare la pagina: {e}")
+
+    data = _parse_jsonld_recipe(html_text) or {}
+    name = data.get("name") or ""
+    ing_lines = data.get("ingredients") or []
+    steps = data.get("steps") or []
+    minutes = data.get("minutes") or 30
+
+    gw = getattr(request.app.state, "llm_gateway", None)
+    ingredients = None
+    if gw is not None and getattr(gw, "_client", None) is not None:
+        text = (f"{name}. Ingredienti: " + "; ".join(ing_lines)) if ing_lines \
+            else _visible_text(html_text)[:2500]
+        try:
+            structured = gw.estimate_meal_from_text(text)
+        except Exception:
+            structured = None
+        if structured and structured.get("ingredients"):
+            ingredients = structured["ingredients"]
+            name = name or structured.get("name") or ""
+
+    if ingredients is None:
+        # fallback senza LLM: righe grezze, l'utente mette gruppi/grammi nell'editor
+        ingredients = [{"name": line[:80], "food_group": "altro", "grams": 0}
+                       for line in ing_lines]
+
+    if not name and not ingredients:
+        raise HTTPException(status_code=422,
+                            detail="Nessuna ricetta riconosciuta in questa pagina.")
+    return {
+        "name": name or "Ricetta importata",
+        "total_time_minutes": minutes,
+        "difficulty": "facile",
+        "steps": steps,
+        "ingredients": ingredients,
+        "source_url": url,
+    }
 
 @router.post("/", response_model=schemas.Recipe)
 def create_recipe(recipe: schemas.RecipeCreate, db: Session = Depends(get_db)):

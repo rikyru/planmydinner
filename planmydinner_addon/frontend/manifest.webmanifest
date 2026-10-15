@@ -1,0 +1,13 @@
+{
+  "name": "Plan My Dinner",
+  "short_name": "Dinner",
+  "description": "Pianificatore pasti, dispensa e lista spesa",
+  "start_url": ".",
+  "scope": ".",
+  "display": "standalone",
+  "background_color": "#131712",
+  "theme_color": "#131712",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

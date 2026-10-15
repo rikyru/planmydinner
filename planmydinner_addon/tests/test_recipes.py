@@ -131,3 +131,26 @@ def test_recipe_rating(client, setup_database):
     client.post(f"/recipes/{rid}/rate", json={"rating": "none"})
     tags = client.get(f"/recipes/{rid}").json()["tags"]
     assert "disliked" not in tags and "favorite" not in tags
+
+
+def test_import_recipe_from_url_jsonld(client, setup_database, monkeypatch):
+    from planmydinner_addon.api import recipes as rec
+    html = ('<html><head><script type="application/ld+json">'
+            '{"@type":"Recipe","name":"Pasta al pomodoro",'
+            '"recipeIngredient":["200g pasta","100g pomodoro"],'
+            '"recipeInstructions":[{"@type":"HowToStep","text":"Bollire la pasta"},'
+            '{"@type":"HowToStep","text":"Condire"}],"totalTime":"PT25M"}'
+            '</script></head><body></body></html>')
+    monkeypatch.setattr(rec, "_fetch_url", lambda u: html)
+    r = client.post("/recipes/import-url", json={"url": "https://example.com/r"})
+    assert r.status_code == 200
+    d = r.json()
+    assert d["name"] == "Pasta al pomodoro"
+    assert d["total_time_minutes"] == 25
+    assert len(d["steps"]) == 2
+    assert any("pasta" in (i["name"] or "").lower() for i in d["ingredients"])
+
+
+def test_import_recipe_from_url_bad_url(client, setup_database):
+    r = client.post("/recipes/import-url", json={"url": "ftp://nope"})
+    assert r.status_code == 422

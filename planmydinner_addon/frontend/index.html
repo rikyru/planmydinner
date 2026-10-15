@@ -7,6 +7,12 @@
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🍽️</text></svg>">
     <meta name="theme-color" content="#f6f5ef" media="(prefers-color-scheme: light)">
     <meta name="theme-color" content="#131712" media="(prefers-color-scheme: dark)">
+    <!-- PWA minima: installabile ("Aggiungi a Home"), a schermo intero. -->
+    <link rel="manifest" href="manifest.webmanifest">
+    <link rel="apple-touch-icon" href="icon.svg">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-title" content="Dinner">
     <script>
         // Tema: applica subito la scelta salvata (prima del paint, evita flash).
         // ?theme=light|dark forza e salva la scelta (utile per test/kiosk).
@@ -115,7 +121,7 @@
         import ShoppingList from './shopping.js?v=8';
         import Pantry from './pantry.js?v=6';
         import Profiles from './profiles.js?v=6';
-        import Recipes from './recipes.js?v=18';
+        import Recipes from './recipes.js?v=19';
         import SettingsView from './settings.js?v=6';
         import HistoryView from './history.js?v=7';
 
