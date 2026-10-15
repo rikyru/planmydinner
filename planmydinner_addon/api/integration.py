@@ -472,18 +472,17 @@ def get_integration_summary(
             for k in NUTRITION_KEYS:
                 agg[k] += n[k]
 
-    # Con consumed_only: pranzo/cena contano nella nutrizione SOLO se davvero
-    # consumati (esiste un ConsumedEntry non "skipped"), non se solo schedulati.
+    # Pranzo/cena effettivamente consumati (ConsumedEntry non "skipped"): usato sia
+    # per l'indicatore "X/Y registrati" sia, con consumed_only, per le medie.
     consumed_main: set = set()
-    if consumed_only:
-        for e in db.query(ConsumedEntry).filter(
-            ConsumedEntry.profile_id == profile_id,
-            ConsumedEntry.date >= start_date.isoformat(),
-            ConsumedEntry.date <= end_date.isoformat(),
-            ConsumedEntry.meal_type.in_(["pranzo", "cena"]),
-        ).all():
-            if e.type != "skipped":
-                consumed_main.add((e.date, e.meal_type))
+    for e in db.query(ConsumedEntry).filter(
+        ConsumedEntry.profile_id == profile_id,
+        ConsumedEntry.date >= start_date.isoformat(),
+        ConsumedEntry.date <= end_date.isoformat(),
+        ConsumedEntry.meal_type.in_(["pranzo", "cena"]),
+    ).all():
+        if e.type != "skipped":
+            consumed_main.add((e.date, e.meal_type))
 
     days = []
     totals = {k: 0.0 for k in NUTRITION_KEYS}
@@ -493,6 +492,7 @@ def get_integration_summary(
         iso = current.isoformat()
         meals = meals_by_date.get(iso, [])
         planned = 0
+        main_consumed = 0
         free_meals = 0
         not_eaten = 0
         unestimated_free_meal = False
@@ -531,9 +531,10 @@ def get_integration_summary(
             recipe_id = items[0].get("recipe_id")
             if not recipe_id:
                 continue
-            # solo consumati: salta i pasti principali schedulati ma non mangiati
-            if consumed_only and (iso, meal.get("meal_type")) not in consumed_main:
-                continue
+            if (iso, meal.get("meal_type")) in consumed_main:
+                main_consumed += 1
+            elif consumed_only:
+                continue  # schedulato ma non consumato: fuori dalle medie
             # pranzo/cena: scaling per-componente (solo carboidrati) + olio stimato
             nutrition = _planned_nutrition(recipe_id, scale)
             if nutrition:
@@ -570,6 +571,7 @@ def get_integration_summary(
         day_entry: Dict[str, Any] = {
             "date": iso,
             "meals_planned": planned,
+            "main_consumed": main_consumed,
             "free_meals": free_meals,
             "not_eaten": not_eaten,
             "nutrition": None,

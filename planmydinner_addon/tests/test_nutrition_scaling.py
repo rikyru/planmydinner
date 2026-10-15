@@ -222,3 +222,6 @@ def test_summary_consumed_only_counts_only_eaten(client, setup_database):
 
     assert kc_eaten > kc_none                       # il pranzo consumato ora conta
     assert kc_eaten < sched["nutrition"]["kcal"]    # ma meno dello schedulato (cena non mangiata)
+    # indicatore "X/Y registrati"
+    assert eaten["main_consumed"] == 1 and eaten["meals_planned"] == 2
+    assert sched["main_consumed"] == 0              # disponibile anche senza consumed_only

@@ -90,6 +90,12 @@ const HistoryView = defineComponent({
                             <template v-if="!d.complete">(parziale)</template>
                             <template v-else-if="d.has_estimated_meal">(≈ stima AI)</template>
                         </span>
+                        <span v-if="d.meals_planned" class="hint"
+                              :style="d.main_consumed < d.meals_planned ? 'color:var(--text-3)' : 'color:var(--success)'"
+                              title="Pranzo/cena segnati come mangiati (le medie contano solo i registrati)">
+                            {{ d.main_consumed === d.meals_planned ? '✓' : '•' }}
+                            {{ d.main_consumed }}/{{ d.meals_planned }} registrati
+                        </span>
                         <span v-if="d.free_meals" class="meal-badge meal-badge--free"
                               :title="d.has_estimated_meal ? 'Kcal stimate dalla descrizione (AI)' : 'Calorie sconosciute: giorno escluso dalle medie'">
                             🎉 libero{{ d.has_estimated_meal ? ' ≈' : '' }}
