@@ -332,6 +332,7 @@ def get_integration_summary(
     profile_id: str,
     start_date: Optional[date] = None,
     end_date: Optional[date] = None,
+    consumed_only: bool = False,
     db: Session = Depends(get_db),
 ):
     """
@@ -471,6 +472,19 @@ def get_integration_summary(
             for k in NUTRITION_KEYS:
                 agg[k] += n[k]
 
+    # Con consumed_only: pranzo/cena contano nella nutrizione SOLO se davvero
+    # consumati (esiste un ConsumedEntry non "skipped"), non se solo schedulati.
+    consumed_main: set = set()
+    if consumed_only:
+        for e in db.query(ConsumedEntry).filter(
+            ConsumedEntry.profile_id == profile_id,
+            ConsumedEntry.date >= start_date.isoformat(),
+            ConsumedEntry.date <= end_date.isoformat(),
+            ConsumedEntry.meal_type.in_(["pranzo", "cena"]),
+        ).all():
+            if e.type != "skipped":
+                consumed_main.add((e.date, e.meal_type))
+
     days = []
     totals = {k: 0.0 for k in NUTRITION_KEYS}
     days_with_data = 0
@@ -516,6 +530,9 @@ def get_integration_summary(
             planned += 1
             recipe_id = items[0].get("recipe_id")
             if not recipe_id:
+                continue
+            # solo consumati: salta i pasti principali schedulati ma non mangiati
+            if consumed_only and (iso, meal.get("meal_type")) not in consumed_main:
                 continue
             # pranzo/cena: scaling per-componente (solo carboidrati) + olio stimato
             nutrition = _planned_nutrition(recipe_id, scale)

@@ -286,7 +286,10 @@ const HistoryView = defineComponent({
             this.loading = true;
             try {
                 const pid = this.profiles[0].id;
-                const params = new URLSearchParams({ profile_id: pid, start_date: this.start, end_date: this.end });
+                // Storico = diario del consumato: medie/nutrizione solo sui pasti
+                // davvero mangiati, non su quelli solo schedulati.
+                const params = new URLSearchParams({ profile_id: pid, start_date: this.start,
+                                                     end_date: this.end, consumed_only: 'true' });
                 const resp = await window.apiFetch('/integration/summary?' + params);
                 this.summary = resp.ok ? await resp.json() : null;
                 await this.loadPlanMeals(pid);

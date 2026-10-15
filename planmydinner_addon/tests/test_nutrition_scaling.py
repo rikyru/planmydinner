@@ -199,3 +199,26 @@ def test_shopping_list_honours_scale(setup_database):
     # groceries shrink with the scaled-down portions (pantry stock makes the
     # ratio non-linear, so we assert the direction and a meaningful reduction)
     assert after < before
+
+
+def test_summary_consumed_only_counts_only_eaten(client, setup_database):
+    import uuid
+    from planmydinner_addon.database import ConsumedEntry
+    db = setup_database
+    _save_plan(db)                      # pranzo + cena con ricetta, da TODAY
+    base = {"profile_id": "persona_a", "start_date": TODAY, "end_date": TODAY}
+
+    sched = client.get("/integration/summary", params=base).json()["days"][0]
+    assert sched["nutrition"] and sched["nutrition"]["kcal"] > 0   # schedulato: conta
+
+    only = client.get("/integration/summary", params={**base, "consumed_only": "true"}).json()["days"][0]
+    kc_none = (only["nutrition"] or {}).get("kcal", 0)             # nulla consumato → ~0
+
+    db.add(ConsumedEntry(id=str(uuid.uuid4()), profile_id="persona_a", date=TODAY,
+                         meal_type="pranzo", type="planned", consumed_recipe_id="pasta_pomodoro_recipe"))
+    db.commit()
+    eaten = client.get("/integration/summary", params={**base, "consumed_only": "true"}).json()["days"][0]
+    kc_eaten = (eaten["nutrition"] or {}).get("kcal", 0)
+
+    assert kc_eaten > kc_none                       # il pranzo consumato ora conta
+    assert kc_eaten < sched["nutrition"]["kcal"]    # ma meno dello schedulato (cena non mangiata)
