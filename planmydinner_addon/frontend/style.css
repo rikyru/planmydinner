@@ -814,3 +814,33 @@ input[type="checkbox"] { accent-color: var(--primary); }
 .mn-ing__table td.mn-hot { color: var(--warning); font-weight: 800; }
 .mn-est { font-size: 10px; color: var(--text-3); }
 .mn-adapt { margin-top: 8px; font-size: 12px; line-height: 1.4; color: var(--info); background: var(--info-soft); border-radius: var(--radius-xs); padding: 6px 9px; }
+
+/* Frequenze settimana vs piano nutrizionista */
+.freq-strip { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 12px; }
+.freq-strip__title { font-size: 11px; font-weight: 700; color: var(--text-3); text-transform: uppercase; letter-spacing: .05em; margin-right: 2px; }
+.freq-chip { font-size: 12px; font-weight: 600; padding: 4px 9px; border-radius: 99px; border: 1px solid var(--border); background: var(--surface); white-space: nowrap; }
+.freq-chip small { font-weight: 500; color: var(--text-3); }
+.freq-chip--ok    { color: var(--success); border-color: color-mix(in srgb, var(--success) 35%, transparent); }
+.freq-chip--under { color: var(--warning); border-color: color-mix(in srgb, var(--warning) 45%, transparent); background: var(--warning-soft); }
+.freq-chip--over  { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 40%, transparent); background: var(--danger-soft); }
+
+/* Selezione multipla → nuove idee */
+.meal-select { width: 20px; height: 20px; border-radius: 50%; border: 2px solid var(--border-strong); flex-shrink: 0;
+               display: inline-flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 800; color: var(--on-primary); }
+.meal-select.is-on { background: var(--primary); border-color: var(--primary); }
+.meal-select.is-locked { border: none; font-size: 13px; }
+.meal-row--selectable { cursor: pointer; }
+.meal-row--selected { background: var(--primary-softer); }
+.ideas-bar {
+    position: fixed; left: 50%; transform: translateX(-50%); bottom: 16px; z-index: 120;
+    width: min(640px, calc(100vw - 24px)); display: flex; flex-direction: column; gap: 8px;
+    background: var(--surface); border: 1px solid var(--primary); border-radius: var(--radius);
+    box-shadow: var(--shadow-2); padding: 10px 12px;
+}
+.ideas-bar__row { display: flex; align-items: center; gap: 8px; }
+.ideas-bar__row input { flex: 1; min-width: 0; font-size: 13px; padding: 8px 10px; }
+.ideas-bar__row .btn-fantasy { white-space: nowrap; }
+@media (max-width: 700px) {
+    .ideas-bar { bottom: calc(76px + env(safe-area-inset-bottom)); }
+}
+.week-layout.is-selecting { padding-bottom: 140px; }

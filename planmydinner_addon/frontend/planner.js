@@ -8,7 +8,7 @@ const WeekView = defineComponent({
     inject: ['toast'],
     components: { MensaModal, MealNutrition },
     template: `
-        <div class="week-layout" @click="closeMealMenu">
+        <div class="week-layout" :class="{ 'is-selecting': selecting }" @click="closeMealMenu">
 
             <!-- ── Sidebar ────────────────────────────────────────────── -->
             <aside class="week-sidebar">
@@ -33,6 +33,11 @@ const WeekView = defineComponent({
                     <button v-if="!loading && profiles.length >= 2" @click.stop="genOpen = !genOpen"
                             class="btn-secondary sidebar-btn gen-toggle">
                         ✨ Genera piano {{ genOpen ? '▴' : '▾' }}
+                    </button>
+                    <button v-if="!loading && profiles.length >= 2" @click.stop="toggleSelecting"
+                            class="sidebar-btn" :class="selecting ? 'btn-primary' : 'btn-secondary'"
+                            title="Seleziona più pasti e chiedi all'AI nuove idee (gusti, stagione, piano della nutrizionista)">
+                        {{ selecting ? '✕ Fine selezione' : '💡 Nuove idee' }}
                     </button>
                 </div>
                 <div class="sidebar-actions sidebar-gen" :class="{ open: genOpen }">
@@ -114,6 +119,16 @@ const WeekView = defineComponent({
                     </div>
                 </div>
 
+                <!-- Frequenze della settimana vs piano della nutrizionista -->
+                <div v-if="freqList.length" class="freq-strip">
+                    <span class="freq-strip__title">Piano nutrizionista</span>
+                    <span v-for="f in freqList" :key="f.cat" class="freq-chip" :class="'freq-chip--' + f.status"
+                          :title="f.label + ': ' + f.count + ' a settimana (piano ' + f.range + ')'">
+                        {{ f.label }} {{ f.count }}<small> · {{ f.range }}</small>
+                        {{ f.status === 'ok' ? '✓' : (f.status === 'under' ? '↑' : '↓') }}
+                    </span>
+                </div>
+
                 <!-- Griglia giorni -->
                 <div v-if="displayWeek" class="week-grid">
                     <article v-for="day in displayWeek" :key="day.date"
@@ -142,14 +157,19 @@ const WeekView = defineComponent({
                             <template v-if="day.meals && day.meals.length > 0">
                                 <div v-for="meal in day.meals" :key="meal.meal_type"
                                      class="meal-row"
-                                     draggable="true"
+                                     :draggable="!selecting"
                                      @dragstart="onDragStart(day, meal, $event)"
                                      @dragend="dragOver = null"
                                      @dragover.prevent
                                      @dragenter.prevent="dragOver = day.date + '_' + meal.meal_type"
                                      @drop.prevent="onDrop(day, meal)"
-                                     :class="{ 'meal-row--not-eaten': isNotEaten(meal), 'meal-row--free': isFree(meal), 'meal-row--dragover': dragOver === day.date + '_' + meal.meal_type }">
-                                    <div class="meal-row__info" @click.stop="openMealModal(day.date, meal)">
+                                     :class="{ 'meal-row--not-eaten': isNotEaten(meal), 'meal-row--free': isFree(meal), 'meal-row--dragover': dragOver === day.date + '_' + meal.meal_type,
+                                               'meal-row--selected': isSelected(day.date, meal.meal_type), 'meal-row--selectable': selecting }">
+                                    <div class="meal-row__info" @click.stop="onMealClick(day, meal)">
+                                        <span v-if="selecting" class="meal-select"
+                                              :class="{ 'is-on': isSelected(day.date, meal.meal_type), 'is-locked': isEaten(day.date, meal.meal_type) }">
+                                            {{ isEaten(day.date, meal.meal_type) ? '🔒' : (isSelected(day.date, meal.meal_type) ? '✓' : '') }}
+                                        </span>
                                         <span class="meal-row__icon">{{ meal.meal_type === 'pranzo' ? '☀️' : '🌙' }}</span>
                                         <span class="meal-row__type">{{ meal.meal_type === 'pranzo' ? 'Pranzo' : 'Cena' }}</span>
                                         <span v-if="isNotEaten(meal)" class="meal-badge meal-badge--not-eaten">✗</span>
@@ -188,6 +208,21 @@ const WeekView = defineComponent({
                             <div v-else class="no-meals">Nessun pasto pianificato</div>
                         </div>
                     </article>
+                </div>
+            </div>
+
+            <!-- ── Barra "nuove idee" (selezione multipla) ─────────────── -->
+            <div v-if="selecting" class="ideas-bar" @click.stop>
+                <div class="ideas-bar__row">
+                    <strong>{{ selected.length }} {{ selected.length === 1 ? 'pasto' : 'pasti' }}</strong>
+                    <span class="hint">tocca i pasti da cambiare</span>
+                    <button class="btn-sm btn-secondary" style="margin-left:auto" @click="toggleSelecting">Annulla</button>
+                </div>
+                <div class="ideas-bar__row">
+                    <input v-model="ideasNote" maxlength="200" placeholder="Cosa vorresti? (facoltativo)" title="es. veloce, niente pesce, qualcosa al forno">
+                    <button class="btn-fantasy" :disabled="!selected.length || ideasBusy" @click="submitNewIdeas">
+                        {{ ideasBusy ? '💡 Penso…' : '💡 Nuove idee' }}
+                    </button>
                 </div>
             </div>
 
@@ -743,6 +778,12 @@ const WeekView = defineComponent({
             weekPlan: null,
             // Nutrizione per giorno/pasto (GET /integration/summary?meal_detail=true)
             nutrition: null,
+            frequencies: null,   // GET /planner/week-frequencies
+            // Selezione multipla → nuove idee AI
+            selecting: false,
+            selected: [],        // ["2026-10-19_cena", ...]
+            ideasNote: '',
+            ideasBusy: false,
             genOpen: false,
             loading: false,
             error: null,
@@ -810,6 +851,16 @@ const WeekView = defineComponent({
         weekPlan: { deep: true, handler() { this.scheduleNutrition(); } },
     },
     computed: {
+        freqList() {
+            const labels = { carne_bianca: 'Carne bianca', carne_rossa: 'Carne rossa', pesce: 'Pesce',
+                             legumi: 'Legumi', uova: 'Uova', formaggio: 'Formaggio', proteina: 'Altre prot.' };
+            return Object.entries(this.frequencies || {})
+                .filter(([, f]) => f.min || f.max != null)   // solo categorie con indicazione del piano
+                .map(([cat, f]) => ({
+                    cat, label: labels[cat] || cat, count: f.count, status: f.status,
+                    range: f.max != null ? (f.min === f.max ? `${f.min}` : `${f.min}–${f.max}`) : `≥${f.min}`,
+                }));
+        },
         nutByDate() {
             const map = {};
             for (const d of this.nutrition?.days || []) map[d.date] = d;
@@ -930,6 +981,58 @@ const WeekView = defineComponent({
                 this.toast.add('Errore spostamento: ' + e.message, 'error');
             }
         },
+        // ── Selezione multipla → nuove idee AI ───────────────────────────────
+        toggleSelecting() {
+            this.selecting = !this.selecting;
+            this.selected = [];
+            this.activeMealMenu = null;
+        },
+        isSelected(date, mealType) { return this.selected.includes(date + '_' + mealType); },
+        isEaten(date, mealType) { return !!this.mealNut(date, mealType)?.consumed; },
+        onMealClick(day, meal) {
+            if (!this.selecting) return this.openMealModal(day.date, meal);
+            if (this.isEaten(day.date, meal.meal_type)) {
+                this.toast.add('Pasto già registrato: resta com\'è', 'info');
+                return;
+            }
+            const key = day.date + '_' + meal.meal_type;
+            const i = this.selected.indexOf(key);
+            if (i >= 0) this.selected.splice(i, 1); else this.selected.push(key);
+        },
+        async submitNewIdeas() {
+            if (!this.selected.length || !this.profileA) return;
+            this.ideasBusy = true;
+            try {
+                const slots = this.selected.map(k => {
+                    const [date, meal_type] = k.split('_');
+                    return { date, meal_type };
+                });
+                const resp = await window.apiFetch('/planner/new-ideas', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        profile_id_A: this.profileA.id, profile_id_B: this.profileB?.id || null,
+                        slots, note: this.ideasNote || null,
+                    }),
+                });
+                if (!resp.ok) {
+                    let msg = resp.statusText;
+                    try { msg = (await resp.json()).detail || msg; } catch {}
+                    throw new Error(msg);
+                }
+                const data = await resp.json();
+                const n = slots.length - (data.skipped || []).length;
+                this.toast.add(`💡 ${n} ${n === 1 ? 'nuova idea' : 'nuove idee'} nel piano`, 'success');
+                if ((data.skipped || []).length) this.toast.add(`${data.skipped.length} già registrati, lasciati com'erano`, 'info');
+                this.selecting = false;
+                this.selected = [];
+                this.ideasNote = '';
+                await this.loadWeekPlan();
+            } catch (e) {
+                this.toast.add('Nuove idee non riuscite: ' + e.message, 'error', 5000);
+            } finally {
+                this.ideasBusy = false;
+            }
+        },
         // ── Nutrizione per pasto ─────────────────────────────────────────────
         macroLine,
         dayNut(date) {
@@ -956,10 +1059,14 @@ const WeekView = defineComponent({
                 profile_id: this.profileA.id, start_date: start, meal_detail: 'true',
             });
             try {
-                const resp = await window.apiFetch('/integration/summary?' + params);
-                if (!resp.ok) return;
-                const data = await resp.json();
-                if (start === this.startDate) this.nutrition = data;   // ignora risposte di settimane vecchie
+                const [resp, fr] = await Promise.all([
+                    window.apiFetch('/integration/summary?' + params),
+                    window.apiFetch('/planner/week-frequencies?' + new URLSearchParams({
+                        profile_id_A: this.profileA.id, start_date: start })),
+                ]);
+                if (start !== this.startDate) return;   // ignora risposte di settimane vecchie
+                if (resp.ok) this.nutrition = await resp.json();
+                this.frequencies = fr.ok ? await fr.json() : null;
             } catch { /* best-effort: la griglia funziona anche senza */ }
         },
         // ── Dati ─────────────────────────────────────────────────────────────

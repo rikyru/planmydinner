@@ -166,3 +166,37 @@ def test_quota_raise_is_moderate_and_skips_fatty_proteins():
     assert 60 * lean["portions"]["gamberetti"] <= 90 + 0.5        # max 1,5× senza grammatura del piano
     fatty = plan_portions([_ing("Ricotta", "latticini", 80)], "persona_a", quota={"protein_g": 60})
     assert "ricotta" not in fatty["portions"]                      # formaggio: non si aumenta a quota
+
+
+def test_minimum_reached_by_repeating_when_repertoire_is_thin(setup_database):
+    db = setup_database
+    _recipe(db, "ceci1", "Ceci e pasta", [_ing("Ceci", "legumi", 80), _ing("Pasta", "carboidrati", 70)])
+    for i in range(4):
+        _recipe(db, f"pesce{i}", f"Pesce {i}", [_ing("Merluzzo", "pesce", 150), _ing("Riso", "carboidrati", 70)])
+        _eaten(db, f"pesce{i}", [1 + i, 5 + i, 9 + i])
+    _eaten(db, "ceci1", [20])
+    db.commit()
+    _rules(db, frequency_targets={"legumi": {"min": 3, "max": 5}, "pesce": {"min": 0, "max": 4}},
+           generation_slots={"pranzo": [], "cena": [0, 1, 2, 3, 4, 5, 6]})
+    pe = PlannerEngine(db)
+    plan = pe.generate_from_history("persona_a", "persona_b", TODAY)
+    picked = [m.items[0].recipe_id for d in plan for m in d.meals]
+    assert picked.count("ceci1") >= 3, picked
+    assert all(not (a == b == "ceci1") for a, b in zip(picked, picked[1:])), picked   # mai di fila
+
+
+def test_week_frequencies_endpoint(client, setup_database):
+    db = setup_database
+    _recipe(db, "ceci2", "Ceci", [_ing("Ceci", "legumi", 80)])
+    db.commit()
+    _rules(db, frequency_targets={"legumi": {"min": 2, "max": 4}, "uova": {"min": 1, "max": 3}})
+    db.add(GeneratedWeeklyPlan(
+        id="freq-plan", profile_id_A="persona_a", profile_id_B="persona_b",
+        week_start_date="2026-02-23", generated_at="2026-02-23",
+        daily_plans=[{"date": "2026-02-23", "meals": [{"meal_type": "cena", "items": [
+            {"item_name": "Ceci", "food_group": "recipe", "quantity": 1, "unit": "", "recipe_id": "ceci2"}]}]}]))
+    db.commit()
+    data = client.get("/planner/week-frequencies", params={
+        "profile_id_A": "persona_a", "start_date": "2026-02-23"}).json()
+    assert data["legumi"] == {"count": 1, "min": 2, "max": 4, "status": "under"}
+    assert data["uova"]["status"] == "under"

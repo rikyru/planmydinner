@@ -9,7 +9,7 @@ import logging
 
 _LOGGER = logging.getLogger(__name__)
 
-from pydantic import BaseModel as _BaseModel
+from pydantic import BaseModel as _BaseModel, Field
 from .. import schemas
 from .. import database
 from ..database import get_db, GeneratedWeeklyPlan
@@ -409,6 +409,70 @@ def generate_weekly_plan(
         llm_gateway=request.app.state.llm_gateway, today=current_date)
     _save_generated_plan(db, profile_id_A, profile_id_B, current_date, weekly_plan)
     return weekly_plan
+
+
+class NewIdeasSlot(_BaseModel):
+    date: date
+    meal_type: str = Field(..., pattern="^(pranzo|cena)$")
+
+
+class NewIdeasBody(_BaseModel):
+    profile_id_A: str
+    profile_id_B: Optional[str] = None
+    slots: List[NewIdeasSlot] = Field(..., min_length=1, max_length=14)
+    note: Optional[str] = None   # es. "qualcosa di veloce", "niente pesce"
+
+
+@router.post("/new-ideas")
+def new_ideas(body: NewIdeasBody, request: Request, db: Session = Depends(get_db)):
+    """Nuove idee AI per gli slot selezionati: rispettano rotazione e frequenze
+    della nutrizionista, alimenti/grammature del piano, esclusioni e stagionalità,
+    con lo stile dei piatti che mangi davvero e ricette fattibili. I pasti già
+    registrati restano intatti. Le porzioni vengono poi adattate alla quota."""
+    llm = request.app.state.llm_gateway
+    if llm is None or getattr(llm, "_client", None) is None:
+        raise HTTPException(status_code=503, detail="AI non disponibile: configura l'LLM in Impostazioni.")
+    slots = [(s.date, s.meal_type) for s in body.slots]
+    first, last = min(d for d, _ in slots), max(d for d, _ in slots)
+    for d in sorted({d for d, _ in slots}):
+        ensure_plan_for_date(db, body.profile_id_A, d, body.profile_id_B)
+    locked = collect_locked_slots(db, body.profile_id_A, first, last)
+
+    planner = PlannerEngine(db, llm_gateway=llm)
+    result = planner.generate_new_ideas(body.profile_id_A, body.profile_id_B, slots,
+                                        locked_by_date=locked, note=body.note)
+    if not result["days"] and not result["skipped"]:
+        raise HTTPException(status_code=404, detail="Nessun piano o regola del piano per queste date.")
+
+    # Porzioni adattate alla quota solo sui pasti appena proposti
+    from ..adaptation import adapt_plan_portions
+    skipped = {tuple(x) for x in result["skipped"]}
+    selected = {(d.isoformat(), mt) for d, mt in slots} - skipped
+    plans = {}
+    for d in {d for d, _ in slots}:
+        p = planner.find_plan_covering_date(body.profile_id_A, d)
+        if p is not None:
+            plans[p.id] = p
+    updated_days: Dict[str, Any] = {}
+    for plan in plans.values():
+        days = [schemas.DailyPlannedMeals.model_validate(dp) for dp in plan.daily_plans or []]
+        others = {(dp.date, m.meal_type) for dp in days for m in dp.meals} - selected
+        adapt_plan_portions(db, body.profile_id_A, days, llm_gateway=llm, skip=others)
+        plan.daily_plans = [dp.model_dump() for dp in days]
+        db.add(plan)
+        for dp in days:
+            if any((dp.date, mt) in selected for mt in ("pranzo", "cena")):
+                updated_days[dp.date] = dp.model_dump()
+    db.commit()
+    return {"days": [updated_days[k] for k in sorted(updated_days)],
+            "skipped": [{"date": d, "meal_type": mt} for d, mt in sorted(skipped)]}
+
+
+@router.get("/week-frequencies")
+def get_week_frequencies(profile_id_A: str, start_date: date, db: Session = Depends(get_db)):
+    """Quante volte compare ogni categoria proteica nella settimana (piano +
+    pasti registrati) rispetto alle frequenze del piano della nutrizionista."""
+    return PlannerEngine(db).week_frequencies(profile_id_A, start_date)
 
 
 @router.post("/regenerate-day", response_model=schemas.DailyPlannedMeals)

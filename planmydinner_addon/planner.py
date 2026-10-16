@@ -1791,8 +1791,12 @@ class PlannerEngine:
         profile_id_B: Optional[str],
         current_date: date,
         locked_meals: Optional[Dict[str, dict]] = None,
+        only_meal_types: Optional[List[str]] = None,
     ) -> Optional[schemas.DailyPlannedMeals]:
         """
+        only_meal_types: rigenera SOLO questi pasti (scelti dall'utente, anche fuori
+        dagli slot di generazione abituali); gli altri del giorno restano com'erano.
+
         Rigenera con l'AI un solo giorno del piano (pranzo + cena). A differenza di
         ExtraFantasy per singolo pasto (che chiama l'LLM senza sapere nulla del
         resto della settimana), qui si ricostruisce prima il contesto dagli altri
@@ -1857,11 +1861,9 @@ class PlannerEngine:
         # Le categorie gia' usate negli altri giorni sono in protein_cat_counts: la
         # sequenza viene calcolata solo per gli slot di OGGI, partendo da quei totali,
         # cosi' il giorno rigenerato completa il piano invece di ricominciarlo.
-        meal_types = [
-            mt for mt in MEAL_TYPES
-            if current_date.weekday() in slots_config.get(mt, [])
-            and mt not in (locked_meals or {})
-        ]
+        day_meal_types = (list(only_meal_types) if only_meal_types is not None else
+                          [mt for mt in MEAL_TYPES if current_date.weekday() in slots_config.get(mt, [])])
+        meal_types = [mt for mt in day_meal_types if mt not in (locked_meals or {})]
         protein_sequence = self._build_protein_sequence(
             rules.frequency_targets,
             slot_plan=[(day_index, mt) for mt in meal_types],
@@ -1877,7 +1879,7 @@ class PlannerEngine:
             used_recipe_ids=used_recipe_ids, used_fingerprints=used_fingerprints,
             used_vegs=used_vegs, recently_selected=recently_selected, fantasy_mode=True,
             locked_meals=locked_meals,
-            meal_types=[mt for mt in MEAL_TYPES if current_date.weekday() in slots_config.get(mt, [])],
+            meal_types=day_meal_types,
         )
 
         import copy
@@ -1889,6 +1891,79 @@ class PlannerEngine:
         self.db.add(target_plan)
         self.db.commit()
         return generated_day
+
+    def generate_new_ideas(
+        self,
+        profile_id_A: str,
+        profile_id_B: Optional[str],
+        slots: List[Tuple[date, str]],
+        locked_by_date: Dict[str, Dict[str, dict]],
+        note: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Nuove idee AI per gli slot scelti dall'utente, nel contesto del piano:
+        rotazione e frequenze della nutrizionista, alimenti e grammature del piano,
+        esclusioni, stagionalità, stile dei piatti che l'utente mangia davvero e
+        fattibilità. I pasti registrati (locked_by_date) non si toccano.
+        Ritorna {"days": [DailyPlannedMeals], "skipped": [(date, meal_type)]}."""
+        from .seasonality_it import SEASONAL_IT, month_name
+        by_date: Dict[date, List[str]] = {}
+        skipped = []
+        for d, mt in slots:
+            if mt in (locked_by_date.get(d.isoformat()) or {}):
+                skipped.append((d.isoformat(), mt))   # già mangiato: resta com'è
+                continue
+            by_date.setdefault(d, [])
+            if mt not in by_date[d]:
+                by_date[d].append(mt)
+        if not by_date:
+            return {"days": [], "skipped": skipped}
+
+        # Contesto per l'AI: gusti (piatti abituali), stagione, fattibilità, richiesta
+        first = min(by_date)
+        pids = [profile_id_A] + ([profile_id_B] if profile_id_B else [])
+        aff = self._history_affinity_map(pids, first)
+        habitual = []
+        for rid, _w in sorted(aff.items(), key=lambda x: -x[1]):
+            rec = self.db.query(Recipe).filter(Recipe.id == rid).first()
+            if rec and rec.name:
+                habitual.append(rec.name)
+            if len(habitual) >= 12:
+                break
+        seasonal_db = [name for name, it in self._get_seasonality_data().items()
+                       if first.month in (it.months_in_season or [])]
+        seasonal = seasonal_db or SEASONAL_IT.get(first.month, [])
+        lines = ["CONTESTO DELLA RICHIESTA:"]
+        if habitual:
+            lines.append("- Piatti che l'utente mangia davvero (riferimento per gusti, stile e "
+                         "semplicità; NON riproporli uguali): " + "; ".join(habitual))
+        if seasonal:
+            lines.append(f"- Siamo a {month_name(first.month)}: preferisci verdure di stagione "
+                         f"come {', '.join(seasonal[:12])}.")
+        lines.append("- Ricetta casalinga e FATTIBILE in un giorno feriale: massimo ~35 minuti, "
+                     "ingredienti comuni da supermercato italiano, niente preparazioni da ristorante.")
+        if note and note.strip():
+            lines.append(f"- Richiesta dell'utente: {note.strip()[:300]}")
+        self._extra_prompt_note = "\n".join(lines)
+
+        days = []
+        try:
+            for d in sorted(by_date):
+                plan = self.find_plan_covering_date(profile_id_A, d)
+                current = next((dp for dp in (plan.daily_plans if plan else []) or []
+                                if dp.get("date") == d.isoformat()), None)
+                # bloccati: registrati + pasti del giorno NON selezionati (restano com'erano)
+                locked = dict(locked_by_date.get(d.isoformat()) or {})
+                for m in (current or {}).get("meals", []):
+                    if m.get("meal_type") not in by_date[d] and m.get("items"):
+                        locked.setdefault(m["meal_type"], m["items"][0])
+                day = self.regenerate_day_with_ai(
+                    profile_id_A, profile_id_B, d, locked_meals=locked,
+                    only_meal_types=by_date[d])
+                if day is not None:
+                    days.append(day)
+        finally:
+            self._extra_prompt_note = None
+        return {"days": days, "skipped": skipped}
 
     def _apply_generation_slots(
         self,
@@ -2094,6 +2169,14 @@ class PlannerEngine:
                 avail = [r for r in ranked if r.id not in used and r.id != last_id]
             if not avail:
                 return None
+            deficit = {c: m - counts.get(c, 0) for c, m in mins.items() if m - counts.get(c, 0) > 0}
+            # per arrivare ai minimi del piano si possono riproporre (non di fila)
+            # ricette già usate delle categorie in deficit, se mancano alternative
+            avail_ids = {r.id for r in avail}
+            repeats = [r for r in ranked if cat_of[r.id] in deficit and r.id not in avail_ids
+                       and r.id not in locked_ids and r.id != last_id]
+            avail = avail + repeats
+
             # mai oltre il massimo settimanale della categoria: piuttosto si ripete
             # una ricetta già proposta (non di fila) che rientra nei limiti
             def _ok(r):
@@ -2103,19 +2186,23 @@ class PlannerEngine:
             if not within:
                 within = [r for r in ranked if r.id not in locked_ids and r.id != last_id and _ok(r)]
             pool = within or avail
-            deficit = {c: m - counts.get(c, 0) for c, m in mins.items() if m - counts.get(c, 0) > 0}
             if deficit and sum(deficit.values()) >= remaining:
                 # restano giusto gli slot per arrivare ai minimi: solo categorie in deficit
                 forced = [r for r in pool if cat_of[r.id] in deficit]
                 pool = forced or pool
+            repeat_ids = {r.id for r in repeats}
             rank = {r.id: i for i, r in enumerate(ranked)}
 
             def score(r):
                 sc = -rank[r.id]                          # quanto la mangi (storico)
                 if cat_of[r.id] in deficit:
-                    sc += 3                               # categoria sotto il minimo
+                    # categoria sotto il minimo: più urgente quanto meno slot restano,
+                    # così le ripetute si distribuiscono nella settimana
+                    sc += 1 + len(ranked) * deficit[cat_of[r.id]] / max(remaining, 1)
                 if cat_of[r.id] and cat_of[r.id] in day_cats:
                     sc -= 5                               # stessa proteina a pranzo e cena
+                if r.id in repeat_ids:
+                    sc -= 1                               # ripetizione: meglio una ricetta nuova
                 return sc
             return max(pool, key=score)
 
@@ -2150,6 +2237,33 @@ class PlannerEngine:
         _LOGGER.info(f"[storico] piano da {len(ranked)} ricette, {len(locked_ids)} già fissate, "
                      f"categorie {counts}")
         return plan
+
+    def week_frequencies(self, profile_id_A: str, start_date: date) -> Dict[str, Any]:
+        """Categorie proteiche della settimana (piano + pasti registrati) contro le
+        frequenze della nutrizionista: {categoria: {count, min, max, status}}."""
+        rules = self._get_latest_plan_rules(profile_id_A)
+        targets = (rules.frequency_targets if rules else None) or {}
+        plan = self.find_plan_covering_date(profile_id_A, start_date)
+        counts: Dict[str, int] = {}
+        end = (start_date + timedelta(days=6)).isoformat()
+        for d in (plan.daily_plans if plan else []) or []:
+            if not (start_date.isoformat() <= d.get("date", "") <= end):
+                continue
+            for m in d.get("meals", []):
+                it = (m.get("items") or [{}])[0]
+                if it.get("food_group") in ("free_meal", "not_eaten"):
+                    continue
+                cat = self._recipe_protein_category(it.get("recipe_id"))
+                if cat:
+                    counts[cat] = counts.get(cat, 0) + 1
+        out = {}
+        for cat in sorted(set(targets) | set(counts)):
+            t = targets.get(cat) or {}
+            lo, hi = int(t.get("min") or 0), t.get("max")
+            n = counts.get(cat, 0)
+            status = "under" if n < lo else ("over" if hi is not None and n > int(hi) else "ok")
+            out[cat] = {"count": n, "min": lo, "max": hi, "status": status}
+        return out
 
     def _recipe_protein_category(self, recipe_id: Optional[str]) -> Optional[str]:
         """Categoria proteica canonica (carne_bianca, legumi, pesce...) della
@@ -3103,6 +3217,10 @@ class PlannerEngine:
 
         if exclusions:
             prompt += f"\n\nINGREDIENTI VIETATI (allergie/esclusioni): {', '.join(exclusions)}. Non includerli MAI."
+        # contesto extra della richiesta "nuove idee" (stile, stagione, fattibilità)
+        extra_note = getattr(self, "_extra_prompt_note", None)
+        if extra_note:
+            prompt += "\n\n" + extra_note
 
         return prompt, carb_target, protein_target, carb_options_list, protein_options_list
 

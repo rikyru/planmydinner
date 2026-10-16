@@ -217,3 +217,56 @@ class TestRegenerateDayEndpoint:
         data = resp.json()
         assert data["date"] == target_date.isoformat()
         assert len(data["meals"]) == 2
+
+
+class TestNewIdeas:
+    def test_only_selected_slots_change_and_eaten_are_skipped(self, rotation_db):
+        db, ids = rotation_db
+        target = MONDAY + timedelta(days=6)
+        plan = _make_week_plan(db, ids, target, [ids["pollo1"], ids["pollo2"]])
+        before = {dp["date"]: dp["meals"] for dp in plan.daily_plans}
+        planner = PlannerEngine(db)
+        # domenica: solo la cena; sabato pranzo risulta già mangiato
+        sat = (target - timedelta(days=1)).isoformat()
+        res = planner.generate_new_ideas(
+            "aa", "bb", [(target, "cena"), (target - timedelta(days=1), "pranzo")],
+            locked_by_date={sat: {"pranzo": before[sat][0]["items"][0]}})
+        assert res["skipped"] == [(sat, "pranzo")]
+        db.expire_all()
+        after = {dp["date"]: dp["meals"] for dp in
+                 db.query(GeneratedWeeklyPlan).filter(GeneratedWeeklyPlan.id == plan.id).first().daily_plans}
+        sun_before = {m["meal_type"]: m for m in before[target.isoformat()]}
+        sun_after = {m["meal_type"]: m for m in after[target.isoformat()]}
+        assert sun_after["pranzo"]["items"][0]["recipe_id"] == \
+            sun_before["pranzo"]["items"][0]["recipe_id"]             # non selezionato: intatto
+        assert sun_after["cena"]["items"][0]["recipe_id"] != ids["legumi1"]   # nuova idea
+        assert [m["items"][0]["recipe_id"] for m in after[sat]] == \
+            [m["items"][0]["recipe_id"] for m in before[sat]]          # già mangiato: intatto
+
+    def test_prompt_context_has_tastes_season_feasibility_and_note(self, rotation_db, monkeypatch):
+        db, ids = rotation_db
+        target = MONDAY + timedelta(days=6)
+        _make_week_plan(db, ids, target, [ids["pollo1"], ids["pollo2"]])
+        planner = PlannerEngine(db)
+        monkeypatch.setattr(planner, "_history_affinity_map", lambda *a, **k: {})
+        seen = {}
+
+        def fake_regen(*a, **k):
+            seen["note"] = planner._extra_prompt_note
+            seen["only"] = k.get("only_meal_types")
+            return None
+        monkeypatch.setattr(planner, "regenerate_day_with_ai", fake_regen)
+        planner.generate_new_ideas("aa", "bb", [(target, "cena")], locked_by_date={},
+                                   note="niente pesce, veloce")
+        assert seen["only"] == ["cena"]
+        note = seen["note"]
+        assert "marzo" in note and "carciofi" in note            # stagione (calendario di base)
+        assert "35 minuti" in note                               # fattibilità
+        assert "niente pesce, veloce" in note                    # richiesta dell'utente
+        assert planner._extra_prompt_note is None                # ripulito dopo l'uso
+
+    def test_endpoint_needs_ai(self, client, rotation_db):
+        resp = client.post("/planner/new-ideas", json={
+            "profile_id_A": "aa", "profile_id_B": "bb",
+            "slots": [{"date": MONDAY.isoformat(), "meal_type": "cena"}]})
+        assert resp.status_code == 503
