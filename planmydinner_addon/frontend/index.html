@@ -25,7 +25,7 @@
             } catch {}
         })();
     </script>
-    <link rel="stylesheet" href="style.css?v=33">
+    <link rel="stylesheet" href="style.css?v=34">
     <script type="importmap">
       {
         "imports": {
@@ -77,7 +77,14 @@
                    :class="{active: page === p.id}">
                     <span style="font-size:18px">{{ p.icon }}</span> {{ p.label }}
                 </a>
+                <div v-if="appVersion" class="hint" style="text-align:center;padding:8px 0 2px;">Plan My Dinner v{{ appVersion }}</div>
             </div>
+        </div>
+
+        <!-- Nuova versione sul server: la pagina aperta è vecchia -->
+        <div v-if="updateAvailable" class="update-banner">
+            <span>✨ Nuova versione disponibile ({{ updateAvailable }})</span>
+            <button class="btn-sm btn-primary" @click="reloadApp">Ricarica</button>
         </div>
 
         <!-- Toast container -->
@@ -122,7 +129,7 @@
         import Pantry from './pantry.js?v=7';
         import Profiles from './profiles.js?v=6';
         import Recipes from './recipes.js?v=20';
-        import SettingsView from './settings.js?v=6';
+        import SettingsView from './settings.js?v=7';
         import HistoryView from './history.js?v=11';
 
         const toastState = reactive({ items: [] });
@@ -160,12 +167,20 @@
                     pages: PAGES,
                     moreOpen: false,
                     theme: stored || system,
+                    appVersion: window.__APP_VERSION__ || null,
+                    updateAvailable: null,   // versione sul server se diversa da quella caricata
                 };
             },
             watch: {
                 page(val) { try { history.replaceState(null, '', '#' + val); } catch {} },
             },
             mounted() {
+                // Avvisa se sul server gira una versione diversa da quella caricata
+                // (PWA/browser rimasti aperti dopo un deploy).
+                this.checkVersion();
+                document.addEventListener('visibilitychange', () => {
+                    if (document.visibilityState === 'visible') this.checkVersion();
+                });
                 window.addEventListener('hashchange', () => {
                     const h = location.hash.replace('#', '');
                     if (PAGES.some(p => p.id === h)) this.page = h;
@@ -177,6 +192,19 @@
                 isMorePage() { return this.morePages.some(p => p.id === this.page); },
             },
             methods: {
+                async checkVersion() {
+                    if (!this.appVersion) return;
+                    const now = Date.now();
+                    if (this._lastVersionCheck && now - this._lastVersionCheck < 60000) return;
+                    this._lastVersionCheck = now;
+                    try {
+                        const r = await window.apiFetch('/meta/version', { cache: 'no-store' });
+                        if (!r.ok) return;
+                        const v = (await r.json()).version;
+                        this.updateAvailable = v && v !== this.appVersion ? v : null;
+                    } catch {}
+                },
+                reloadApp() { location.reload(); },
                 toggleTheme() {
                     this.theme = this.theme === 'dark' ? 'light' : 'dark';
                     document.documentElement.dataset.theme = this.theme;

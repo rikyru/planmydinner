@@ -134,7 +134,7 @@ app.add_middleware(
 # X-API-Key (o ?api_key=). Se non impostata, l'API resta aperta come prima.
 # Esenti: web UI statica, root redirect e health check.
 _API_KEY = os.getenv("API_KEY", "").strip()
-_AUTH_EXEMPT_PATHS = {"/", "/health"}
+_AUTH_EXEMPT_PATHS = {"/", "/health", "/meta/version"}
 
 
 @app.middleware("http")
@@ -146,6 +146,25 @@ async def _api_key_middleware(request: Request, call_next):
         if not exempt and provided != _API_KEY:
             return JSONResponse({"detail": "Invalid or missing X-API-Key"}, status_code=401)
     return await call_next(request)
+
+def _read_app_version() -> str:
+    """Versione del progetto da config.yaml (la stessa che vede HA)."""
+    import re
+    try:
+        with open(os.path.join(os.path.dirname(__file__), "config.yaml"), encoding="utf-8") as f:
+            m = re.search(r'^version:\s*"?([^"\n]+)"?', f.read(), re.MULTILINE)
+        return m.group(1).strip() if m else "dev"
+    except OSError:
+        return "dev"
+
+
+APP_VERSION = _read_app_version()
+
+
+@app.get("/meta/version", include_in_schema=False)
+async def meta_version():
+    return JSONResponse({"version": APP_VERSION}, headers={"Cache-Control": "no-store"})
+
 
 @app.get("/meta/info", include_in_schema=False)
 async def meta_info(request: Request):
@@ -167,8 +186,11 @@ async def serve_ui_index(request: Request):
     with open(index_path, "r", encoding="utf-8") as f:
         html = f.read()
     # Inject <base href> as first child of <head> so all relative URLs resolve correctly
-    html = html.replace("<head>", f'<head>\n    <base href="{base_href}">', 1)
-    return HTMLResponse(html)
+    html = html.replace("<head>", f'<head>\n    <base href="{base_href}">'
+                        f'\n    <script>window.__APP_VERSION__ = "{APP_VERSION}";</script>', 1)
+    # La pagina va sempre rivalidata: è lei a puntare agli script con ?v=,
+    # una copia vecchia (browser/PWA) caricherebbe la versione precedente.
+    return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
 
 class RevalidatingStaticFiles(StaticFiles):
     """

@@ -220,10 +220,30 @@ const SettingsView = defineComponent({
                     </button>
                 </div>
             </div>
+
+            <!-- ── Informazioni: versione ── -->
+            <div class="settings-section">
+                <h3 class="settings-section__title">ℹ️ Informazioni</h3>
+                <div class="settings-section__body">
+                    <div class="settings-field">
+                        <label>Versione</label>
+                        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+                            <strong style="font-size:15px;">{{ loadedVersion || '—' }}</strong>
+                            <span v-if="serverVersion && loadedVersion && serverVersion !== loadedVersion" class="hint">
+                                sul server c'è la {{ serverVersion }}
+                            </span>
+                            <span v-else-if="serverVersion" class="hint">aggiornata</span>
+                            <button class="btn-sm btn-secondary" @click="reloadApp">↻ Ricarica app</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
         </div>
     `,
     data() {
         return {
+            loadedVersion: window.__APP_VERSION__ || null,
+            serverVersion: null,
             config: {
                 llm_provider: 'openai',
                 llm_model: '',
@@ -257,11 +277,19 @@ const SettingsView = defineComponent({
         },
     },
     mounted() {
+        this.loadServerVersion();
         this.loadSettings();
         this.loadCacheStats();
         this.loadVacation();
     },
     methods: {
+        async loadServerVersion() {
+            try {
+                const r = await window.apiFetch('/meta/version', { cache: 'no-store' });
+                if (r.ok) this.serverVersion = (await r.json()).version;
+            } catch { /* opzionale */ }
+        },
+        reloadApp() { location.reload(); },
         async loadSettings() {
             try {
                 const resp = await window.apiFetch('/settings/');
