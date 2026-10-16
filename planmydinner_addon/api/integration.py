@@ -547,8 +547,8 @@ def get_integration_summary(
         meal_rows: Dict[str, Dict[str, Any]] = {}   # meal_type → dettaglio (meal_detail)
         for meal in meals:
             items = meal.get("items", [])
-            if not items:
-                continue
+            if not items or meal.get("meal_type") not in MAIN_MEALS:
+                continue   # colazione/merende si contano dalle ConsumedEntry (routine)
             # Portion multiplier set by the scaling pass (1.0 = unscaled).
             scale = meal.get("scale", 1.0) or 1.0
             fg = items[0].get("food_group")

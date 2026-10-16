@@ -341,7 +341,9 @@ def _apply_mensa_to_plan(db: Session, profile_id: str, meal_date: str, meal_type
     e non la ricetta suggerita. Se la settimana non ha ancora un piano ne crea
     uno vuoto, così si può registrare un pasto anche senza aver generato nulla.
     Ritorna False se la data non è valida."""
-    from .planner import ensure_plan_for_date, _set_day_slot
+    from .planner import PLAN_MEAL_TYPES, ensure_plan_for_date, _set_day_slot
+    if meal_type not in PLAN_MEAL_TYPES:
+        return False   # colazione/merende: basta la ConsumedEntry, il piano ha solo pranzo/cena
     try:
         target = date.fromisoformat(meal_date)
     except ValueError:

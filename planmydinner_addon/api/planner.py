@@ -1608,10 +1608,40 @@ def move_meal(body: MoveMealBody, db: Session = Depends(get_db)):
     return {"moved": True}
 
 
+PLAN_MEAL_TYPES = ("pranzo", "cena")
+
+
+def purge_non_plan_slots(db: Session) -> int:
+    """Rimuove dai piani salvati gli slot diversi da pranzo/cena (scritti da
+    versioni precedenti registrando una merenda da foto). Idempotente."""
+    removed = 0
+    for plan in db.query(GeneratedWeeklyPlan).all():
+        days = plan.daily_plans or []
+        if not any(m.get("meal_type") not in PLAN_MEAL_TYPES
+                   for d in days for m in d.get("meals", [])):
+            continue
+        cleaned = copy.deepcopy(days)
+        for d in cleaned:
+            before = len(d.get("meals", []))
+            d["meals"] = [m for m in d.get("meals", []) if m.get("meal_type") in PLAN_MEAL_TYPES]
+            removed += before - len(d["meals"])
+        plan.daily_plans = cleaned
+        db.add(plan)
+    if removed:
+        db.commit()
+        _LOGGER.warning(f"Rimossi {removed} slot non pranzo/cena dai piani salvati")
+    return removed
+
+
 def _set_day_slot(daily_plans: list, iso: str, meal_type: str, item: Optional[dict]) -> bool:
     """Imposta l'item di uno slot (pranzo/cena) di un giorno; se lo slot non
     esiste (es. pranzo non generato nei feriali) lo CREA. item=None svuota lo
-    slot. Ritorna True se il giorno è presente nel piano."""
+    slot. Ritorna True se il giorno è presente nel piano.
+    Il piano contiene solo pranzo e cena: altri slot (colazione, merende)
+    vivono solo come ConsumedEntry e qui vengono ignorati, altrimenti il piano
+    salvato non passa più la validazione e la Settimana va in errore."""
+    if meal_type not in PLAN_MEAL_TYPES:
+        return False
     for day in daily_plans:
         if day.get("date") == iso:
             items = [item] if item is not None else []

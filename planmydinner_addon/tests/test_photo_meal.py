@@ -183,6 +183,49 @@ class TestMensaCatalog:
         # la cena non viene toccata
         assert plan.daily_plans[0]["meals"][1]["items"] == []
 
+    def test_snack_from_photo_does_not_touch_plan(self, client, setup_database):
+        """Una merenda da foto si registra ma NON entra nel piano: il piano ha
+        solo pranzo/cena e uno slot extra faceva andare in errore la Settimana."""
+        db = setup_database
+        db.add(GeneratedWeeklyPlan(
+            id="plan-snack", profile_id_A="persona_a", profile_id_B="persona_b",
+            week_start_date="2026-02-23", generated_at="2026-02-23",
+            daily_plans=[{"date": "2026-02-24", "meals": [
+                {"meal_type": "pranzo", "items": []}, {"meal_type": "cena", "items": []}]}],
+        ))
+        db.commit()
+        resp = client.post("/consumed-entries/mensa", json={
+            "profile_id": "persona_a", "date": "2026-02-24", "meal_type": "merenda_tardo",
+            "name": "Trancio di pizza",
+            "ingredients": [{"name": "pane", "food_group": "carboidrati", "grams": 100}],
+        })
+        assert resp.status_code == 200
+        db.expire_all()
+        plan = db.query(GeneratedWeeklyPlan).filter(GeneratedWeeklyPlan.id == "plan-snack").first()
+        assert [m["meal_type"] for m in plan.daily_plans[0]["meals"]] == ["pranzo", "cena"]
+        resp = client.get("/planner/weekly-plan", params={
+            "profile_id_A": "persona_a", "profile_id_B": "persona_b", "start_date": "2026-02-23"})
+        assert resp.status_code == 200
+
+    def test_purge_repairs_plans_with_snack_slots(self, client, setup_database):
+        from planmydinner_addon.api.planner import purge_non_plan_slots
+        db = setup_database
+        db.add(GeneratedWeeklyPlan(
+            id="plan-broken", profile_id_A="persona_a", profile_id_B="persona_b",
+            week_start_date="2026-02-23", generated_at="2026-02-23",
+            daily_plans=[{"date": "2026-02-24", "meals": [
+                {"meal_type": "pranzo", "items": []},
+                {"meal_type": "merenda_tardo", "items": [{"item_name": "x", "food_group": "mensa",
+                                                          "quantity": 1, "unit": "recipe"}]},
+            ]}],
+        ))
+        db.commit()
+        assert purge_non_plan_slots(db) == 1
+        assert purge_non_plan_slots(db) == 0   # idempotente
+        db.expire_all()
+        plan = db.query(GeneratedWeeklyPlan).filter(GeneratedWeeklyPlan.id == "plan-broken").first()
+        assert [m["meal_type"] for m in plan.daily_plans[0]["meals"]] == ["pranzo"]
+
     def test_update_and_delete_mensa_meal(self, client, setup_database):
         resp = client.post("/consumed-entries/mensa", json={
             "profile_id": "persona_a", "date": "2026-02-24", "meal_type": "pranzo",

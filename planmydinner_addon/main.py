@@ -51,6 +51,14 @@ async def lifespan(app: FastAPI):
     """
     print("Starting up...")
     create_db_and_tables()
+    # Ripara piani salvati con slot non pranzo/cena (merende da foto, <1.16.3)
+    try:
+        from .database import SessionLocal as _Session
+        from .api.planner import purge_non_plan_slots
+        with _Session() as _db:
+            purge_non_plan_slots(_db)
+    except Exception as e:
+        print(f"purge_non_plan_slots fallito: {e}")
 
     # Initialize LLMGateway
     llm_provider = os.getenv("LLM_PROVIDER", "ollama")

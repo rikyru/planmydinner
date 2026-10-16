@@ -184,9 +184,9 @@ class TestSummaryMealDetail:
         # pasta al pomodoro: proteine lontanissime da 45 g → suggerimento
         assert pranzo["ok"] is False
         assert any(t["type"] == "protein" for t in pranzo["tips"])
-        # slot extra (es. merenda_tardo) non dividono l'obiettivo e non hanno suggerimenti
-        assert monday["meals"]["merenda_tardo"]["target"] is None
-        assert monday["meals"]["merenda_tardo"]["tips"] == []
+        # uno slot extra finito nel piano (es. merenda_tardo, versioni <1.16.3) non
+        # divide l'obiettivo e non si conta due volte: le merende vengono dalla routine
+        assert "merenda_tardo" not in monday["meals"]
         # martedì: cena libera senza stima → niente dettaglio per quella cena
         tuesday = data["days"][1]
         assert set(tuesday["meals"]) == {"pranzo"}

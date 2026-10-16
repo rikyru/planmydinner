@@ -123,3 +123,25 @@ class TestRoutineInSummary:
         assert today["routine_kcal"] == pytest.approx(265, abs=0.3)  # la brioche, non la colazione tipo
         other = next(d for d in data["days"] if d["date"] != TODAY)
         assert other["routine_kcal"] == pytest.approx(COLAZIONE_KCAL, abs=0.2)
+
+    def test_list_shows_what_counts_today(self, client, setup_database):
+        """/routine/ espone per ogni slot i valori di ciò che conta oggi: il
+        pasto fisso, oppure quello diverso registrato (es. merenda da foto),
+        anche su uno slot senza pasto fisso definito."""
+        _define(client)
+        client.post("/consumed-entries/mensa", json={
+            "profile_id": "persona_a", "date": TODAY, "meal_type": "merenda_tardo",
+            "name": "Trancio di pizza",
+            "ingredients": [{"name": "pane", "food_group": "carboidrati", "grams": 100}],
+        })
+        slots = {s["slot"]: s for s in client.get("/routine/", params={
+            "profile_id": "persona_a", "target_date": TODAY}).json()["slots"]}
+        col = slots["colazione"]
+        assert col["today"] == "assumed"
+        assert col["today_nutrition"]["kcal"] == pytest.approx(COLAZIONE_KCAL, abs=0.2)
+        assert col["today_nutrition"]["protein_g"] > 0
+        mer = slots["merenda_tardo"]
+        assert mer["defined"] is False and mer["today"] == "logged"
+        assert mer["today_name"] == "Trancio di pizza"
+        assert mer["today_nutrition"]["kcal"] == pytest.approx(265, abs=0.3)
+        assert slots["dopo_cena"]["today_nutrition"] is None

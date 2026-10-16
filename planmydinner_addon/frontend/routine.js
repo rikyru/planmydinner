@@ -1,5 +1,6 @@
 import { defineComponent } from 'vue';
 import MensaModal from './mensa.js?v=6';
+import { macroLine } from './meal-nutrition.js?v=1';
 
 /**
  * Strip "Colazione & spuntini" (vista Oggi): pasti fissi con logica opt-out.
@@ -20,24 +21,27 @@ const RoutineStrip = defineComponent({
         <div class="card routine-strip">
             <div style="display:flex;align-items:center;gap:8px;">
                 <strong style="font-size:14px;">☕ Colazione & spuntini</strong>
-                <span v-if="definedSlots.length" class="hint">~{{ assumedKcal }} kcal oggi</span>
+                <span v-if="shownSlots.length" class="hint">~{{ assumedKcal }} kcal oggi</span>
                 <button @click="editorOpen = true" class="btn-sm btn-secondary" style="margin-left:auto;">⚙️</button>
             </div>
 
             <div v-if="loading" class="hint" style="margin-top:6px;">Caricamento…</div>
 
-            <div v-else-if="!definedSlots.length" class="hint" style="margin-top:6px;">
+            <div v-else-if="!shownSlots.length" class="hint" style="margin-top:6px;">
                 Definisci una volta la tua colazione e le merende tipo: verranno contate
                 nei totali ogni giorno senza doverle registrare.
                 <button @click="editorOpen = true" class="btn-sm btn-primary" style="margin-left:6px;">Definisci</button>
             </div>
 
             <div v-else style="display:flex;flex-direction:column;gap:6px;margin-top:8px;">
-                <div v-for="s in definedSlots" :key="s.slot" class="routine-row">
+                <div v-for="s in shownSlots" :key="s.slot" class="routine-row">
                     <span style="font-size:15px;">{{ s.icon }}</span>
                     <span class="routine-row__name">
-                        {{ s.name }}
-                        <span v-if="s.nutrition" class="hint">~{{ Math.round(s.nutrition.kcal) }} kcal</span>
+                        <span :style="s.today === 'skipped' ? 'text-decoration:line-through;opacity:.6' : ''">
+                            {{ s.today_name ? '✎ ' + s.today_name : (s.name || s.label) }}
+                        </span>
+                        <span v-if="s.today_nutrition" class="routine-row__macros">{{ macroLine(s.today_nutrition) }}</span>
+                        <span v-else-if="s.nutrition" class="routine-row__macros" style="opacity:.55">~{{ Math.round(s.nutrition.kcal) }} kcal se lo segni</span>
                     </span>
                     <!-- Stato / azioni del giorno -->
                     <template v-if="s.default_on">
@@ -63,7 +67,7 @@ const RoutineStrip = defineComponent({
                 </div>
                 <div v-for="x in extras" :key="x.id" class="routine-row" style="margin-top:6px;">
                     <span>🍪</span>
-                    <span class="routine-row__name">{{ x.name }}<span v-if="x.nutrition" class="hint"> ~{{ Math.round(x.nutrition.kcal) }} kcal</span></span>
+                    <span class="routine-row__name">{{ x.name }}<span v-if="x.nutrition" class="routine-row__macros">{{ macroLine(x.nutrition) }}</span></span>
                     <button @click="deleteExtra(x.id)" class="btn-sm btn-danger" title="Rimuovi">×</button>
                 </div>
                 <div v-if="showExtraForm" style="margin-top:8px;border:1px solid var(--border);border-radius:8px;padding:8px;">
@@ -179,6 +183,8 @@ const RoutineStrip = defineComponent({
     },
     computed: {
         definedSlots() { return this.slots.filter(s => s.defined); },
+        // anche gli slot senza pasto fisso, se oggi c'è qualcosa registrato (es. merenda da foto)
+        shownSlots() { return this.slots.filter(s => s.defined || s.today === 'logged'); },
         extrasKcal() {
             return Math.round(this.extras.reduce((s, x) => s + (x.nutrition ? x.nutrition.kcal : 0), 0));
         },
@@ -186,12 +192,8 @@ const RoutineStrip = defineComponent({
             return this.extraForm.ingredients.some(i => (i.name || '').trim() && i.grams > 0);
         },
         assumedKcal() {
-            return Math.round(this.definedSlots.reduce((sum, s) => {
-                if (!s.nutrition) return sum;
-                const counts = (s.default_on && s.today !== 'skipped' && s.today !== 'logged')
-                    || (!s.default_on && s.today === 'logged');
-                return counts ? sum + s.nutrition.kcal : sum;
-            }, 0));
+            // quello che conta davvero oggi (pasto fisso o diverso registrato)
+            return Math.round(this.slots.reduce((sum, s) => sum + (s.today_nutrition ? s.today_nutrition.kcal : 0), 0));
         },
     },
     mounted() { this.load(); this.fetchExtras(); },
@@ -199,6 +201,7 @@ const RoutineStrip = defineComponent({
         mealDate() { this.load(); this.fetchExtras(); },
     },
     methods: {
+        macroLine,
         async load() {
             this.loading = true;
             try {

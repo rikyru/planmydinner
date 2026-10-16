@@ -95,6 +95,30 @@ def _slot_today_state(entries, meal) -> str:
     return "assumed" if meal and meal["default_on"] else "off"
 
 
+def _slot_today_nutrition(db: Session, profile_id: str, entries, meal, default_nutrition,
+                          state: str, llm_gateway=None):
+    """(nutrizione, nome) di ciò che conta oggi per lo slot, come in
+    /integration/summary: saltato → nulla; registrato → il pasto registrato
+    (es. da foto); altrimenti il pasto fisso se è attivo di default."""
+    if state == "assumed":
+        return default_nutrition, None
+    if state != "logged":
+        return None, None
+    logged = [e for e in entries if e.type != "skipped" and e.consumed_recipe_id]
+    if not logged:
+        return None, None
+    e = logged[0]
+    if meal and e.consumed_recipe_id == meal["id"]:
+        return default_nutrition, None
+    from .integration import _get_recipe_content
+    content = _get_recipe_content(db, e.consumed_recipe_id)
+    try:
+        n = compute_recipe_nutrition(content, profile_id, llm_gateway=llm_gateway) if content else None
+    except Exception:
+        n = None
+    return n, (e.override_details or {}).get("free_text_name")
+
+
 @router.get("/suggest")
 def suggest_routine(request: Request, slot: str, avoid: Optional[str] = None,
                     from_pantry: bool = False, db: Session = Depends(get_db)):
@@ -136,6 +160,9 @@ def list_routine(request: Request, profile_id: str, target_date: Optional[date] 
             except Exception:
                 pass
         entries = _day_entries(db, profile_id, iso, slot)
+        state = _slot_today_state(entries, meal)
+        today_nutrition, today_name = _slot_today_nutrition(
+            db, profile_id, entries, meal, nutrition, state, gw)
         ingredients = []
         for ing in (meal or {}).get("content", []):
             if isinstance(ing, dict):
@@ -151,7 +178,10 @@ def list_routine(request: Request, profile_id: str, target_date: Optional[date] 
             "ingredients": ingredients,
             "default_on": meal["default_on"] if meal else info["default_on"],
             "nutrition": nutrition,
-            "today": _slot_today_state(entries, meal),
+            "today": state,
+            # cosa conta davvero oggi: il pasto fisso o quello diverso registrato
+            "today_nutrition": today_nutrition,
+            "today_name": today_name,
         })
     return {"date": iso, "slots": out}
 
