@@ -1,4 +1,5 @@
 import { defineComponent } from 'vue';
+import { localISO } from './dates.js';
 
 const Pantry = defineComponent({
     inject: ['toast'],
@@ -141,7 +142,7 @@ const Pantry = defineComponent({
             if (!this.profiles.length) { this.toast && this.toast.add('Nessun profilo configurato.', 'error'); return; }
             const pA = this.profiles[0].id;
             const pB = (this.profiles[1] || this.profiles[0]).id;
-            const today = new Date().toISOString().slice(0, 10);
+            const today = localISO();
             this.assigning = true;
             try {
                 const params = new URLSearchParams({

@@ -350,11 +350,41 @@ input[type="checkbox"] { accent-color: var(--primary); }
 .fantasy-spinner { display: inline-block; font-size: 16px; animation: spin-pulse 1s ease-in-out infinite; padding: 2px 5px; }
 @keyframes spin-pulse { 0%, 100% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.4); opacity: .7; } }
 
+/* Navigazione settimana ‹ data › */
+.week-nav { display: flex; align-items: center; gap: 6px; }
+.week-nav input[type=date] { flex: 1; min-width: 0; }
+.week-nav .btn-sm { padding: 7px 11px; font-size: 15px; line-height: 1; flex-shrink: 0; }
+.gen-toggle { display: none; }
+.sidebar-gen { margin-top: 8px; }
+.only-mobile { display: none; }
+
+/* Kcal del giorno nell'header della card */
+.day-kcal { font-size: 11.5px; font-weight: 700; margin-top: 3px; color: var(--text-2); }
+.day-kcal--ok    { color: var(--success); }
+.day-kcal--over  { color: var(--danger); }
+.day-kcal--under { color: var(--warning); }
+
+/* Riga pasto: nome + macro */
+.meal-row__text { display: flex; flex-direction: column; min-width: 0; gap: 1px; }
+.meal-macros { font-size: 11px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: flex; align-items: center; gap: 5px; }
+.meal-macros__dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; background: var(--text-3); }
+.meal-macros__dot.is-ok   { background: var(--success); }
+.meal-macros__dot.is-warn { background: var(--warning); }
+
 @media (max-width: 900px) {
-    .week-layout { grid-template-columns: 1fr; }
-    .week-sidebar { position: static; }
+    .week-layout { grid-template-columns: 1fr; gap: 12px; }
+    .week-sidebar { position: static; padding: 12px 14px; }
+    .week-sidebar .sidebar-title { display: none; }
+    .week-sidebar .sidebar-field { margin-bottom: 10px; }
+    .week-sidebar .sidebar-label { display: none; }
     .sidebar-actions { flex-direction: row; flex-wrap: wrap; }
     .sidebar-btn { width: auto; flex: 1; }
+    .gen-toggle { display: block; }
+    .sidebar-gen:not(.open) { display: none; }
+    .only-desktop { display: none; }
+    .only-mobile { display: block; }
+    .no-plan { padding: 0 0 12px; }
+    .no-plan__options { display: none !important; }
 }
 @media (max-width: 600px) {
     .week-grid { grid-template-columns: 1fr; }
@@ -426,6 +456,7 @@ input[type="checkbox"] { accent-color: var(--primary); }
 .meal-header h3 { margin: 0; font-size: 15px; color: var(--text-2); font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
 
 .recipe-name { padding: 6px 18px 12px; font-size: 17px; font-weight: 700; letter-spacing: -0.01em; line-height: 1.35; }
+.meal-nutrition-wrap { padding: 0 18px; }
 .recipe-name.empty { color: var(--text-3); font-weight: 400; font-size: 14px; }
 
 .meal-components { padding: 0 18px 12px; display: flex; flex-direction: column; gap: 5px; }
@@ -577,6 +608,7 @@ input[type="checkbox"] { accent-color: var(--primary); }
 
     .meal-header { padding: 12px 14px 0; }
     .recipe-name { padding: 5px 14px 10px; font-size: 16px; }
+    .meal-nutrition-wrap { padding: 0 14px; }
     .meal-components { padding: 0 14px 10px; }
     .meal-actions { padding: 10px 14px 14px; }
     .detail-panel { margin: 0 12px 12px; padding: 10px; }
@@ -733,3 +765,23 @@ input[type="checkbox"] { accent-color: var(--primary); }
 .cook-step-text { font-size: clamp(22px, 5vw, 40px); line-height: 1.4; max-width: 900px; margin: 0; }
 .cook-nav { display: flex; gap: 12px; }
 .cook-nav button { font-size: 18px; padding: 14px 22px; flex: 1; }
+
+/* ============ Nutrizione pasto (meal-nutrition.js) ============ */
+.meal-nutrition { margin: 0 0 12px; }
+.mn-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+.mn-cell { background: var(--surface-2); border-radius: var(--radius-xs); padding: 7px 6px 6px; display: flex; flex-direction: column; align-items: center; gap: 2px; min-width: 0; }
+.mn-value { font-size: 16px; font-weight: 800; letter-spacing: -0.02em; line-height: 1.1; }
+.mn-value small { font-size: 11px; font-weight: 600; margin-left: 1px; color: var(--text-3); }
+.mn-label { font-size: 10.5px; color: var(--text-3); white-space: nowrap; }
+.mn-bar { width: 100%; height: 3px; border-radius: 2px; background: var(--border); overflow: hidden; margin-top: 2px; }
+.mn-bar span { display: block; height: 100%; background: var(--success); }
+.mn-cell--warn .mn-value { color: var(--warning); }
+.mn-cell--warn .mn-bar span { background: var(--warning); }
+.mn-cell--low .mn-bar span { background: var(--info); }
+.mn-tips { list-style: none; margin: 8px 0 0; padding: 8px 10px; border-radius: var(--radius-xs);
+           background: var(--warning-soft); border: 1px solid color-mix(in srgb, var(--warning) 30%, transparent);
+           display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; line-height: 1.35; }
+.mn-tips li { display: flex; gap: 7px; align-items: flex-start; }
+.mn-tip-icon { flex-shrink: 0; }
+.mn-ok { margin-top: 8px; font-size: 12.5px; font-weight: 600; color: var(--success); }
+.meal-nutrition--compact .mn-value { font-size: 14px; }

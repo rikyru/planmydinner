@@ -1,10 +1,12 @@
 import { defineComponent } from 'vue';
-import MensaModal from './mensa.js?v=5';
+import { localISO } from './dates.js';
+import MensaModal from './mensa.js?v=6';
+import MealNutrition, { macroLine } from './meal-nutrition.js?v=1';
 
 const WeekView = defineComponent({
     name: 'WeekView',
     inject: ['toast'],
-    components: { MensaModal },
+    components: { MensaModal, MealNutrition },
     template: `
         <div class="week-layout" @click="closeMealMenu">
 
@@ -14,7 +16,11 @@ const WeekView = defineComponent({
 
                 <div class="sidebar-field">
                     <label class="sidebar-label">Dal</label>
-                    <input type="date" v-model="startDate" @change="onStartDateChange" />
+                    <div class="week-nav">
+                        <button class="btn-sm" @click.stop="shiftWeek(-1)" aria-label="Settimana precedente">‹</button>
+                        <input type="date" v-model="startDate" @change="onStartDateChange" />
+                        <button class="btn-sm" @click.stop="shiftWeek(1)" aria-label="Settimana successiva">›</button>
+                    </div>
                     <span class="sidebar-range">→ {{ endDateLabel }}</span>
                 </div>
 
@@ -24,6 +30,12 @@ const WeekView = defineComponent({
 
                 <div class="sidebar-actions">
                     <button @click.stop="goToToday" class="btn-today sidebar-btn">Oggi</button>
+                    <button v-if="!loading && profiles.length >= 2" @click.stop="genOpen = !genOpen"
+                            class="btn-secondary sidebar-btn gen-toggle">
+                        ✨ Genera piano {{ genOpen ? '▴' : '▾' }}
+                    </button>
+                </div>
+                <div class="sidebar-actions sidebar-gen" :class="{ open: genOpen }">
                     <template v-if="!loading && profiles.length >= 2">
                         <button @click.stop="generateFromHistory" :disabled="generating"
                                 class="btn-regenerate sidebar-btn"
@@ -70,9 +82,11 @@ const WeekView = defineComponent({
 
                 <!-- Nessun piano: la griglia resta comunque utilizzabile per registrare -->
                 <div v-if="!loading && profiles.length >= 2 && !weekPlan && !error" class="no-plan">
-                    <p>Nessun piano per questa settimana. Scegli come generarlo — puoi comunque
+                    <p class="only-desktop">Nessun piano per questa settimana. Scegli come generarlo — puoi comunque
                        registrare cosa mangi: gli slot già segnati restano intatti.</p>
-                    <div style="display:flex;flex-direction:column;gap:14px;max-width:440px;">
+                    <p class="only-mobile hint">Nessun piano per questa settimana: tocca <strong>✨ Genera piano</strong>
+                       qui sopra, oppure registra cosa mangi direttamente dai giorni.</p>
+                    <div class="no-plan__options" style="display:flex;flex-direction:column;gap:14px;max-width:440px;">
                         <div style="display:flex;flex-direction:column;gap:4px;">
                             <button @click.stop="generateFromHistory" :disabled="generating" class="btn-primary">
                                 {{ generating ? 'Generazione...' : '🔁 Dal mio storico' }}
@@ -109,6 +123,10 @@ const WeekView = defineComponent({
                             <div class="day-card__names">
                                 <span class="day-name">{{ formatDayName(day.date) }}</span>
                                 <span class="day-date">{{ formatShortDate(day.date) }}</span>
+                                <span v-if="dayNut(day.date)" class="day-kcal" :class="'day-kcal--' + dayKcalStatus(day.date)"
+                                      :title="'P ' + Math.round(dayNut(day.date).nutrition.protein_g) + 'g · C ' + Math.round(dayNut(day.date).nutrition.carbs_g) + 'g · G ' + Math.round(dayNut(day.date).nutrition.fat_g) + 'g'">
+                                    🔥 {{ Math.round(dayNut(day.date).nutrition.kcal) }}<template v-if="dayNut(day.date).target_kcal"> / {{ Math.round(dayNut(day.date).target_kcal) }}</template> kcal
+                                </span>
                             </div>
                             <div style="display:flex;align-items:center;gap:6px;">
                                 <span v-if="isToday(day.date)" class="today-badge">Oggi</span>
@@ -136,7 +154,14 @@ const WeekView = defineComponent({
                                         <span class="meal-row__type">{{ meal.meal_type === 'pranzo' ? 'Pranzo' : 'Cena' }}</span>
                                         <span v-if="isNotEaten(meal)" class="meal-badge meal-badge--not-eaten">✗</span>
                                         <span v-else-if="isFree(meal)" class="meal-badge meal-badge--free">🎉</span>
-                                        <span class="meal-row__name">{{ meal.items?.[0]?.item_name || '—' }}</span>
+                                        <span class="meal-row__text">
+                                            <span class="meal-row__name">{{ meal.items?.[0]?.item_name || '—' }}</span>
+                                            <span v-if="mealNut(day.date, meal.meal_type)" class="meal-macros">
+                                                <span class="meal-macros__dot" :class="mealNut(day.date, meal.meal_type).ok ? 'is-ok' : 'is-warn'"
+                                                      :title="mealNut(day.date, meal.meal_type).ok ? 'In linea con l’obiettivo' : 'Tocca per i suggerimenti'"></span>
+                                                {{ macroLine(mealNut(day.date, meal.meal_type).nutrition) }}
+                                            </span>
+                                        </span>
                                     </div>
                                     <div class="meal-row__menu-wrap">
                                         <span v-if="fantasyApplying === day.date + '_' + meal.meal_type"
@@ -221,6 +246,10 @@ const WeekView = defineComponent({
                         <p style="font-weight:600; margin:8px 0 12px; font-size:15px;">
                             {{ mealModalMeal?.items?.[0]?.item_name || '—' }}
                         </p>
+
+                        <!-- Valori nutrizionali + suggerimenti per centrare l'obiettivo -->
+                        <meal-nutrition v-if="mealNut(mealModalDate, mealModalMeal?.meal_type)"
+                                        :info="mealNut(mealModalDate, mealModalMeal.meal_type)" />
 
                         <!-- Azioni componenti (solo per pasti normali con recipe_id) -->
                         <template v-if="mealModalMeal?.items?.[0]?.recipe_id && !isNotEaten(mealModalMeal) && !isFree(mealModalMeal)">
@@ -700,18 +729,21 @@ const WeekView = defineComponent({
     `,
     data() {
         const now = new Date();
-        const today = now.toISOString().slice(0, 10);
+        const today = localISO(now);
         // Snap to Monday (0=Sun → 6 days back, 1=Mon → 0, ..., 6=Sat → 5 days back)
         const dayOfWeek = now.getDay(); // 0=Sun
         const daysToMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
         const monday = new Date(now);
         monday.setDate(now.getDate() - daysToMonday);
-        const mondayStr = monday.toISOString().slice(0, 10);
+        const mondayStr = localISO(monday);
         return {
             profiles: [],
             mensaFor: null,   // {mealType, date} -> apre il modal foto/mensa
             startDate: mondayStr,
             weekPlan: null,
+            // Nutrizione per giorno/pasto (GET /integration/summary?meal_detail=true)
+            nutrition: null,
+            genOpen: false,
             loading: false,
             error: null,
             generating: false,
@@ -772,7 +804,17 @@ const WeekView = defineComponent({
             debugExpandLlm: null,
         };
     },
+    watch: {
+        // ogni modifica al piano (cambio ricetta, swap, drag&drop...) può
+        // cambiare kcal e macro: ricarica il riepilogo nutrizionale.
+        weekPlan: { deep: true, handler() { this.scheduleNutrition(); } },
+    },
     computed: {
+        nutByDate() {
+            const map = {};
+            for (const d of this.nutrition?.days || []) map[d.date] = d;
+            return map;
+        },
         profileA() { return this.profiles[0] || null; },
         profileB() { return this.profiles[1] || null; },
         displayWeek() {
@@ -792,7 +834,7 @@ const WeekView = defineComponent({
             return Array.from({ length: 7 }, (_, i) => {
                 const d = new Date(start);
                 d.setDate(start.getDate() + i);
-                return { date: d.toISOString().slice(0, 10), meals: ensure([]) };
+                return { date: localISO(d), meals: ensure([]) };
             });
         },
         filteredCatalogRecipes() {
@@ -806,7 +848,7 @@ const WeekView = defineComponent({
             if (!this.startDate) return false;
             const endOfWeek = new Date(this.startDate + 'T12:00:00');
             endOfWeek.setDate(endOfWeek.getDate() + 6);
-            return endOfWeek.toISOString().slice(0, 10) < this.today;
+            return localISO(endOfWeek) < this.today;
         },
         endDateLabel() {
             if (!this.startDate) return '';
@@ -885,6 +927,38 @@ const WeekView = defineComponent({
                 this.toast.add('Errore spostamento: ' + e.message, 'error');
             }
         },
+        // ── Nutrizione per pasto ─────────────────────────────────────────────
+        macroLine,
+        dayNut(date) {
+            const d = this.nutByDate[date];
+            return d && d.nutrition ? d : null;
+        },
+        mealNut(date, mealType) {
+            return this.nutByDate[date]?.meals?.[mealType] || null;
+        },
+        dayKcalStatus(date) {
+            const d = this.dayNut(date);
+            if (!d || !d.target_kcal) return 'none';
+            const r = d.nutrition.kcal / d.target_kcal;
+            return r > 1.08 ? 'over' : (r < 0.85 ? 'under' : 'ok');
+        },
+        scheduleNutrition() {
+            clearTimeout(this._nutTimer);
+            this._nutTimer = setTimeout(() => this.loadNutrition(), 250);
+        },
+        async loadNutrition() {
+            if (!this.profileA) return;
+            const start = this.startDate;
+            const params = new URLSearchParams({
+                profile_id: this.profileA.id, start_date: start, meal_detail: 'true',
+            });
+            try {
+                const resp = await window.apiFetch('/integration/summary?' + params);
+                if (!resp.ok) return;
+                const data = await resp.json();
+                if (start === this.startDate) this.nutrition = data;   // ignora risposte di settimane vecchie
+            } catch { /* best-effort: la griglia funziona anche senza */ }
+        },
         // ── Dati ─────────────────────────────────────────────────────────────
         async loadData() {
             this.loading = true;
@@ -892,7 +966,10 @@ const WeekView = defineComponent({
             try {
                 const resp = await window.apiFetch('/profiles/');
                 this.profiles = await resp.json();
-                if (this.profiles.length >= 2) await this.loadWeekPlan();
+                if (this.profiles.length >= 2) {
+                    await this.loadWeekPlan();
+                    this.scheduleNutrition();
+                }
             } catch (e) {
                 this.error = 'Errore: ' + e.message;
             } finally {
@@ -1495,17 +1572,25 @@ const WeekView = defineComponent({
             const d = new Date(this.startDate + 'T12:00:00');
             const daysToMonday = d.getDay() === 0 ? 6 : d.getDay() - 1;
             d.setDate(d.getDate() - daysToMonday);
-            this.startDate = d.toISOString().slice(0, 10);   // v-model: aggiorna anche il date-picker
+            this.startDate = localISO(d);   // v-model: aggiorna anche il date-picker
             this.weekPlan = null;
+            this.nutrition = null;
             this.error = null;
             this.loadWeekPlan();
+            this.scheduleNutrition();   // anche senza piano: pasti registrati
+        },
+        shiftWeek(delta) {
+            const d = new Date(this.startDate + 'T12:00:00');
+            d.setDate(d.getDate() + 7 * delta);
+            this.startDate = localISO(d);
+            this.onStartDateChange();
         },
         goToToday() {
             const now = new Date();
             const daysToMonday = now.getDay() === 0 ? 6 : now.getDay() - 1;
             const monday = new Date(now);
             monday.setDate(now.getDate() - daysToMonday);
-            this.startDate = monday.toISOString().slice(0, 10);
+            this.startDate = localISO(monday);
             this.onStartDateChange();
         },
         isToday(dateStr) { return dateStr === this.today; },

@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session
 from .. import schemas
 from ..database import get_db, CandidateRecipe, ConsumedEntry, GeneratedWeeklyPlan, PlanRules, Recipe
 from ..nutrition import (DEFAULT_COOKING_FAT_G, NUTRITION_KEYS, compute_recipe_nutrition,
-                         recipe_nutrition_split, scaled_nutrition)
+                         meal_feedback, recipe_nutrition_split, scaled_nutrition)
 from ..scaling import apply_nutrition_scaling, day_target_kcal
 from .planner import compute_adherence_stats
 
@@ -333,11 +333,16 @@ def get_integration_summary(
     start_date: Optional[date] = None,
     end_date: Optional[date] = None,
     consumed_only: bool = False,
+    meal_detail: bool = False,
     db: Session = Depends(get_db),
 ):
     """
     Sintesi per integrazioni esterne su un periodo:
     aderenza, pasti liberi/saltati e nutrizione (kcal + macro) per giorno.
+
+    Con ``meal_detail=true`` ogni giorno ha anche ``meals``: per pranzo/cena
+    kcal/macro, l'obiettivo del singolo pasto (quota del target giornaliero al
+    netto dei pasti fissi) e suggerimenti per centrarlo.
 
     Risponde sempre 200, anche senza dati nel periodo (campi a 0/None).
     """
@@ -484,6 +489,39 @@ def get_integration_summary(
         if e.type != "skipped":
             consumed_main.add((e.date, e.meal_type))
 
+    def _meal_details(meal_rows, iso, routine_day, extra_day, targets, targets_by_date):
+        """Obiettivo per pasto = (target del giorno − pasti fissi − merende)
+        diviso tra i pasti principali del giorno; poi feedback per ciascuno."""
+        day_t = dict(targets or {})
+        day_t.update({k: v for k, v in ((targets_by_date or {}).get(iso) or {}).items()
+                      if k in NUTRITION_KEYS})
+        n_main = max(len(meal_rows), 1)
+        meal_t = {}
+        for k in NUTRITION_KEYS:
+            if day_t.get(k):
+                left = float(day_t[k]) - (routine_day or {}).get(k, 0) - (extra_day or {}).get(k, 0)
+                if left > 0:
+                    meal_t[k] = left / n_main
+        out = {}
+        for mt, row in meal_rows.items():
+            entry = {"kind": row["kind"], "consumed": row.get("consumed", False),
+                     "estimated": row.get("estimated", False),
+                     "nutrition": row["nutrition"],
+                     "target": {k: round(v) for k, v in meal_t.items()} or None,
+                     "tips": [], "ok": True}
+            if row["kind"] == "planned":
+                content = _get_recipe_content(db, row["recipe_id"])
+                try:
+                    fb = meal_feedback(content, profile_id, scale=row["scale"],
+                                       target=meal_t or None, llm_gateway=llm_gateway) if content else None
+                except Exception:
+                    _LOGGER.exception(f"meal_feedback failed for {row['recipe_id']}")
+                    fb = None
+                if fb:
+                    entry.update(pct=fb["pct"], tips=fb["tips"], ok=fb["ok"])
+            out[mt] = entry
+        return out
+
     days = []
     totals = {k: 0.0 for k in NUTRITION_KEYS}
     days_with_data = 0
@@ -500,6 +538,7 @@ def get_integration_summary(
         has_estimated_meal = False
         day_nutrition: Optional[Dict[str, float]] = None
         coverages = []
+        meal_rows: Dict[str, Dict[str, Any]] = {}   # meal_type → dettaglio (meal_detail)
         for meal in meals:
             items = meal.get("items", [])
             if not items:
@@ -522,6 +561,9 @@ def get_integration_summary(
                         day_nutrition[k] += nutrition[k] * scale
                     coverages.append(nutrition.get("coverage", 1.0))
                     has_estimated_meal = True
+                    meal_rows[meal.get("meal_type")] = {
+                        "kind": "free_meal", "estimated": True,
+                        "nutrition": {k: round(nutrition[k] * scale, 1) for k in NUTRITION_KEYS}}
                 else:
                     unestimated_free_meal = True
                 continue
@@ -544,6 +586,10 @@ def get_integration_summary(
                 for k in NUTRITION_KEYS:
                     day_nutrition[k] += nutrition[k]
                 coverages.append(1.0)
+                meal_rows[meal.get("meal_type")] = {
+                    "kind": "planned", "recipe_id": recipe_id, "scale": scale,
+                    "consumed": (iso, meal.get("meal_type")) in consumed_main,
+                    "nutrition": nutrition}
 
         # Aggiungi i pasti fissi del giorno (colazione/spuntini assunti + opt-in registrati)
         routine_day = _routine_for_day(iso)
@@ -584,6 +630,9 @@ def get_integration_summary(
             "target_kcal": day_target_kcal(targets, targets_by_date, iso),
             "training_note": (targets_by_date or {}).get(iso, {}).get("training_note"),
         }
+        if meal_detail:
+            day_entry["meals"] = _meal_details(
+                meal_rows, iso, routine_day, extra_day, targets, targets_by_date)
         if day_nutrition is not None:
             day_entry["nutrition"] = {k: round(day_nutrition[k], 1) for k in NUTRITION_KEYS}
             day_entry["nutrition"]["coverage"] = round(sum(coverages) / len(coverages), 2) if coverages else 1.0

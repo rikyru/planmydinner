@@ -1,11 +1,13 @@
 import { defineComponent } from 'vue';
-import MensaModal from './mensa.js?v=5';
-import RoutineStrip from './routine.js?v=5';
+import { localISO } from './dates.js';
+import MensaModal from './mensa.js?v=6';
+import RoutineStrip from './routine.js?v=6';
+import MealNutrition from './meal-nutrition.js?v=1';
 
 const TodayView = defineComponent({
     name: 'TodayView',
     inject: ['toast'],
-    components: { MensaModal, RoutineStrip },
+    components: { MensaModal, RoutineStrip, MealNutrition },
     template: `
         <div class="today-view">
             <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px;">
@@ -83,15 +85,23 @@ const TodayView = defineComponent({
                         <div v-if="isFree(meal)" class="meal-free-badge">
                             🎉 Pasto libero — {{ meal.items[0].item_name }}
                         </div>
+                        <div v-if="isFree(meal) && mealNut(meal.meal_type)" class="meal-nutrition-wrap">
+                            <meal-nutrition :info="mealNut(meal.meal_type)" compact />
+                        </div>
 
                         <!-- Normal meal content -->
                         <div v-else>
                             <div class="recipe-name">{{ meal.items[0].item_name }}</div>
 
-                            <!-- Avviso bilanciamento (proteine basse / pasto sbilanciato) -->
-                            <div v-if="mealBalance(meal) && !mealBalance(meal).ok"
+                            <!-- kcal/macro del pasto vs obiettivo + suggerimenti -->
+                            <div v-if="mealNut(meal.meal_type)" class="meal-nutrition-wrap">
+                                <meal-nutrition :info="mealNutForCard(meal)" />
+                            </div>
+
+                            <!-- Proteine sotto la dose del piano: azioni rapide -->
+                            <div v-if="proteinWarnings(meal).length"
                                  style="color:#b26b00;font-size:12px;margin:4px 0;padding:6px 8px;background:#b26b000d;border-radius:6px;">
-                                <div v-for="(w, i) in mealBalance(meal).warnings" :key="i" style="margin-bottom:4px;">
+                                <div v-for="(w, i) in proteinWarnings(meal)" :key="i" style="margin-bottom:4px;">
                                     ⚠️ {{ w.text }}<template v-if="w.adapt"> — <strong>{{ w.adapt }}</strong></template>
                                     <span v-if="w.extra" style="display:block;margin-left:16px;opacity:.9;">↳ {{ w.extra.text }}</span>
                                     <div v-if="w.type === 'low_protein'" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;">
@@ -376,7 +386,7 @@ const TodayView = defineComponent({
             allRecipes: [],
             loadingAllRecipes: false,
             recipeSearchQuery: '',
-            today: new Date().toISOString().slice(0, 10),
+            today: localISO(),
             // Adherence
             adherence: null,
             todayStatus: null,
@@ -391,14 +401,14 @@ const TodayView = defineComponent({
             // Custom meal
             showCustomModal: false,
             customForm: { title: '', components: [], notes: '' },
-            daySummary: null,   // {nutrition, targets} del giorno (obiettivo energetico)
+            daySummary: null,   // {nutrition, targets, meals} del giorno (obiettivo energetico)
             balanceBusy: false, // azione bilanciamento (adatta proteine / aggiungi merenda) in corso
             customMealType: null,
         };
     },
     computed: {
         isToday() {
-            return this.today === new Date().toISOString().slice(0, 10);
+            return this.today === localISO();
         },
         dayTarget() { return this.daySummary ? this.daySummary.targets : null; },
         dayMacros() { return this.daySummary ? this.daySummary.nutrition : null; },
@@ -459,11 +469,11 @@ const TodayView = defineComponent({
         changeDay(delta) {
             const d = new Date(this.today + 'T12:00:00');
             d.setDate(d.getDate() + delta);
-            this.today = d.toISOString().slice(0, 10);
+            this.today = localISO(d);
             this.refreshDay();
         },
         goToday() {
-            this.today = new Date().toISOString().slice(0, 10);
+            this.today = localISO();
             this.refreshDay();
         },
         async refreshDay() {
@@ -472,14 +482,14 @@ const TodayView = defineComponent({
             if (this.profileA && this.profileB) {
                 await this.loadWeeklyPlan();
                 await this.loadAdherence();
-                await this.fetchDaySummary();
             }
         },
         async fetchDaySummary() {
             if (!this.profileA) return;
             try {
                 const params = new URLSearchParams({
-                    profile_id: this.profileA.id, start_date: this.today, end_date: this.today });
+                    profile_id: this.profileA.id, start_date: this.today, end_date: this.today,
+                    meal_detail: 'true' });
                 const resp = await window.apiFetch('/integration/summary?' + params);
                 if (!resp.ok) { this.daySummary = null; return; }
                 const j = await resp.json();
@@ -487,7 +497,7 @@ const TodayView = defineComponent({
                 // target del giorno: periodizzato (day.target_kcal) o piatto
                 const targets = Object.assign({}, j.targets || {});
                 if (day.target_kcal) targets.kcal = day.target_kcal;
-                this.daySummary = { nutrition: day.nutrition, targets,
+                this.daySummary = { nutrition: day.nutrition, targets, meals: day.meals || {},
                                     training_note: day.training_note || null };
             } catch (_) { this.daySummary = null; }
         },
@@ -500,7 +510,6 @@ const TodayView = defineComponent({
                 if (this.profiles.length >= 2) {
                     await this.loadWeeklyPlan();
                     await this.loadAdherence();
-                    await this.fetchDaySummary();
                 }
             } catch (e) {
                 this.error = 'Errore nel caricamento dei profili: ' + e.message;
@@ -509,6 +518,8 @@ const TodayView = defineComponent({
             }
         },
         async loadWeeklyPlan() {
+            // kcal/macro del giorno e dei pasti: si aggiornano a ogni ricarica del piano
+            this.fetchDaySummary();
             // Use plan-for-date to find any saved plan covering today (rolling, any start_date)
             const params = new URLSearchParams({
                 profile_id_A: this.profileA.id,
@@ -916,6 +927,21 @@ const TodayView = defineComponent({
         },
 
         // --- Helper per i componenti del pasto ---
+        mealNut(mealType) {
+            return this.daySummary?.meals?.[mealType] || null;
+        },
+        // Il blocco "proteine" con i bottoni d'azione resta sotto: qui si
+        // nasconde il suggerimento proteico per non dirlo due volte.
+        mealNutForCard(meal) {
+            const info = this.mealNut(meal.meal_type);
+            if (!info || !this.proteinWarnings(meal).length) return info;
+            const tips = (info.tips || []).filter(t => t.type !== 'protein');
+            return { ...info, tips, ok: info.ok || !tips.length };
+        },
+        proteinWarnings(meal) {
+            const b = this.mealBalance(meal);
+            return b ? (b.warnings || []).filter(w => w.type === 'low_protein') : [];
+        },
         mealBalance(meal) {
             const d = this.recipeDetails[meal.meal_type];
             return d ? d.balance : null;

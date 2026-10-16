@@ -1,5 +1,6 @@
 import { defineComponent } from 'vue';
-import MensaModal from './mensa.js?v=5';
+import { localISO } from './dates.js';
+import MensaModal from './mensa.js?v=6';
 
 /**
  * Vista Storico: diario settimanale con kcal/macro per giorno
@@ -151,13 +152,13 @@ const HistoryView = defineComponent({
         </div>
     `,
     data() {
-        const today = new Date().toISOString().slice(0, 10);
+        const today = localISO();
         const d = new Date(today + 'T12:00:00');
         const monday = new Date(d);
         monday.setDate(d.getDate() - ((d.getDay() + 6) % 7));
         return {
             today,
-            start: monday.toISOString().slice(0, 10),
+            start: localISO(monday),
             profiles: [],
             summary: null,
             planMeals: {},   // date -> [{meal_type, name}]
@@ -175,7 +176,7 @@ const HistoryView = defineComponent({
         end() {
             const d = new Date(this.start + 'T12:00:00');
             d.setDate(d.getDate() + 6);
-            return d.toISOString().slice(0, 10);
+            return localISO(d);
         },
         rangeLabel() {
             const fmt = s => new Date(s + 'T12:00:00').toLocaleDateString('it-IT', { day: 'numeric', month: 'short' });
@@ -331,13 +332,13 @@ const HistoryView = defineComponent({
         shiftWeek(days) {
             const d = new Date(this.start + 'T12:00:00');
             d.setDate(d.getDate() + days);
-            this.start = d.toISOString().slice(0, 10);
+            this.start = localISO(d);
             this.load();
         },
         goToday() {
             const d = new Date(this.today + 'T12:00:00');
             d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
-            this.start = d.toISOString().slice(0, 10);
+            this.start = localISO(d);
             this.load();
         },
         barHeight(d) {

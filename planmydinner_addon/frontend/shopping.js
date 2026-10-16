@@ -1,4 +1,5 @@
 import { defineComponent } from 'vue';
+import { localISO } from './dates.js';
 
 // Ordine dei reparti seguendo il giro tipico del supermercato (ortofrutta →
 // freschi → dispensa). Le categorie non elencate finiscono in fondo.
@@ -113,11 +114,11 @@ const ShoppingList = defineComponent({
     `,
     data() {
         const now = new Date();
-        const today = now.toISOString().slice(0, 10);
+        const today = localISO(now);
         const daysToMonday = now.getDay() === 0 ? 6 : now.getDay() - 1;
         const monday = new Date(now);
         monday.setDate(now.getDate() - daysToMonday);
-        const mondayStr = monday.toISOString().slice(0, 10);
+        const mondayStr = localISO(monday);
         return {
             profiles: [],
             shoppingData: null,
@@ -333,7 +334,7 @@ const ShoppingList = defineComponent({
             const daysToMonday = now.getDay() === 0 ? 6 : now.getDay() - 1;
             const monday = new Date(now);
             monday.setDate(now.getDate() - daysToMonday);
-            this.startDate = monday.toISOString().slice(0, 10);
+            this.startDate = localISO(monday);
             this.loadShoppingList();
         },
         toggleCategory(category) {

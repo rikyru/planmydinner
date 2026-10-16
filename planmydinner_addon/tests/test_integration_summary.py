@@ -146,6 +146,44 @@ class TestIntegrationSummaryWithData:
         assert data["averages"] is None
 
 
+class TestSummaryMealDetail:
+    def test_meal_detail_off_by_default(self, client, setup_database):
+        _make_plan(setup_database)
+        data = client.get("/integration/summary", params={
+            "profile_id": "persona_a", "start_date": MONDAY, "end_date": MONDAY,
+        }).json()
+        assert "meals" not in data["days"][0]
+
+    def test_meal_detail_per_meal_nutrition_target_and_tips(self, client, setup_database):
+        from planmydinner_addon.database import PlanRules
+        _make_plan(setup_database)
+        db = setup_database
+        rules = db.query(PlanRules).filter(PlanRules.profile_id == "persona_a").first()
+        if rules is None:
+            rules = PlanRules(id="rules-meal-detail", profile_id="persona_a", imported_at=TODAY)
+            db.add(rules)
+        rules.nutrition_targets = {"kcal": 1200, "protein_g": 90}
+        db.commit()
+
+        data = client.get("/integration/summary", params={
+            "profile_id": "persona_a", "start_date": MONDAY, "end_date": "2026-02-24",
+            "meal_detail": True,
+        }).json()
+        monday = data["days"][0]
+        pranzo, cena = monday["meals"]["pranzo"], monday["meals"]["cena"]
+        # la somma dei pasti coincide con il totale del giorno
+        assert pranzo["nutrition"]["kcal"] + cena["nutrition"]["kcal"] == \
+            pytest.approx(monday["nutrition"]["kcal"], abs=1)
+        # obiettivo del pasto = target giornaliero diviso tra i pasti principali
+        assert pranzo["target"]["kcal"] == 600
+        # pasta al pomodoro: proteine lontanissime da 45 g → suggerimento
+        assert pranzo["ok"] is False
+        assert any(t["type"] == "protein" for t in pranzo["tips"])
+        # martedì: cena libera senza stima → niente dettaglio per quella cena
+        tuesday = data["days"][1]
+        assert set(tuesday["meals"]) == {"pranzo"}
+
+
 class TestFreeMealExcludedFromAverages:
     def test_fully_free_day_has_no_nutrition_and_is_excluded(self, client, setup_database):
         from planmydinner_addon.database import GeneratedWeeklyPlan

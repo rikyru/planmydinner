@@ -1,5 +1,5 @@
 import { defineComponent } from 'vue';
-import { prepareImage } from './mensa.js?v=5';
+import { prepareImage } from './mensa.js?v=6';
 
 const Recipes = defineComponent({
     name: 'Recipes',

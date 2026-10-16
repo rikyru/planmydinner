@@ -1,4 +1,5 @@
 import { defineComponent } from 'vue';
+import { localISO } from './dates.js';
 
 /**
  * Ridimensiona a max 1600px e ricodifica in JPEG: upload leggero anche con
@@ -140,7 +141,7 @@ const MensaModal = defineComponent({
             return { pranzo: 'Pranzo', cena: 'Cena' }[this.mealType] || this.mealType;
         },
         dateLabel() {
-            const todayIso = new Date().toISOString().slice(0, 10);
+            const todayIso = localISO();
             if (this.mealDate === todayIso) return '';
             const d = new Date(this.mealDate + 'T12:00:00');
             return '— ' + d.toLocaleDateString('it-IT', { weekday: 'short', day: 'numeric', month: 'short' });
