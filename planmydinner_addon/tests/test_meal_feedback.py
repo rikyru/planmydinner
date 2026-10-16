@@ -152,3 +152,15 @@ def test_fat_at_limit_protein_tip_avoids_fatty_protein():
     texts = [t["text"] for t in fb["tips"]]
     assert not any(t.startswith("Aumenta Salmone") for t in texts), texts
     assert any("petto di pollo" in t for t in texts), texts
+
+
+def test_locked_portions_are_not_questioned():
+    # merluzzo e patate fissati sulle porzioni della nutrizionista: sotto quota si
+    # propone un'aggiunta, non "aumenta merluzzo/patate"
+    content = [_ing("Merluzzo", "pesce", 150), _ing("Patate", "carboidrati", 250)]
+    fb = meal_feedback(content, "persona_a", target={"kcal": 700, "protein_g": 45},
+                       locked={"merluzzo", "patate"})
+    texts = [t["text"] for t in fb["tips"]]
+    assert not any(t.startswith(("Aumenta Merluzzo", "Puoi aumentare Patate")) for t in texts), texts
+    assert any("porzioni del piano" in t and "pane" in t for t in texts), texts
+    assert any("petto di pollo" in t for t in texts), texts

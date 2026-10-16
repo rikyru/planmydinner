@@ -337,14 +337,15 @@ def generate_weekly_plan(
     current_date: date = date.today(),
     fantasy_mode: bool = False,
     ai_mode: Optional[str] = None,   # "off" | "per_slot" | "full_week" | None (use setting)
-    from_history: bool = False,      # riempi dal repertorio reale (ignora quote/grammature)
+    from_history: bool = False,      # riempi dal repertorio reale, porzioni adattate alle quote
     keep_logged: bool = True,
     db: Session = Depends(get_db)
 ):
     """Force-generate a 7-day plan from current_date and save it.
 
-    from_history: se true, riempie dal repertorio reale (ricette più mangiate),
-    ignorando quote proteiche e grammature del piano nutrizionista.
+    from_history: se true, riempie dal repertorio reale (ricette più mangiate)
+    rispettando le frequenze della nutrizionista, e adatta le porzioni di ogni
+    pasto alla quota del giorno e alle grammature del piano (ricette base intatte).
 
     ai_mode: if None, reads llm_generation_mode from AppSettings.
     Pass ai_mode explicitly to override the stored setting.
@@ -394,7 +395,14 @@ def generate_weekly_plan(
     # Rete di sicurezza: i path LLM "full_week" e legacy non conoscono locked_slots,
     # quindi il ripristino degli slot registrati avviene comunque qui.
     weekly_plan = _restore_locked_slots(weekly_plan, locked_slots)
+    if from_history:
+        from ..adaptation import adapt_plan_portions
+        adapt_plan_portions(
+            db, profile_id_A, weekly_plan, llm_gateway=request.app.state.llm_gateway,
+            today=current_date,
+            skip={(d, mt) for d, meals in locked_slots.items() for mt in meals})
     # Portion scaling toward the configured daily energy target (no-op when none).
+    # I pasti con porzioni già adattate restano come sono (contano come fissi).
     from ..scaling import apply_nutrition_scaling
     weekly_plan = apply_nutrition_scaling(
         db, profile_id_A, weekly_plan,

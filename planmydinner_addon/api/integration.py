@@ -18,8 +18,9 @@ from sqlalchemy.orm import Session
 
 from .. import schemas
 from ..database import get_db, CandidateRecipe, ConsumedEntry, GeneratedWeeklyPlan, PlanRules, Recipe
-from ..nutrition import (DEFAULT_COOKING_FAT_G, NUTRITION_KEYS, compute_recipe_nutrition,
-                         meal_breakdown, meal_feedback, recipe_nutrition_split, scaled_nutrition)
+from ..nutrition import (DEFAULT_COOKING_FAT_G, NUTRITION_KEYS, apply_portions,
+                         compute_recipe_nutrition, meal_breakdown, meal_feedback,
+                         recipe_nutrition_split, scaled_nutrition)
 from ..scaling import apply_nutrition_scaling, day_target_kcal
 from .planner import compute_adherence_stats
 
@@ -200,10 +201,14 @@ def get_plan_targets(request: Request, profile_id: str, db: Session = Depends(ge
     if not plan:
         return {"targets": None, "detail": "Nessun piano generato."}
 
-    def _recipe_nutrition(recipe_id: str, scale: float = 1.0):
+    def _recipe_nutrition(recipe_id: str, scale: float = 1.0, portions=None):
         content = _get_recipe_content(db, recipe_id)
         if not content:
             return None
+        if portions:
+            return compute_recipe_nutrition(apply_portions(content, portions), profile_id,
+                                            llm_gateway=llm_gateway,
+                                            add_cooking_fat_g=DEFAULT_COOKING_FAT_G)
         try:
             split = recipe_nutrition_split(content, profile_id, llm_gateway=llm_gateway,
                                            add_cooking_fat_g=DEFAULT_COOKING_FAT_G)
@@ -234,7 +239,7 @@ def get_plan_targets(request: Request, profile_id: str, db: Session = Depends(ge
                     items[0].get("food_group") in ("mensa", "free_meal", "not_eaten"):
                 continue   # solo il piano originale, non le deviazioni
             scale = meal.get("scale", 1.0) or 1.0
-            n = _recipe_nutrition(items[0]["recipe_id"], scale)
+            n = _recipe_nutrition(items[0]["recipe_id"], scale, items[0].get("portions"))
             if n:
                 if day is None:
                     day = {k: 0.0 for k in NUTRITION_KEYS}
@@ -391,9 +396,19 @@ def get_integration_summary(
 
     split_cache: Dict[str, Optional[tuple]] = {}
 
-    def _planned_nutrition(recipe_id: str, scale: float) -> Optional[Dict[str, Any]]:
+    def _planned_nutrition(recipe_id: str, scale: float, portions=None) -> Optional[Dict[str, Any]]:
         """Nutrizione di un pasto pianificato con lo scaling per-componente:
-        il fattore agisce solo sui carboidrati (proteine/verdure intatte)."""
+        il fattore agisce solo sui carboidrati (proteine/verdure intatte).
+        Con `portions` (porzioni adattate per quel giorno) valgono quelle."""
+        if portions:
+            content = _get_recipe_content(db, recipe_id)
+            try:
+                n = compute_recipe_nutrition(apply_portions(content, portions), profile_id,
+                                             llm_gateway=llm_gateway,
+                                             add_cooking_fat_g=DEFAULT_COOKING_FAT_G) if content else None
+            except Exception:
+                n = None
+            return {k: round(n[k], 1) for k in NUTRITION_KEYS} if n else None
         if recipe_id not in split_cache:
             content = _get_recipe_content(db, recipe_id)
             try:
@@ -533,6 +548,7 @@ def get_integration_summary(
         for mt, row in meal_rows.items():
             entry = {"kind": row["kind"], "consumed": bool(row.get("consumed")),
                      "estimated": row.get("estimated", False),
+                     "adapt_note": row.get("adapt_note"),
                      "nutrition": row["nutrition"], "target": None, "target_note": None,
                      "verdict": None, "tips": [], "ok": True}
             if "kcal" not in day_t:
@@ -581,8 +597,11 @@ def get_integration_summary(
         if not content:
             return None
         free = row["kind"] == "free_meal"
+        scale = 1.0 if free else row.get("scale", 1.0)
+        if row.get("portions"):
+            content, scale = apply_portions(content, row["portions"]), 1.0
         try:
-            return meal_breakdown(content, profile_id, scale=1.0 if free else row.get("scale", 1.0),
+            return meal_breakdown(content, profile_id, scale=scale,
                                   target=target or None, llm_gateway=llm_gateway,
                                   add_cooking_fat_g=0.0 if free else DEFAULT_COOKING_FAT_G)
         except Exception:
@@ -591,8 +610,12 @@ def get_integration_summary(
 
     def _feedback(row, target):
         content = _get_recipe_content(db, row["recipe_id"])
+        scale = row["scale"]
+        if content and row.get("portions"):
+            content, scale = apply_portions(content, row["portions"]), 1.0
         try:
-            return meal_feedback(content, profile_id, scale=row["scale"], target=target,
+            return meal_feedback(content, profile_id, scale=scale, target=target,
+                                 locked=set((row.get("portions") or {}).keys()),
                                  llm_gateway=llm_gateway) if content else None
         except Exception:
             _LOGGER.exception(f"meal_feedback failed for {row['recipe_id']}")
@@ -681,7 +704,8 @@ def get_integration_summary(
             elif consumed_only:
                 continue  # schedulato ma non consumato: fuori dalle medie
             # pranzo/cena: scaling per-componente (solo carboidrati) + olio stimato
-            nutrition = _planned_nutrition(recipe_id, scale)
+            portions = items[0].get("portions")
+            nutrition = _planned_nutrition(recipe_id, scale, portions)
             if nutrition:
                 if day_nutrition is None:
                     day_nutrition = {k: 0.0 for k in NUTRITION_KEYS}
@@ -690,6 +714,7 @@ def get_integration_summary(
                 coverages.append(1.0)
                 meal_rows[meal.get("meal_type")] = {
                     "kind": "planned", "recipe_id": recipe_id, "scale": scale,
+                    "portions": portions, "adapt_note": items[0].get("adapt_note"),
                     "consumed": (iso, meal.get("meal_type")) in consumed_main,
                     "nutrition": nutrition}
 

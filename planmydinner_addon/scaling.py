@@ -17,7 +17,8 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy.orm import Session
 
 from .database import CandidateRecipe, PlanRules, Recipe
-from .nutrition import DEFAULT_COOKING_FAT_G, compute_recipe_nutrition, recipe_nutrition_split
+from .nutrition import (DEFAULT_COOKING_FAT_G, apply_portions, compute_recipe_nutrition,
+                        recipe_nutrition_split)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -157,6 +158,14 @@ def apply_nutrition_scaling(
                 continue
             first = meal.items[0]
             if first.food_group in _DEVIATION_FG or not first.recipe_id:
+                continue
+            if getattr(first, "portions", None):
+                # porzioni già adattate per quel giorno: non si riscalano, pesano come fisse
+                content = _recipe_content(db, first.recipe_id)
+                n = compute_recipe_nutrition(apply_portions(content, first.portions), profile_id,
+                                             llm_gateway=llm_gateway,
+                                             add_cooking_fat_g=DEFAULT_COOKING_FAT_G) if content else None
+                fixed_kcal += (n or {}).get("kcal", 0.0)
                 continue
             split = _meal_split(first.recipe_id)
             if not split:

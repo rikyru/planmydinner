@@ -813,3 +813,4 @@ input[type="checkbox"] { accent-color: var(--primary); }
 .mn-ing__table th:first-child, .mn-ing__table td:first-child { text-align: left; max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mn-ing__table td.mn-hot { color: var(--warning); font-weight: 800; }
 .mn-est { font-size: 10px; color: var(--text-3); }
+.mn-adapt { margin-top: 8px; font-size: 12px; line-height: 1.4; color: var(--info); background: var(--info-soft); border-radius: var(--radius-xs); padding: 6px 9px; }

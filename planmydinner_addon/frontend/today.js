@@ -1,8 +1,8 @@
 import { defineComponent } from 'vue';
 import { localISO } from './dates.js';
 import MensaModal from './mensa.js?v=6';
-import RoutineStrip from './routine.js?v=9';
-import MealNutrition from './meal-nutrition.js?v=3';
+import RoutineStrip from './routine.js?v=10';
+import MealNutrition, { portionFactor } from './meal-nutrition.js?v=4';
 
 const TodayView = defineComponent({
     name: 'TodayView',
@@ -161,8 +161,8 @@ const TodayView = defineComponent({
                                         <tr v-for="ing in recipeDetails[meal.meal_type].content" :key="ing.name">
                                             <td>{{ ing.name }}</td>
                                             <td class="group-badge">{{ ing.food_group }}</td>
-                                            <td v-if="profileA">{{ formatQty(ing, profileA.id) }}</td>
-                                            <td v-if="profileB">{{ formatQty(ing, profileB.id) }}</td>
+                                            <td v-if="profileA">{{ formatQty(ing, profileA.id, meal.meal_type) }}</td>
+                                            <td v-if="profileB">{{ formatQty(ing, profileB.id, meal.meal_type) }}</td>
                                         </tr>
                                     </tbody>
                                 </table>
@@ -939,6 +939,8 @@ const TodayView = defineComponent({
             return { ...info, tips, ok: info.ok || !tips.length };
         },
         proteinWarnings(meal) {
+            // con porzioni adattate il bilancio della ricetta base non vale per oggi
+            if (meal?.items?.[0]?.portions) return [];
             const b = this.mealBalance(meal);
             return b ? (b.warnings || []).filter(w => w.type === 'low_protein') : [];
         },
@@ -1010,16 +1012,21 @@ const TodayView = defineComponent({
             const q = ingredient.quantities || {};
             return q[profileId] || q.persona_a || q.persona_b || q[Object.keys(q)[0]] || null;
         },
+        // fattore delle porzioni di oggi per l'ingrediente (adattamento / scale)
+        _factor(mealType, ingredient) {
+            const meal = (this.todayPlan?.meals || []).find(m => m.meal_type === mealType);
+            return portionFactor(meal?.items?.[0], meal, ingredient);
+        },
         getGrams(mealType, ingredient) {
             if (!ingredient || !this.profileA) return '?';
             const qty = this._qtyFor(ingredient, this.profileA.id);
             const g = qty ? (qty.grams_equiv ?? qty.qty ?? null) : null;
-            return g !== null && g !== undefined ? Math.round(g) : '?';
+            return g !== null && g !== undefined ? Math.round(g * this._factor(mealType, ingredient)) : '?';
         },
-        formatQty(ingredient, profileId) {
+        formatQty(ingredient, profileId, mealType) {
             const qty = this._qtyFor(ingredient, profileId);
             if (!qty) return '—';
-            const g = qty.grams_equiv ?? qty.qty;
+            const g = (qty.grams_equiv ?? qty.qty) * (mealType ? this._factor(mealType, ingredient) : 1);
             return `${Math.round(g)}${qty.unit !== 'g' ? ' ' + qty.unit : 'g'}`;
         },
         getCookingMethod(mealType) {

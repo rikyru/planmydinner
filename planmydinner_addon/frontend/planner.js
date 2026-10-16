@@ -1,7 +1,7 @@
 import { defineComponent } from 'vue';
 import { localISO } from './dates.js';
 import MensaModal from './mensa.js?v=6';
-import MealNutrition, { macroLine } from './meal-nutrition.js?v=3';
+import MealNutrition, { macroLine, portionFactor } from './meal-nutrition.js?v=4';
 
 const WeekView = defineComponent({
     name: 'WeekView',
@@ -39,7 +39,7 @@ const WeekView = defineComponent({
                     <template v-if="!loading && profiles.length >= 2">
                         <button @click.stop="generateFromHistory" :disabled="generating"
                                 class="btn-regenerate sidebar-btn"
-                                title="Riempie la settimana con le ricette che mangi davvero di più. Ignora quote e grammature del piano.">
+                                title="Le ricette che mangi davvero, con le frequenze della nutrizionista e le porzioni adattate giorno per giorno alla tua quota.">
                             {{ generating ? 'Generando...' : '🔁 Dal mio storico' }}
                         </button>
                         <button @click.stop="generateWeek(false)" :disabled="generating"
@@ -58,7 +58,7 @@ const WeekView = defineComponent({
                             {{ generating ? 'Generando...' : '✨ Fantasy' }}
                         </button>
                         <p class="hint" style="margin:6px 2px 0;font-size:11px;line-height:1.35;">
-                            <strong>Dal mio storico</strong>: le ricette che mangi davvero ·
+                            <strong>Dal mio storico</strong>: le ricette che mangi davvero, porzioni adattate alle quote ·
                             <strong>Dal catalogo</strong>: segue le quote del piano ·
                             <strong>AI</strong>: compone dai vincoli ·
                             <strong>Fantasy</strong>: inventa nuove ricette.
@@ -91,7 +91,7 @@ const WeekView = defineComponent({
                             <button @click.stop="generateFromHistory" :disabled="generating" class="btn-primary">
                                 {{ generating ? 'Generazione...' : '🔁 Dal mio storico' }}
                             </button>
-                            <span class="hint">Consigliato — riempie la settimana con le ricette che mangi davvero di più. Ignora quote e grammature del piano.</span>
+                            <span class="hint">Consigliato — le ricette che mangi davvero, con le frequenze della nutrizionista e le porzioni adattate giorno per giorno alla tua quota.</span>
                         </div>
                         <div style="display:flex;flex-direction:column;gap:4px;">
                             <button @click.stop="generateWeek(false)" :disabled="generating" class="btn-ai">
@@ -155,7 +155,7 @@ const WeekView = defineComponent({
                                         <span v-if="isNotEaten(meal)" class="meal-badge meal-badge--not-eaten">✗</span>
                                         <span v-else-if="isFree(meal)" class="meal-badge meal-badge--free">🎉</span>
                                         <span class="meal-row__text">
-                                            <span class="meal-row__name">{{ meal.items?.[0]?.item_name || '—' }}</span>
+                                            <span class="meal-row__name"><span v-if="meal.items?.[0]?.portions" title="Porzioni adattate alla quota del giorno">⚖️ </span>{{ meal.items?.[0]?.item_name || '—' }}</span>
                                             <span v-if="mealNut(day.date, meal.meal_type)" class="meal-macros">
                                                 <span class="meal-macros__dot" :class="mealNut(day.date, meal.meal_type).ok ? 'is-ok' : 'is-warn'"
                                                       :title="mealNut(day.date, meal.meal_type).ok ? 'In linea con l’obiettivo' : 'Tocca per i suggerimenti'"></span>
@@ -860,10 +860,13 @@ const WeekView = defineComponent({
             if (!this.mealRecipeDetail) return [];
             const content = this.mealRecipeDetail.content;
             const items = Array.isArray(content) ? content : (content?.components || []);
+            // grammi di QUEL giorno: porzioni adattate del pasto (o scale sui carbo)
+            const meal = this.mealModalMeal;
             return items.map(ing => {
                 const qties = ing.quantities || {};
-                const key = Object.keys(qties)[0];
-                const g = key ? Math.round(qties[key].grams_equiv || qties[key].qty) : '?';
+                const key = this.profileA && qties[this.profileA.id] ? this.profileA.id : Object.keys(qties)[0];
+                const f = portionFactor(meal?.items?.[0], meal, ing);
+                const g = key ? Math.round((qties[key].grams_equiv || qties[key].qty) * f) : '?';
                 return { name: ing.name, grams: g };
             });
         },

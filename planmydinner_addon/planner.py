@@ -5,7 +5,7 @@ import uuid
 import json
 import random
 from datetime import date, datetime, timedelta
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Set, Tuple
 import re
 
 from sqlalchemy.orm import Session
@@ -1386,7 +1386,7 @@ class PlannerEngine:
         con default conservativi per le categorie non vincolate esplicitamente
         (evita che una sola proteina riempia tutti gli slot liberi, es. uova ogni giorno)."""
         limits: Dict[str, int] = {}
-        for cat, tgt in rules.frequency_targets.items():
+        for cat, tgt in (rules.frequency_targets or {}).items():
             hard_max = tgt.get("hard_max")
             effective_max = hard_max if hard_max is not None else tgt.get("max", 7)
             limits[cat] = int(effective_max)
@@ -2028,8 +2028,11 @@ class PlannerEngine:
                               locked_slots: Optional[Dict[str, Dict[str, dict]]] = None,
                               ) -> List[schemas.DailyPlannedMeals]:
         """Genera la settimana DIRETTAMENTE dal repertorio reale: riempie gli slot
-        con le ricette che l'utente ha mangiato più spesso (affinità storica).
-        Ignora quote proteiche, grammature e ricette auto-generate.
+        con le ricette che l'utente ha mangiato più spesso (affinità storica),
+        rispettando le frequenze settimanali della nutrizionista (max per
+        categoria proteica, recupero dei minimi, niente stessa proteina a pranzo
+        e cena). Le porzioni per quota/grammature le adatta poi
+        adaptation.adapt_plan_portions. Esclude le ricette auto-generate.
 
         Rotazione settimanale garantita: ogni ricetta compare al massimo una volta
         a settimana; le ricette già mangiate/registrate questa settimana
@@ -2058,10 +2061,30 @@ class PlannerEngine:
             for meals in locked_slots.values() for item in meals.values()
             if (item or {}).get("recipe_id")
         }
+
+        # Frequenze della nutrizionista (es. carne rossa max 1, legumi min 3):
+        # contano anche i pasti già registrati in settimana.
+        limits = self._default_protein_cat_limits(rules) if rules else {}
+        mins = {cat: int((t or {}).get("min") or 0)
+                for cat, t in ((rules.frequency_targets if rules else None) or {}).items()}
+        counts: Dict[str, int] = {}
+        for rid in locked_ids:
+            cat = self._recipe_protein_category(rid)
+            if cat:
+                counts[cat] = counts.get(cat, 0) + 1
+        cat_of = {r.id: self._recipe_protein_category(r.id) for r in ranked}
+
+        slots_to_fill = [
+            ((start_date + timedelta(days=i)), mt)
+            for i in range(7) for mt in MEAL_TYPES
+            if mt not in locked_slots.get((start_date + timedelta(days=i)).isoformat(), {})
+            and (start_date + timedelta(days=i)).weekday() in slots_config.get(mt, [])
+        ]
+
         used = set(locked_ids)          # escluse per tutta la settimana
         last_id: Optional[str] = None
 
-        def _pick() -> Optional[schemas.Recipe]:
+        def _pick(remaining: int, day_cats: Set[str]) -> Optional[schemas.Recipe]:
             nonlocal used
             avail = [r for r in ranked if r.id not in used and r.id != last_id]
             if not avail:
@@ -2069,30 +2092,91 @@ class PlannerEngine:
                 # mangiati e l'ultima scelta per non ripetere di fila.
                 used = set(locked_ids)
                 avail = [r for r in ranked if r.id not in used and r.id != last_id]
-            return avail[0] if avail else None
+            if not avail:
+                return None
+            # mai oltre il massimo settimanale della categoria: piuttosto si ripete
+            # una ricetta già proposta (non di fila) che rientra nei limiti
+            def _ok(r):
+                c = cat_of[r.id]
+                return not c or counts.get(c, 0) < limits.get(c, 99)
+            within = [r for r in avail if _ok(r)]
+            if not within:
+                within = [r for r in ranked if r.id not in locked_ids and r.id != last_id and _ok(r)]
+            pool = within or avail
+            deficit = {c: m - counts.get(c, 0) for c, m in mins.items() if m - counts.get(c, 0) > 0}
+            if deficit and sum(deficit.values()) >= remaining:
+                # restano giusto gli slot per arrivare ai minimi: solo categorie in deficit
+                forced = [r for r in pool if cat_of[r.id] in deficit]
+                pool = forced or pool
+            rank = {r.id: i for i, r in enumerate(ranked)}
+
+            def score(r):
+                sc = -rank[r.id]                          # quanto la mangi (storico)
+                if cat_of[r.id] in deficit:
+                    sc += 3                               # categoria sotto il minimo
+                if cat_of[r.id] and cat_of[r.id] in day_cats:
+                    sc -= 5                               # stessa proteina a pranzo e cena
+                return sc
+            return max(pool, key=score)
 
         plan: List[schemas.DailyPlannedMeals] = []
+        filled = 0
         for i in range(7):
             day = start_date + timedelta(days=i)
             weekday = day.weekday()
             locked_day = locked_slots.get(day.isoformat(), {})
+            day_cats: Set[str] = {self._recipe_protein_category((it or {}).get("recipe_id"))
+                                  for it in locked_day.values() if (it or {}).get("recipe_id")}
             meals: List[schemas.PlannedMeal] = []
             for mt in MEAL_TYPES:
                 if mt in locked_day:
                     continue   # slot già deciso dall'utente: lo ripristina l'API
                 if weekday not in slots_config.get(mt, []):
                     continue
-                rec = _pick()
+                rec = _pick(len(slots_to_fill) - filled, day_cats)
+                filled += 1
                 if rec is None:
                     continue
                 used.add(rec.id)
                 last_id = rec.id
+                cat = cat_of.get(rec.id)
+                if cat:
+                    counts[cat] = counts.get(cat, 0) + 1
+                    day_cats.add(cat)
                 meals.append(schemas.PlannedMeal(meal_type=mt, items=[schemas.PlannedItem(
                     item_name=rec.name, food_group="recipe", quantity=0, unit="",
                     recipe_id=rec.id)]))
             plan.append(schemas.DailyPlannedMeals(date=day.isoformat(), meals=meals))
-        _LOGGER.info(f"[storico] piano da {len(ranked)} ricette, {len(locked_ids)} già fissate")
+        _LOGGER.info(f"[storico] piano da {len(ranked)} ricette, {len(locked_ids)} già fissate, "
+                     f"categorie {counts}")
         return plan
+
+    def _recipe_protein_category(self, recipe_id: Optional[str]) -> Optional[str]:
+        """Categoria proteica canonica (carne_bianca, legumi, pesce...) della
+        proteina principale di una ricetta (anche bozza/foto), o None."""
+        if not recipe_id:
+            return None
+        if not hasattr(self, "_cat_cache"):
+            self._cat_cache: Dict[str, Optional[str]] = {}
+        if recipe_id not in self._cat_cache:
+            cat = None
+            try:
+                ingredients, _ = self._get_recipe_content(recipe_id)
+            except Exception:
+                ingredients = []
+            best = 0.0
+            for ing in ingredients or []:
+                fg = (getattr(ing, "food_group", None) or "").lower()
+                if fg not in self._PROTEIN_GROUPS:
+                    continue
+                grams = 0.0
+                for q in (getattr(ing, "quantities", None) or {}).values():
+                    grams = max(grams, float(getattr(q, "grams_equiv", None) or getattr(q, "qty", 0) or 0))
+                if cat is None or grams > best:
+                    fg_res = self._infer_protein_fg(getattr(ing, "name", "") or "", fg)
+                    cat, best = self._PROTEIN_CATEGORY_MAP.get(fg_res, fg_res), grams
+            self._cat_cache[recipe_id] = cat
+        return self._cat_cache[recipe_id]
 
     def generate_weekly_plan(self, profile_id_A: str, profile_id_B: Optional[str], start_date: date, fantasy_mode: bool = False, ai_mode: Optional[str] = None, locked_slots: Optional[Dict[str, Dict[str, dict]]] = None) -> List[schemas.DailyPlannedMeals]:
         """
@@ -4495,9 +4579,13 @@ class PlannerEngine:
 
                 ingredients, _ = self._get_recipe_content(recipe_id)
 
+                portions = getattr(planned_item, "portions", None)
                 for ingredient in ingredients:
-                    is_carb = (ingredient.food_group or "").strip().lower() in ("carboidrati", "carboidrato")
-                    scale = meal_scale if is_carb else 1.0
+                    if portions:   # porzioni adattate per quel giorno
+                        scale = float(portions.get((ingredient.name or "").strip().lower(), 1.0))
+                    else:
+                        is_carb = (ingredient.food_group or "").strip().lower() in ("carboidrati", "carboidrato")
+                        scale = meal_scale if is_carb else 1.0
                     qty_data_A = ingredient.quantities.get(profile_id_A)
                     qty_data_B = ingredient.quantities.get(profile_id_B) if profile_id_B else None
                     qty_A = float(qty_data_A.grams_equiv or qty_data_A.qty) * scale if qty_data_A else 0.0

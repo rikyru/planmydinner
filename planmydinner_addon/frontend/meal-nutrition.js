@@ -30,6 +30,10 @@ const MealNutrition = defineComponent({
                 </div>
             </div>
             <div v-if="info.estimated" class="hint" style="margin-top:6px;">Stima del pasto libero.</div>
+            <div v-if="adaptChanges.length" class="mn-adapt">
+                ⚖️ <strong>Porzioni di oggi</strong> (piano nutrizionista + quota):
+                {{ adaptChanges.join(' · ') }}
+            </div>
             <!-- Chi fa sforare la quota -->
             <ul v-if="info.over && info.over.length" class="mn-over">
                 <li v-for="o in info.over" :key="o.macro">
@@ -77,6 +81,10 @@ const MealNutrition = defineComponent({
         return { showIngredients: false };
     },
     computed: {
+        // adapt_note = ["quota 812 kcal", "Pasta 100 → 85 g", ...]: qui solo i cambi
+        adaptChanges() {
+            return (this.info.adapt_note || []).filter(n => !n.startsWith('quota'));
+        },
         rows() {
             const n = this.info.nutrition || {};
             const t = this.info.target || {};
@@ -108,6 +116,18 @@ const MealNutrition = defineComponent({
 });
 
 export default MealNutrition;
+
+/**
+ * Fattore di porzione di un ingrediente in un pasto del piano: le porzioni
+ * adattate per quel giorno (item.portions) o, in mancanza, il vecchio `scale`
+ * sui soli carboidrati. Stessa regola del backend (nutrition.portion_factor).
+ */
+export function portionFactor(item, meal, ingredient) {
+    const portions = item && item.portions;
+    if (portions) return portions[(ingredient.name || '').trim().toLowerCase()] ?? 1;
+    const fg = (ingredient.food_group || '').trim().toLowerCase();
+    return (fg === 'carboidrati' || fg === 'carboidrato') ? ((meal && meal.scale) || 1) : 1;
+}
 
 /** Riga compatta "620 kcal · P 35 · C 70 · G 18". */
 export function macroLine(n) {

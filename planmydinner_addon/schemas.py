@@ -112,6 +112,10 @@ class PlannedItem(BaseModel):
     alternatives: List['PlannedItem'] = []
     shopping_list_quantity: Optional[float] = None
     recipe_id: Optional[str] = None
+    # Porzioni di questo pasto per quel giorno: {nome ingrediente minuscolo:
+    # fattore sui grammi della ricetta}. La ricetta base resta intatta.
+    portions: Optional[Dict[str, float]] = None
+    adapt_note: Optional[List[str]] = None   # es. ["quota 812 kcal", "Pasta 100 → 85 g"]
 
 PlannedItem.model_rebuild()
 

@@ -1,6 +1,6 @@
 import { defineComponent } from 'vue';
 import MensaModal from './mensa.js?v=6';
-import { macroLine } from './meal-nutrition.js?v=3';
+import { macroLine } from './meal-nutrition.js?v=4';
 
 /**
  * Strip "Colazione & spuntini" (vista Oggi): pasti fissi con logica opt-out.

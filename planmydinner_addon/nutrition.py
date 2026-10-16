@@ -738,13 +738,17 @@ def _meal_protein_tip(parts: List[Dict[str, Any]], add_g: float, exclude=()) -> 
 
 def meal_feedback(content, profile_id: str, scale: float = 1.0,
                   target: Optional[Dict[str, float]] = None, llm_gateway: Any = None,
-                  add_cooking_fat_g: float = DEFAULT_COOKING_FAT_G) -> Optional[Dict[str, Any]]:
+                  add_cooking_fat_g: float = DEFAULT_COOKING_FAT_G,
+                  locked: Optional[set] = None) -> Optional[Dict[str, Any]]:
     """Confronta un pasto (pranzo/cena) con il suo obiettivo e propone
     interventi concreti: meno grassi (olio, ingrediente grasso → alternativa
     magra), grammi di carboidrati da togliere/aggiungere per centrare le kcal,
     proteina da aggiungere. `target` = {kcal, protein_g, carbs_g, fat_g} del
     singolo pasto (chiavi opzionali); senza target valuta solo l'equilibrio
-    dei macro. Ritorna {nutrition, pct, target, tips, ok} o None."""
+    dei macro. `locked` = ingredienti (minuscolo) già fissati sulle porzioni
+    della nutrizionista per quel giorno: non si propone di cambiarli, se serve
+    si suggerisce un'aggiunta. Ritorna {nutrition, pct, target, tips, ok} o None."""
+    locked = {x.lower() for x in (locked or ())}
     parts = _meal_parts(content, profile_id, scale or 1.0, llm_gateway, add_cooking_fat_g)
     if not parts:
         return None
@@ -765,8 +769,11 @@ def meal_feedback(content, profile_id: str, scale: float = 1.0,
         protect = "protein_g" not in t or n["protein_g"] <= t["protein_g"] * (1 + MEAL_TOLERANCE)
         tips += _fat_tips(parts, n["fat_g"] - fat_goal, protect_protein=protect)
 
-    # 2. Energia: si agisce sui carboidrati (la leva usata anche dallo scaling)
+    # 2. Energia: si agisce sui carboidrati (la leva usata anche dallo scaling),
+    # a meno che il carboidrato sia già fissato sulla porzione della nutrizionista
     carb = _carb_part(parts)
+    if carb and carb["name"].lower() in locked:
+        carb = None
     if "kcal" in t:
         diff = n["kcal"] - t["kcal"]
         tol = max(t["kcal"] * MEAL_TOLERANCE, 60)
@@ -781,7 +788,9 @@ def meal_feedback(content, profile_id: str, scale: float = 1.0,
                                      f"{round(carb['grams'] - cut)} g (−{round(cut * per_g)} kcal)"})
         elif diff > tol and not tips:
             tips.append({"type": "kcal_high",
-                         "text": f"Pasto sopra l'obiettivo di ~{round(diff)} kcal: riduci la porzione"})
+                         "text": (f"~{round(diff)} kcal sopra la quota con le porzioni del piano: "
+                                  f"compensa con spuntini più leggeri") if locked else
+                                 f"Pasto sopra l'obiettivo di ~{round(diff)} kcal: riduci la porzione"})
         elif diff < -tol:
             if carb:
                 per_g = carb["per100"]["kcal"] / 100.0
@@ -793,7 +802,9 @@ def meal_feedback(content, profile_id: str, scale: float = 1.0,
             else:
                 bread = min(_round5(-diff / 2.65), 80)
                 tips.append({"type": "kcal_low",
-                             "text": f"Mancano ~{round(-diff)} kcal: aggiungi una fonte di carboidrati "
+                             "text": f"Mancano ~{round(-diff)} kcal"
+                                     + (" restando nelle porzioni del piano" if locked else "")
+                                     + f": aggiungi una fonte di carboidrati "
                                      f"(es. {bread} g di pane, +{round(bread * 2.65)} kcal)"})
     elif pct and ck / tot > BALANCE_CARB_PCT and carb:
         per_g = carb["per100"]["kcal"] / 100.0
@@ -808,6 +819,7 @@ def meal_feedback(content, profile_id: str, scale: float = 1.0,
     if protein_low:
         add = t["protein_g"] - n["protein_g"]
         touched = {tp.get("ingredient") for tp in tips if tp.get("ingredient")}
+        touched |= {p["name"] for p in parts if p["name"].lower() in locked}
         if fat_goal and n["fat_g"] >= 0.9 * fat_goal:
             # grassi già al limite: non aumentare una proteina grassa (salmone, speck...)
             touched |= {p["name"] for p in parts if p["per100"]["fat_g"] > 8}
@@ -861,3 +873,140 @@ def meal_breakdown(content, profile_id: str, scale: float = 1.0,
         over.append({"macro": k, "label": _MACRO_LABELS[k], "value": round(total, 1),
                      "target": round(t), "excess": round(total - t, 1), "culprits": culprits})
     return {"ingredients": ingredients, "over": over}
+
+
+# ── Porzioni per pasto (adattamento giorno per giorno) ─────────────────────
+# Un pasto del piano può portare `portions`: {nome ingrediente (minuscolo):
+# fattore} applicato ai grammi della ricetta per tutti i profili. La ricetta
+# base resta intatta; il fattore vale solo per quel giorno. Senza `portions`
+# vale il vecchio `scale`, che agisce sui soli carboidrati.
+
+def portion_factor(ingredient: Dict[str, Any], portions: Optional[Dict[str, float]] = None,
+                   scale: float = 1.0) -> float:
+    if portions:
+        return float(portions.get((ingredient.get("name") or "").strip().lower(), 1.0))
+    fg = (ingredient.get("food_group") or "").strip().lower()
+    return (scale or 1.0) if fg in _SCALABLE_GROUPS else 1.0
+
+
+def apply_portions(content, portions: Optional[Dict[str, float]] = None,
+                   scale: float = 1.0) -> List[Dict[str, Any]]:
+    """Copia degli ingredienti con i grammi moltiplicati per il fattore del pasto."""
+    import copy as _copy
+    out = []
+    for ing in _content_ingredients(content):
+        f = portion_factor(ing, portions, scale)
+        new = _copy.deepcopy(ing)
+        if f != 1.0:
+            for q in (new.get("quantities") or {}).values():
+                if not isinstance(q, dict):
+                    continue
+                for k in ("qty", "grams_equiv"):
+                    if isinstance(q.get(k), (int, float)):
+                        q[k] = round(q[k] * f, 1)
+        out.append(new)
+    return out
+
+
+PORTION_PROTEIN_RANGE = (0.5, 2.0)   # fattore min/max sulla proteina
+PORTION_CARB_RANGE = (0.7, 1.4)      # attorno alla grammatura della nutrizionista
+_DRY_CEREALS = ("pasta", "spaghetti", "penne", "fusilli", "trofie", "riso", "farro",
+                "orzo", "couscous", "fregola", "quinoa", "polenta")
+
+
+def _equivalent_grams(option_grams: float, option_name: str, per100: Dict[str, float],
+                      macro: str) -> Optional[float]:
+    """Grammi dell'ingrediente della ricetta equivalenti alla porzione della
+    nutrizionista, a parità del macro che conta (proteine o carboidrati): così
+    "ceci bolliti 120 g" si traduce correttamente su ceci secchi."""
+    ref = lookup_nutrition_table(option_name)
+    if not ref or not ref.get(macro) or not per100.get(macro):
+        return option_grams if ref is None else None
+    return option_grams * ref[macro] / per100[macro]
+
+
+def plan_portions(content, profile_id: str, quota: Optional[Dict[str, float]] = None,
+                  portion_for: Any = None,
+                  llm_gateway: Any = None,
+                  add_cooking_fat_g: float = DEFAULT_COOKING_FAT_G) -> Optional[Dict[str, Any]]:
+    """Porzioni di un pasto per quel giorno.
+
+    `portion_for(kind, nome_ingrediente)` → (nome opzione, grammi) | None dà la
+    grammatura della nutrizionista ("protein" / "carb") per un ingrediente.
+
+    1. Proteina principale alla grammatura della nutrizionista per quell'alimento,
+       convertita per equivalenza
+       proteica; senza indicazione la si alza solo se le proteine sono sotto quota.
+    2. Carboidrato principale partendo dalla grammatura della nutrizionista
+       poi regolato per centrare le kcal della quota restando
+       tra 0,7× e 1,4× di quella grammatura.
+    3. Condimento esplicito (olio/burro) ridotto verso 5 g se i grassi sforano.
+
+    Ritorna {portions, notes, nutrition} o None se il pasto non è calcolabile."""
+    parts = _meal_parts(content, profile_id, 1.0, llm_gateway, add_cooking_fat_g)
+    if not parts:
+        return None
+    q = {k: v for k, v in (quota or {}).items() if v and v > 0}
+    factors: Dict[str, float] = {}
+    anchored: set = set()   # ingredienti fissati sul piano/quota: restano in `portions`
+
+    def total(k):
+        return sum(p[k] * factors.get(p["name"].lower(), 1.0) for p in parts)
+
+    def clamp(x, lo, hi):
+        return max(lo, min(hi, x))
+
+    # 1. proteina
+    prots = [p for p in parts if p["food_group"] in _PROTEIN_GROUPS_BAL and p["per100"]["protein_g"] >= 5]
+    main_p = max(prots, key=lambda p: p["protein_g"]) if prots else None
+    if main_p:
+        target_g = None
+        protein_portion = portion_for("protein", main_p) if portion_for else None
+        if protein_portion:
+            target_g = _equivalent_grams(protein_portion[1], protein_portion[0],
+                                         main_p["per100"], "protein_g")
+        elif "protein_g" in q and total("protein_g") < 0.85 * q["protein_g"]:
+            missing = q["protein_g"] - total("protein_g")
+            target_g = main_p["grams"] + missing / (main_p["per100"]["protein_g"] / 100.0)
+        if target_g:
+            factors[main_p["name"].lower()] = round(clamp(target_g / main_p["grams"], *PORTION_PROTEIN_RANGE), 3)
+            anchored.add(main_p["name"].lower())
+
+    # 2. carboidrato
+    carbs = [p for p in parts if p["food_group"] in _SCALABLE_GROUPS and p["per100"]["kcal"] > 0]
+    main_c = max(carbs, key=lambda p: p["kcal"]) if carbs else None
+    if main_c:
+        anchor = main_c["grams"]
+        carb_portion = portion_for("carb", main_c) if portion_for else None
+        if carb_portion:
+            eq = _equivalent_grams(carb_portion[1], carb_portion[0], main_c["per100"], "carbs_g")
+            if eq:
+                anchor = eq
+        name = main_c["name"].lower()
+        factors[name] = anchor / main_c["grams"]
+        if "kcal" in q:
+            diff = q["kcal"] - total("kcal")
+            grams = anchor + diff / (main_c["per100"]["kcal"] / 100.0)
+            grams = clamp(grams, anchor * PORTION_CARB_RANGE[0], anchor * PORTION_CARB_RANGE[1])
+            factors[name] = grams / main_c["grams"]
+        g = max(_round5(main_c["grams"] * factors[name]), 5)
+        factors[name] = round(g / main_c["grams"], 3)
+        if carb_portion or "kcal" in q:
+            anchored.add(name)
+
+    # 3. condimenti espliciti se i grassi sforano
+    if "fat_g" in q and total("fat_g") > q["fat_g"] * (1 + MEAL_TOLERANCE):
+        for p in parts:
+            if p["added_fat"] and not p.get("estimated") and p["key"] in ("olio", "burro") and p["grams"] > 5:
+                factors[p["name"].lower()] = round(5 / p["grams"], 3)
+
+    portions = {k: (v if abs(v - 1.0) >= 0.03 else 1.0) for k, v in factors.items()
+                if abs(v - 1.0) >= 0.03 or k in anchored}
+    notes = []
+    for p in parts:
+        f = portions.get(p["name"].lower())
+        if f and f != 1.0:
+            notes.append(f"{p['name']} {round(p['grams'])} → {round(p['grams'] * f)} g")
+    factors = dict(portions)
+    return {"portions": portions, "notes": notes,
+            "nutrition": {k: round(total(k), 1) for k in NUTRITION_KEYS}}
