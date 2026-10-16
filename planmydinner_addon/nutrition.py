@@ -909,7 +909,9 @@ def apply_portions(content, portions: Optional[Dict[str, float]] = None,
 
 
 PORTION_PROTEIN_RANGE = (0.5, 2.0)   # fattore min/max sulla proteina
-PORTION_CARB_RANGE = (0.7, 1.4)      # attorno alla grammatura della nutrizionista
+PORTION_CARB_RANGE = (0.75, 1.25)    # attorno alla grammatura della nutrizionista
+PORTION_PROTEIN_QUOTA_MAX = 1.5      # senza grammatura del piano: aumento massimo
+_FATTY_PROTEIN_FAT = 8.0             # g grassi/100 g: oltre, non si aumenta "a quota"
 _DRY_CEREALS = ("pasta", "spaghetti", "penne", "fusilli", "trofie", "riso", "farro",
                 "orzo", "couscous", "fregola", "quinoa", "polenta")
 
@@ -965,9 +967,12 @@ def plan_portions(content, profile_id: str, quota: Optional[Dict[str, float]] = 
         if protein_portion:
             target_g = _equivalent_grams(protein_portion[1], protein_portion[0],
                                          main_p["per100"], "protein_g")
-        elif "protein_g" in q and total("protein_g") < 0.85 * q["protein_g"]:
+        elif ("protein_g" in q and total("protein_g") < 0.85 * q["protein_g"]
+              and main_p["per100"]["fat_g"] <= _FATTY_PROTEIN_FAT):
+            # nessuna grammatura del piano: si alza con moderazione e solo se magra
             missing = q["protein_g"] - total("protein_g")
-            target_g = main_p["grams"] + missing / (main_p["per100"]["protein_g"] / 100.0)
+            target_g = min(main_p["grams"] + missing / (main_p["per100"]["protein_g"] / 100.0),
+                           main_p["grams"] * PORTION_PROTEIN_QUOTA_MAX)
         if target_g:
             factors[main_p["name"].lower()] = round(clamp(target_g / main_p["grams"], *PORTION_PROTEIN_RANGE), 3)
             anchored.add(main_p["name"].lower())
@@ -984,12 +989,14 @@ def plan_portions(content, profile_id: str, quota: Optional[Dict[str, float]] = 
                 anchor = eq
         name = main_c["name"].lower()
         factors[name] = anchor / main_c["grams"]
+        lo, hi = anchor * PORTION_CARB_RANGE[0], anchor * PORTION_CARB_RANGE[1]
         if "kcal" in q:
             diff = q["kcal"] - total("kcal")
             grams = anchor + diff / (main_c["per100"]["kcal"] / 100.0)
-            grams = clamp(grams, anchor * PORTION_CARB_RANGE[0], anchor * PORTION_CARB_RANGE[1])
-            factors[name] = grams / main_c["grams"]
+            factors[name] = clamp(grams, lo, hi) / main_c["grams"]
         g = max(_round5(main_c["grams"] * factors[name]), 5)
+        if "kcal" in q:   # l'arrotondamento a 5 g non deve uscire dal margine
+            g = g - 5 if g > hi and g - 5 >= 5 else (g + 5 if g < lo else g)
         factors[name] = round(g / main_c["grams"], 3)
         if carb_portion or "kcal" in q:
             anchored.add(name)

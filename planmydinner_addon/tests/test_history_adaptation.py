@@ -69,7 +69,7 @@ def test_carbs_fit_kcal_quota_within_range():
     g_low = 100 * low["portions"].get("pasta", 1.0)
     g_high = 100 * high["portions"].get("pasta", 1.0)
     assert g_low < g_high
-    assert 0.7 * 70 - 1 <= g_low and g_high <= 1.4 * 70 + 1   # vicino alla grammatura della nutrizionista
+    assert 0.75 * 70 - 1 <= g_low and g_high <= 1.25 * 70 + 1   # vicino alla grammatura della nutrizionista
     assert abs(high["nutrition"]["kcal"] - 560) < abs(
         compute_recipe_nutrition(content, "persona_a", add_cooking_fat_g=8)["kcal"] - 560)
 
@@ -152,3 +152,17 @@ def test_history_works_with_rules_without_frequencies(setup_database):
     _rules(db, frequency_targets=None, nutrition_targets={"kcal": 1800})
     plan = PlannerEngine(db).generate_from_history("persona_a", "persona_b", TODAY)
     assert any(m.items for d in plan for m in d.meals)
+
+
+def test_puff_pastry_is_not_semolina_pasta():
+    from planmydinner_addon.adaptation import _same_food
+    assert not _same_food("Pasta sfoglia", "pasta di semola")
+    assert _same_food("Pasta", "pasta di semola")
+    assert _same_food("Tonno", "tonno sott'olio - sgocciolato")
+
+
+def test_quota_raise_is_moderate_and_skips_fatty_proteins():
+    lean = plan_portions([_ing("Gamberetti", "pesce", 60)], "persona_a", quota={"protein_g": 60})
+    assert 60 * lean["portions"]["gamberetti"] <= 90 + 0.5        # max 1,5× senza grammatura del piano
+    fatty = plan_portions([_ing("Ricotta", "latticini", 80)], "persona_a", quota={"protein_g": 60})
+    assert "ricotta" not in fatty["portions"]                      # formaggio: non si aumenta a quota

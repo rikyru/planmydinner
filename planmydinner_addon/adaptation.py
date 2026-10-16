@@ -57,8 +57,15 @@ def meal_quota(targets: Optional[Dict[str, Any]], by_date: Optional[Dict[str, An
     return quota
 
 
+# Parole che fanno di un alimento un'altra cosa: "pasta sfoglia" non è "pasta di semola".
+_OTHER_FOOD_WORDS = ("sfoglia", "brisè", "brisée", "brisee", "frolla", "pizza", "gnocchi")
+
+
 def _same_food(a: str, b: str) -> bool:
     from .planner import PlannerEngine
+    la, lb = a.lower(), b.lower()
+    if any((w in la) != (w in lb) for w in _OTHER_FOOD_WORDS):
+        return False
     if PlannerEngine._rotation_key(a) == PlannerEngine._rotation_key(b):
         return True
     ka, kb = _match_table_key(a.lower()), _match_table_key(b.lower())
