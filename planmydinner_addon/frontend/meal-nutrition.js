@@ -30,15 +30,20 @@ const MealNutrition = defineComponent({
                 </div>
             </div>
             <div v-if="info.estimated" class="hint" style="margin-top:6px;">Stima del pasto libero.</div>
-            <ul v-if="info.tips && info.tips.length" class="mn-tips">
+            <!-- Pasto già registrato: bilancio, non consigli a posteriori -->
+            <div v-if="info.verdict" class="mn-verdict" :class="info.ok ? 'is-ok' : 'is-off'">
+                {{ info.ok ? '✓' : '⚖️' }} {{ info.verdict }}
+            </div>
+            <ul v-else-if="info.tips && info.tips.length" class="mn-tips">
                 <li v-for="(t, i) in info.tips" :key="i">
                     <span class="mn-tip-icon">{{ icon(t.type) }}</span><span>{{ t.text }}</span>
                 </li>
             </ul>
-            <div v-else-if="info.target && info.ok" class="mn-ok">✓ In linea con l'obiettivo del pasto</div>
+            <div v-else-if="info.target && info.ok" class="mn-ok">✓ In linea con la quota del pasto</div>
             <div v-else-if="!info.target && !compact" class="hint" style="margin-top:6px;">
                 Imposta un obiettivo giornaliero (📊 Storico) per suggerimenti su misura.
             </div>
+            <div v-if="info.target_note" class="mn-note">ℹ️ {{ info.target_note }}</div>
         </div>
     `,
     computed: {

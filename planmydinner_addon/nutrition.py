@@ -703,7 +703,7 @@ def _fat_tips(parts: List[Dict[str, Any]], excess_fat: float,
         if saving < 3:
             continue
         tips.append({"type": "fat", "text": f"{text} (−{round(saving)} g grassi)",
-                     "saving_fat_g": round(saving)})
+                     "saving_fat_g": round(saving), "ingredient": p["name"]})
         covered += saving
     return tips
 
@@ -717,10 +717,12 @@ _LEAN_PROTEINS = (("petto di pollo", "pollo"), ("bresaola", "bresaola"),
                   ("fiocchi di latte", None))
 
 
-def _meal_protein_tip(parts: List[Dict[str, Any]], add_g: float) -> str:
+def _meal_protein_tip(parts: List[Dict[str, Any]], add_g: float, exclude=()) -> str:
     """Grammi in più della proteina principale del piatto; se servirebbe più che
-    raddoppiarla, propone un'aggiunta magra a parte."""
-    prot = [p for p in parts if p["food_group"] in _PROTEIN_GROUPS_BAL and p["per100"]["protein_g"] >= 5]
+    raddoppiarla (o se quell'ingrediente è già da sostituire), propone
+    un'aggiunta magra a parte."""
+    prot = [p for p in parts if p["food_group"] in _PROTEIN_GROUPS_BAL
+            and p["per100"]["protein_g"] >= 5 and p["name"] not in exclude]
     main = max(prot, key=lambda p: p["protein_g"]) if prot else None
     if main:
         extra = _round5(add_g / (main["per100"]["protein_g"] / 100.0))
@@ -805,7 +807,8 @@ def meal_feedback(content, profile_id: str, scale: float = 1.0,
     # 3. Proteine: più della proteina già nel piatto, se la dose resta sensata
     if protein_low:
         add = t["protein_g"] - n["protein_g"]
-        tips.append({"type": "protein", "text": _meal_protein_tip(parts, add)})
+        touched = {tp.get("ingredient") for tp in tips if tp.get("ingredient")}
+        tips.append({"type": "protein", "text": _meal_protein_tip(parts, add, exclude=touched)})
 
     return {
         "nutrition": {k: round(n[k], 1) for k in NUTRITION_KEYS},

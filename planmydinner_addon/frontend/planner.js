@@ -1,7 +1,7 @@
 import { defineComponent } from 'vue';
 import { localISO } from './dates.js';
 import MensaModal from './mensa.js?v=6';
-import MealNutrition, { macroLine } from './meal-nutrition.js?v=1';
+import MealNutrition, { macroLine } from './meal-nutrition.js?v=2';
 
 const WeekView = defineComponent({
     name: 'WeekView',

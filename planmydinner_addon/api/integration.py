@@ -490,43 +490,114 @@ def get_integration_summary(
         if e.type != "skipped":
             consumed_main.add((e.date, e.meal_type))
 
-    def _meal_details(meal_rows, iso, routine_day, extra_day, targets, targets_by_date):
-        """Obiettivo per pasto = (target del giorno − pasti fissi − merende)
-        diviso tra i pasti principali del giorno; poi feedback per ciascuno."""
+    def _meal_details(meal_rows, iso, routine_day, extra_day, targets, targets_by_date,
+                      skipped_main=0, unknown_free=False):
+        """Quota di ciascun pasto principale e indicazioni coerenti col giorno.
+
+        budget = obiettivo del giorno − colazione/spuntini − extra.
+        - Quota "di piano" = budget ÷ pasti principali del giorno (pranzo+cena,
+          meno quelli segnati come non mangiati).
+        - Pasto da mangiare: quota = (budget − pasti già registrati) ÷ pasti
+          rimasti, così se a pranzo hai sforato la cena ha meno margine; i
+          suggerimenti (riduci/aumenta) puntano a questa quota.
+        - Pasto registrato: niente suggerimenti a posteriori, solo il bilancio
+          (scarto dalla quota e cosa resta per il resto della giornata).
+        """
         day_t = dict(targets or {})
         day_t.update({k: v for k, v in ((targets_by_date or {}).get(iso) or {}).items()
                       if k in NUTRITION_KEYS})
-        # l'obiettivo si divide solo tra pranzo e cena: altri slot del piano
-        # (es. merenda_tardo) restano senza obiettivo né suggerimenti
-        main_types = [mt for mt in meal_rows if mt in MAIN_MEALS]
-        n_main = max(len(main_types), 1)
-        meal_t = {}
-        for k in NUTRITION_KEYS:
-            if day_t.get(k):
-                left = float(day_t[k]) - (routine_day or {}).get(k, 0) - (extra_day or {}).get(k, 0)
-                if left > 0:
-                    meal_t[k] = left / n_main
+        routine_kcal = (routine_day or {}).get("kcal", 0)
+        extra_kcal = (extra_day or {}).get("kcal", 0)
+        n_main = max(len(MAIN_MEALS) - skipped_main, 1)
+        budget = {k: float(day_t[k]) - (routine_day or {}).get(k, 0) - (extra_day or {}).get(k, 0)
+                  for k in NUTRITION_KEYS if day_t.get(k)}
+        plan_t = {k: v / n_main for k, v in budget.items() if v > 0}
+
+        eaten = {mt: r for mt, r in meal_rows.items() if r.get("consumed")}
+        n_left = n_main - len(eaten) - (1 if unknown_free else 0)
+        eaten_sum = {k: sum(r["nutrition"][k] for r in eaten.values()) for k in NUTRITION_KEYS}
+        if eaten and n_left > 0 and not unknown_free:
+            left_t = {k: max(budget[k] - eaten_sum[k], 0) / n_left for k in budget}
+        else:
+            left_t = plan_t
+
+        def _base_note():
+            parts = [f"{round(day_t['kcal'])} obiettivo"]
+            if routine_kcal:
+                parts.append(f"{round(routine_kcal)} colazione/spuntini")
+            if extra_kcal:
+                parts.append(f"{round(extra_kcal)} extra")
+            return parts
+
         out = {}
         for mt, row in meal_rows.items():
-            entry = {"kind": row["kind"], "consumed": row.get("consumed", False),
+            entry = {"kind": row["kind"], "consumed": bool(row.get("consumed")),
                      "estimated": row.get("estimated", False),
-                     "nutrition": row["nutrition"],
-                     "target": {k: round(v) for k, v in meal_t.items()} or None,
-                     "tips": [], "ok": True}
-            if mt not in MAIN_MEALS:
-                entry["target"] = None
-            elif row["kind"] == "planned":
-                content = _get_recipe_content(db, row["recipe_id"])
-                try:
-                    fb = meal_feedback(content, profile_id, scale=row["scale"],
-                                       target=meal_t or None, llm_gateway=llm_gateway) if content else None
-                except Exception:
-                    _LOGGER.exception(f"meal_feedback failed for {row['recipe_id']}")
-                    fb = None
-                if fb:
-                    entry.update(pct=fb["pct"], tips=fb["tips"], ok=fb["ok"])
+                     "nutrition": row["nutrition"], "target": None, "target_note": None,
+                     "verdict": None, "tips": [], "ok": True}
+            if "kcal" not in day_t:
+                # senza obiettivo: solo l'equilibrio dei macro sui pasti da mangiare
+                if row["kind"] == "planned" and not entry["consumed"]:
+                    fb = _feedback(row, None)
+                    if fb:
+                        entry.update(pct=fb["pct"], tips=fb["tips"], ok=fb["ok"])
+                out[mt] = entry
+                continue
+
+            if entry["consumed"]:
+                t = plan_t
+                entry["target_note"] = ("Quota = (" + " − ".join(_base_note()) + f") ÷ {n_main} pasti")
+                entry["verdict"] = _verdict(mt, row, t, eaten, n_left, budget, eaten_sum, day_t)
+                entry["ok"] = abs(row["nutrition"]["kcal"] - t.get("kcal", 0)) <= max(t.get("kcal", 0) * 0.1, 60)
+            else:
+                t = left_t
+                parts = _base_note()
+                for emt, er in eaten.items():
+                    parts.append(f"{round(er['nutrition']['kcal'])} già mangiate a {emt}")
+                n = n_left if (eaten and not unknown_free) else n_main
+                entry["target_note"] = ("Quota = (" + " − ".join(parts) + f") ÷ {n} "
+                                        + ("pasto rimasto" if n == 1 else "pasti"))
+                if row["kind"] == "planned":
+                    fb = _feedback(row, t or None)
+                    if fb:
+                        entry.update(pct=fb["pct"], tips=fb["tips"], ok=fb["ok"])
+            entry["target"] = {k: round(v) for k, v in t.items()} or None
             out[mt] = entry
         return out
+
+    def _feedback(row, target):
+        content = _get_recipe_content(db, row["recipe_id"])
+        try:
+            return meal_feedback(content, profile_id, scale=row["scale"], target=target,
+                                 llm_gateway=llm_gateway) if content else None
+        except Exception:
+            _LOGGER.exception(f"meal_feedback failed for {row['recipe_id']}")
+            return None
+
+    def _verdict(mt, row, t, eaten, n_left, budget, eaten_sum, day_t):
+        """Bilancio di un pasto già registrato rispetto alla sua quota e al giorno."""
+        kcal, quota = row["nutrition"]["kcal"], t.get("kcal", 0)
+        diff = kcal - quota
+        tol = max(quota * 0.1, 60)
+        if abs(diff) <= tol:
+            head = "In linea con la quota"
+        elif diff > 0:
+            head = f"{round(diff)} kcal sopra la quota"
+        else:
+            head = f"{round(-diff)} kcal sotto la quota"
+        others = [m for m in MAIN_MEALS if m != mt and m not in eaten]
+        if n_left > 0 and others:
+            left = budget.get("kcal", 0) - eaten_sum["kcal"]
+            return f"{head}: per {' e '.join(others)} restano ~{round(max(left, 0))} kcal"
+        day_total = eaten_sum["kcal"] + (day_t["kcal"] - budget.get("kcal", day_t["kcal"]))
+        gap = day_total - day_t["kcal"]
+        if abs(gap) <= day_t["kcal"] * 0.05:
+            tail = f"giornata in linea ({round(day_total)} / {round(day_t['kcal'])} kcal)"
+        elif gap > 0:
+            tail = f"giornata {round(gap)} kcal sopra l'obiettivo"
+        else:
+            tail = f"giornata {round(-gap)} kcal sotto l'obiettivo"
+        return f"{head} · {tail}"
 
     days = []
     totals = {k: 0.0 for k in NUTRITION_KEYS}
@@ -568,7 +639,7 @@ def get_integration_summary(
                     coverages.append(nutrition.get("coverage", 1.0))
                     has_estimated_meal = True
                     meal_rows[meal.get("meal_type")] = {
-                        "kind": "free_meal", "estimated": True,
+                        "kind": "free_meal", "estimated": True, "consumed": True,
                         "nutrition": {k: round(nutrition[k] * scale, 1) for k in NUTRITION_KEYS}}
                 else:
                     unestimated_free_meal = True
@@ -638,7 +709,8 @@ def get_integration_summary(
         }
         if meal_detail:
             day_entry["meals"] = _meal_details(
-                meal_rows, iso, routine_day, extra_day, targets, targets_by_date)
+                meal_rows, iso, routine_day, extra_day, targets, targets_by_date,
+                skipped_main=not_eaten, unknown_free=unestimated_free_meal)
         if day_nutrition is not None:
             day_entry["nutrition"] = {k: round(day_nutrition[k], 1) for k in NUTRITION_KEYS}
             day_entry["nutrition"]["coverage"] = round(sum(coverages) / len(coverages), 2) if coverages else 1.0

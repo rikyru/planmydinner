@@ -192,6 +192,39 @@ class TestSummaryMealDetail:
         assert set(tuesday["meals"]) == {"pranzo"}
 
 
+class TestMealQuotaAfterLogging:
+    def test_logged_meal_gets_verdict_and_next_meal_quota_shrinks(self, client, setup_database):
+        import uuid as _uuid
+        from planmydinner_addon.database import ConsumedEntry, PlanRules
+        _make_plan(setup_database)
+        db = setup_database
+        rules = db.query(PlanRules).filter(PlanRules.profile_id == "persona_a").first()
+        if rules is None:
+            rules = PlanRules(id="rules-quota", profile_id="persona_a", imported_at=TODAY)
+            db.add(rules)
+        rules.nutrition_targets = {"kcal": 1000}
+        db.add(ConsumedEntry(id=str(_uuid.uuid4()), profile_id="persona_a", date=MONDAY,
+                             meal_type="pranzo", type="planned",
+                             consumed_recipe_id="pasta_pomodoro_recipe"))
+        db.commit()
+
+        monday = client.get("/integration/summary", params={
+            "profile_id": "persona_a", "start_date": MONDAY, "end_date": MONDAY,
+            "meal_detail": True,
+        }).json()["days"][0]
+        pranzo, cena = monday["meals"]["pranzo"], monday["meals"]["cena"]
+        eaten = pranzo["nutrition"]["kcal"]
+        # pranzo registrato: quota di piano (1000 ÷ 2), nessun consiglio a posteriori
+        assert pranzo["consumed"] is True
+        assert pranzo["target"]["kcal"] == 500
+        assert pranzo["tips"] == []
+        assert "cena" in pranzo["verdict"] and "restano" in pranzo["verdict"]
+        # cena da mangiare: quota = quello che resta dopo il pranzo
+        assert cena["consumed"] is False
+        assert cena["target"]["kcal"] == pytest.approx(1000 - eaten, abs=1)
+        assert "già mangiate a pranzo" in cena["target_note"]
+
+
 class TestFreeMealExcludedFromAverages:
     def test_fully_free_day_has_no_nutrition_and_is_excluded(self, client, setup_database):
         from planmydinner_addon.database import GeneratedWeeklyPlan

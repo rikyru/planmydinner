@@ -102,3 +102,13 @@ def test_carb_is_cut_once_and_estimated_oil_not_flagged():
     pizza = [t for t in fb["tips"] if "Pizza" in t["text"]]
     assert len(pizza) == 1 and pizza[0]["type"] == "kcal_high"
     assert not any("olio" in t["text"] for t in fb["tips"])
+
+
+def test_swapped_ingredient_is_not_also_increased():
+    # speck grasso e proteine basse: "sostituisci speck" e NON "aumenta speck"
+    content = [_ing("Speck", "carne_rossa", 60), _ing("Riso", "carboidrati", 80)]
+    fb = meal_feedback(content, "persona_a",
+                       target={"kcal": 700, "protein_g": 40, "fat_g": 8})
+    texts = [t["text"] for t in fb["tips"]]
+    assert any(t.startswith("Sostituisci Speck") for t in texts), texts
+    assert not any(t.startswith("Aumenta Speck") for t in texts), texts
