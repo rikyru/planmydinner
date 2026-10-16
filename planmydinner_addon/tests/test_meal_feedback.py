@@ -1,4 +1,5 @@
 """Feedback per pasto: macro vs obiettivo del pasto + suggerimenti concreti."""
+import pytest
 from planmydinner_addon.nutrition import meal_feedback
 
 
@@ -112,3 +113,42 @@ def test_swapped_ingredient_is_not_also_increased():
     texts = [t["text"] for t in fb["tips"]]
     assert any(t.startswith("Sostituisci Speck") for t in texts), texts
     assert not any(t.startswith("Aumenta Speck") for t in texts), texts
+
+
+def test_breakdown_lists_ingredients_and_fat_culprits():
+    from planmydinner_addon.nutrition import meal_breakdown
+    content = [
+        _ing("Speck", "carne_rossa", 80),
+        _ing("Riso", "carboidrati", 80),
+        _ing("Burro", "condimenti", 10),
+        _ing("Zucchine", "verdure", 150),
+    ]
+    bd = meal_breakdown(content, "persona_a", target={"kcal": 900, "fat_g": 12})
+    names = [i["name"] for i in bd["ingredients"]]
+    assert set(names) == {"Speck", "Riso", "Burro", "Zucchine"}   # burro presente: niente olio stimato
+    # la somma degli ingredienti è il totale del pasto
+    fb = meal_feedback(content, "persona_a")
+    assert sum(i["kcal"] for i in bd["ingredients"]) == pytest.approx(fb["nutrition"]["kcal"], abs=1)
+    over = {o["macro"]: o for o in bd["over"]}
+    assert "fat_g" in over and "kcal" not in over
+    assert over["fat_g"]["culprits"][0]["name"] == "Speck"
+    assert over["fat_g"]["excess"] > 0
+
+
+def test_breakdown_includes_estimated_cooking_oil():
+    from planmydinner_addon.nutrition import meal_breakdown
+    bd = meal_breakdown([_ing("Pollo", "carne_bianca", 150)], "persona_a")
+    oil = [i for i in bd["ingredients"] if i["estimated"]]
+    assert len(oil) == 1 and oil[0]["grams"] == 8
+    assert bd["over"] == []   # senza quota nessuno "sfora"
+
+
+def test_fat_at_limit_protein_tip_avoids_fatty_protein():
+    # salmone: proteine sotto quota ma grassi al limite → niente "aumenta salmone"
+    content = [_ing("Salmone", "pesce", 150), _ing("Pasta", "carboidrati", 80),
+               _ing("Olio extravergine d'oliva", "condimenti", 10)]
+    fb = meal_feedback(content, "persona_a",
+                       target={"kcal": 800, "protein_g": 51, "fat_g": 26})
+    texts = [t["text"] for t in fb["tips"]]
+    assert not any(t.startswith("Aumenta Salmone") for t in texts), texts
+    assert any("petto di pollo" in t for t in texts), texts

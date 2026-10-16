@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session
 from .. import schemas
 from ..database import get_db, CandidateRecipe, ConsumedEntry, GeneratedWeeklyPlan, PlanRules, Recipe
 from ..nutrition import (DEFAULT_COOKING_FAT_G, NUTRITION_KEYS, compute_recipe_nutrition,
-                         meal_feedback, recipe_nutrition_split, scaled_nutrition)
+                         meal_breakdown, meal_feedback, recipe_nutrition_split, scaled_nutrition)
 from ..scaling import apply_nutrition_scaling, day_target_kcal
 from .planner import compute_adherence_stats
 
@@ -541,6 +541,9 @@ def get_integration_summary(
                     fb = _feedback(row, None)
                     if fb:
                         entry.update(pct=fb["pct"], tips=fb["tips"], ok=fb["ok"])
+                bd = _breakdown(row, None)
+                if bd:
+                    entry["ingredients"], entry["over"] = bd["ingredients"], []
                 out[mt] = entry
                 continue
 
@@ -562,8 +565,29 @@ def get_integration_summary(
                     if fb:
                         entry.update(pct=fb["pct"], tips=fb["tips"], ok=fb["ok"])
             entry["target"] = {k: round(v) for k, v in t.items()} or None
+            bd = _breakdown(row, t)
+            if bd:
+                entry["ingredients"], entry["over"] = bd["ingredients"], bd["over"]
             out[mt] = entry
         return out
+
+    def _breakdown(row, target):
+        """Ingredienti del pasto con il loro contributo + chi fa sforare la quota.
+        Stesse ipotesi del totale: carboidrati scalati e olio di cottura stimato
+        per i pasti del piano; il pasto libero stimato senza olio aggiunto."""
+        if not row.get("recipe_id"):
+            return None
+        content = _get_recipe_content(db, row["recipe_id"])
+        if not content:
+            return None
+        free = row["kind"] == "free_meal"
+        try:
+            return meal_breakdown(content, profile_id, scale=1.0 if free else row.get("scale", 1.0),
+                                  target=target or None, llm_gateway=llm_gateway,
+                                  add_cooking_fat_g=0.0 if free else DEFAULT_COOKING_FAT_G)
+        except Exception:
+            _LOGGER.exception(f"meal_breakdown failed for {row['recipe_id']}")
+            return None
 
     def _feedback(row, target):
         content = _get_recipe_content(db, row["recipe_id"])
@@ -640,6 +664,7 @@ def get_integration_summary(
                     has_estimated_meal = True
                     meal_rows[meal.get("meal_type")] = {
                         "kind": "free_meal", "estimated": True, "consumed": True,
+                        "recipe_id": recipe_id, "scale": scale,
                         "nutrition": {k: round(nutrition[k] * scale, 1) for k in NUTRITION_KEYS}}
                 else:
                     unestimated_free_meal = True

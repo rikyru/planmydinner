@@ -804,3 +804,12 @@ input[type="checkbox"] { accent-color: var(--primary); }
 .mn-verdict.is-ok  { color: var(--success); background: var(--success-soft); }
 .mn-verdict.is-off { color: var(--text-2); background: var(--surface-2); }
 .mn-note { margin-top: 6px; font-size: 11px; color: var(--text-3); line-height: 1.35; }
+.mn-over { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; line-height: 1.4; color: var(--text-2); }
+.mn-ing { margin-top: 8px; }
+.mn-ing__toggle { background: none; border: none; padding: 2px 0; font-size: 12.5px; font-weight: 600; color: var(--primary); cursor: pointer; }
+.mn-ing__table { width: 100%; border-collapse: collapse; margin-top: 4px; font-size: 12px; }
+.mn-ing__table th { text-align: right; font-weight: 600; color: var(--text-3); padding: 4px 4px; border-bottom: 1px solid var(--border); }
+.mn-ing__table td { text-align: right; padding: 5px 4px; border-bottom: 1px solid var(--surface-2); font-variant-numeric: tabular-nums; }
+.mn-ing__table th:first-child, .mn-ing__table td:first-child { text-align: left; max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mn-ing__table td.mn-hot { color: var(--warning); font-weight: 800; }
+.mn-est { font-size: 10px; color: var(--text-3); }

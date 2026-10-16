@@ -30,6 +30,14 @@ const MealNutrition = defineComponent({
                 </div>
             </div>
             <div v-if="info.estimated" class="hint" style="margin-top:6px;">Stima del pasto libero.</div>
+            <!-- Chi fa sforare la quota -->
+            <ul v-if="info.over && info.over.length" class="mn-over">
+                <li v-for="o in info.over" :key="o.macro">
+                    🔺 <strong>{{ o.label }} oltre la quota</strong> (+{{ fmt(o.excess, o.macro) }}):
+                    soprattutto
+                    <template v-for="(c, i) in o.culprits" :key="c.name">{{ i ? ', ' : ' ' }}<strong>{{ c.name }}</strong> {{ fmt(c.value, o.macro) }} ({{ c.share }}%)</template>
+                </li>
+            </ul>
             <!-- Pasto già registrato: bilancio, non consigli a posteriori -->
             <div v-if="info.verdict" class="mn-verdict" :class="info.ok ? 'is-ok' : 'is-off'">
                 {{ info.ok ? '✓' : '⚖️' }} {{ info.verdict }}
@@ -43,9 +51,31 @@ const MealNutrition = defineComponent({
             <div v-else-if="!info.target && !compact" class="hint" style="margin-top:6px;">
                 Imposta un obiettivo giornaliero (📊 Storico) per suggerimenti su misura.
             </div>
+            <!-- Dettaglio per ingrediente -->
+            <div v-if="info.ingredients && info.ingredients.length" class="mn-ing">
+                <button class="mn-ing__toggle" @click="showIngredients = !showIngredients">
+                    {{ showIngredients ? '▾' : '▸' }} Valori per ingrediente
+                </button>
+                <table v-if="showIngredients" class="mn-ing__table">
+                    <thead><tr><th>Ingrediente</th><th>g</th><th>kcal</th><th>P</th><th>C</th><th>G</th></tr></thead>
+                    <tbody>
+                        <tr v-for="ing in info.ingredients" :key="ing.name">
+                            <td>{{ ing.name }}<span v-if="ing.estimated" class="mn-est"> stimato</span></td>
+                            <td>{{ ing.grams }}</td>
+                            <td :class="{ 'mn-hot': isCulprit('kcal', ing.name) }">{{ Math.round(ing.kcal) }}</td>
+                            <td>{{ Math.round(ing.protein_g) }}</td>
+                            <td :class="{ 'mn-hot': isCulprit('carbs_g', ing.name) }">{{ Math.round(ing.carbs_g) }}</td>
+                            <td :class="{ 'mn-hot': isCulprit('fat_g', ing.name) }">{{ Math.round(ing.fat_g) }}</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
             <div v-if="info.target_note" class="mn-note">ℹ️ {{ info.target_note }}</div>
         </div>
     `,
+    data() {
+        return { showIngredients: false };
+    },
     computed: {
         rows() {
             const n = this.info.nutrition || {};
@@ -69,6 +99,11 @@ const MealNutrition = defineComponent({
     },
     methods: {
         icon(type) { return TIP_ICONS[type] || '💡'; },
+        fmt(v, macro) { return Math.round(v) + (macro === 'kcal' ? ' kcal' : ' g'); },
+        isCulprit(macro, name) {
+            const o = (this.info.over || []).find(x => x.macro === macro);
+            return !!(o && o.culprits.some(c => c.name === name));
+        },
     },
 });
 

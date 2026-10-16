@@ -223,6 +223,10 @@ class TestMealQuotaAfterLogging:
         assert cena["consumed"] is False
         assert cena["target"]["kcal"] == pytest.approx(1000 - eaten, abs=1)
         assert "già mangiate a pranzo" in cena["target_note"]
+        # dettaglio ingredienti anche per il pasto registrato, coerente col totale
+        assert sum(i["kcal"] for i in pranzo["ingredients"]) == \
+            pytest.approx(pranzo["nutrition"]["kcal"], abs=1)
+        assert "over" in pranzo
 
 
 class TestFreeMealExcludedFromAverages:

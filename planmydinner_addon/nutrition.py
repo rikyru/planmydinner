@@ -808,6 +808,9 @@ def meal_feedback(content, profile_id: str, scale: float = 1.0,
     if protein_low:
         add = t["protein_g"] - n["protein_g"]
         touched = {tp.get("ingredient") for tp in tips if tp.get("ingredient")}
+        if fat_goal and n["fat_g"] >= 0.9 * fat_goal:
+            # grassi già al limite: non aumentare una proteina grassa (salmone, speck...)
+            touched |= {p["name"] for p in parts if p["per100"]["fat_g"] > 8}
         tips.append({"type": "protein", "text": _meal_protein_tip(parts, add, exclude=touched)})
 
     return {
@@ -817,3 +820,44 @@ def meal_feedback(content, profile_id: str, scale: float = 1.0,
         "tips": tips,
         "ok": not tips,
     }
+
+
+_MACRO_LABELS = {"kcal": "kcal", "fat_g": "Grassi", "carbs_g": "Carboidrati", "protein_g": "Proteine"}
+
+
+def meal_breakdown(content, profile_id: str, scale: float = 1.0,
+                   target: Optional[Dict[str, float]] = None, llm_gateway: Any = None,
+                   add_cooking_fat_g: float = DEFAULT_COOKING_FAT_G) -> Optional[Dict[str, Any]]:
+    """Contributo di ogni ingrediente a kcal e macro del pasto e, per i valori
+    che sforano la quota (>10%), gli ingredienti che pesano di più.
+
+    Ritorna {"ingredients": [{name, grams, kcal, protein_g, carbs_g, fat_g,
+    estimated}], "over": [{macro, label, value, target, excess, culprits:
+    [{name, value, share}]}]} o None se il pasto non è calcolabile."""
+    parts = _meal_parts(content, profile_id, scale or 1.0, llm_gateway, add_cooking_fat_g)
+    if not parts:
+        return None
+    ingredients = [{
+        "name": p["name"], "grams": round(p["grams"]),
+        **{k: round(p[k], 1) for k in NUTRITION_KEYS},
+        "estimated": bool(p.get("estimated")),
+    } for p in sorted(parts, key=lambda p: p["kcal"], reverse=True)]
+
+    over = []
+    for k in ("kcal", "fat_g", "carbs_g"):
+        t = (target or {}).get(k)
+        total = sum(p[k] for p in parts)
+        # stesse soglie dei suggerimenti: ±10% e almeno 60 kcal / 3 g
+        if not t or total <= 0 or total <= t * (1 + MEAL_TOLERANCE) \
+                or total - t < (60 if k == "kcal" else 3):
+            continue
+        culprits, covered = [], 0.0
+        for p in sorted(parts, key=lambda p: p[k], reverse=True):
+            if len(culprits) >= 2 or covered >= 0.6 * total or p[k] <= 0:
+                break
+            culprits.append({"name": p["name"], "value": round(p[k], 1),
+                             "share": round(p[k] / total * 100), "estimated": bool(p.get("estimated"))})
+            covered += p[k]
+        over.append({"macro": k, "label": _MACRO_LABELS[k], "value": round(total, 1),
+                     "target": round(t), "excess": round(total - t, 1), "culprits": culprits})
+    return {"ingredients": ingredients, "over": over}
