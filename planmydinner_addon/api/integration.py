@@ -26,6 +26,7 @@ from .planner import compute_adherence_stats
 _LOGGER = logging.getLogger(__name__)
 
 SUMMARY_VERSION = 1
+MAIN_MEALS = ("pranzo", "cena")
 _MAX_RANGE_DAYS = 366
 
 router = APIRouter(
@@ -495,7 +496,10 @@ def get_integration_summary(
         day_t = dict(targets or {})
         day_t.update({k: v for k, v in ((targets_by_date or {}).get(iso) or {}).items()
                       if k in NUTRITION_KEYS})
-        n_main = max(len(meal_rows), 1)
+        # l'obiettivo si divide solo tra pranzo e cena: altri slot del piano
+        # (es. merenda_tardo) restano senza obiettivo né suggerimenti
+        main_types = [mt for mt in meal_rows if mt in MAIN_MEALS]
+        n_main = max(len(main_types), 1)
         meal_t = {}
         for k in NUTRITION_KEYS:
             if day_t.get(k):
@@ -509,7 +513,9 @@ def get_integration_summary(
                      "nutrition": row["nutrition"],
                      "target": {k: round(v) for k, v in meal_t.items()} or None,
                      "tips": [], "ok": True}
-            if row["kind"] == "planned":
+            if mt not in MAIN_MEALS:
+                entry["target"] = None
+            elif row["kind"] == "planned":
                 content = _get_recipe_content(db, row["recipe_id"])
                 try:
                     fb = meal_feedback(content, profile_id, scale=row["scale"],

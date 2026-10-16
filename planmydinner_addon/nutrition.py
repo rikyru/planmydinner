@@ -652,21 +652,26 @@ def _meal_parts(content, profile_id: str, scale: float, llm_gateway: Any,
     return parts
 
 
-def _fat_tips(parts: List[Dict[str, Any]], excess_fat: float) -> List[Dict[str, Any]]:
-    """Fino a 2 interventi sugli ingredienti più grassi per coprire l'eccesso."""
+def _fat_tips(parts: List[Dict[str, Any]], excess_fat: float,
+              protect_protein: bool = False) -> List[Dict[str, Any]]:
+    """Fino a 2 interventi sugli ingredienti più grassi per coprire l'eccesso.
+    I carboidrati non si toccano qui (li gestisce il suggerimento sulle kcal,
+    così lo stesso ingrediente non viene ridotto due volte); con
+    `protect_protein` la proteina del piatto non si riduce, si sostituisce."""
     tips: List[Dict[str, Any]] = []
     covered = 0.0
     for p in sorted(parts, key=lambda p: p["fat_g"], reverse=True):
         if len(tips) >= 2 or covered >= excess_fat or p["fat_g"] < 3:
             break
+        if p["food_group"] in _SCALABLE_GROUPS or p.get("estimated"):
+            continue   # olio di cottura stimato: è un'ipotesi, non un dato da correggere
         g = p["grams"]
+        is_protein = p["food_group"] in _PROTEIN_GROUPS_BAL
         if p["added_fat"] and p["key"] != "burro" and p["key"] != "pesto":
             if g <= 5.5:
                 continue
             saving = p["fat_g"] - p["per100"]["fat_g"] * 5 / 100.0
-            label = "l'olio di cottura (stimato " + str(round(g)) + " g)" if p.get("estimated") \
-                else f"{p['name']} da {round(g)} g"
-            text = (f"Usa 5 g d'olio (1 cucchiaino) invece di {label}: cottura al forno, "
+            text = (f"Usa 5 g d'olio (1 cucchiaino) invece di {round(g)} g: cottura al forno, "
                     f"al vapore o in padella antiaderente")
         elif p["key"] in _LEAN_SWAPS:
             swap_text, swap_key = _LEAN_SWAPS[p["key"]]
@@ -677,11 +682,13 @@ def _fat_tips(parts: List[Dict[str, Any]], excess_fat: float) -> List[Dict[str, 
             else:   # uova: metà tuorli
                 saving = p["fat_g"] / 2
             text = f"Sostituisci {p['name']} con {swap_text}"
+        elif is_protein and protect_protein:
+            continue
         else:
             new_g = max(_round5(g / 2), 5)
             saving = p["fat_g"] * (1 - new_g / g)
             text = f"Riduci {p['name']} da {round(g)} a {new_g} g"
-        if saving < 2:
+        if saving < 3:
             continue
         tips.append({"type": "fat", "text": f"{text} (−{round(saving)} g grassi)",
                      "saving_fat_g": round(saving)})
@@ -739,8 +746,10 @@ def meal_feedback(content, profile_id: str, scale: float = 1.0,
     # 1. Grassi
     fat_goal = t.get("fat_g") or (n["kcal"] * MEAL_FAT_FALLBACK_PCT / 9 if n["kcal"] else 0)
     fat_limit = t["fat_g"] * (1 + MEAL_TOLERANCE) if "fat_g" in t else n["kcal"] * BALANCE_FAT_PCT / 9
+    protein_low = "protein_g" in t and n["protein_g"] < t["protein_g"] * (1 - MEAL_TOLERANCE * 1.5)
     if fat_goal and n["fat_g"] > fat_limit and n["fat_g"] - fat_goal >= 3:
-        tips += _fat_tips(parts, n["fat_g"] - fat_goal)
+        protect = "protein_g" not in t or n["protein_g"] <= t["protein_g"] * (1 + MEAL_TOLERANCE)
+        tips += _fat_tips(parts, n["fat_g"] - fat_goal, protect_protein=protect)
 
     # 2. Energia: si agisce sui carboidrati (la leva usata anche dallo scaling)
     carb = _carb_part(parts)
@@ -782,7 +791,7 @@ def meal_feedback(content, profile_id: str, scale: float = 1.0,
                                  f"e aggiungi verdure"})
 
     # 3. Proteine: più della proteina già nel piatto, se la dose resta sensata
-    if "protein_g" in t and n["protein_g"] < t["protein_g"] * (1 - MEAL_TOLERANCE * 1.5):
+    if protein_low:
         add = t["protein_g"] - n["protein_g"]
         tips.append({"type": "protein", "text": _meal_protein_tip(parts, add)})
 

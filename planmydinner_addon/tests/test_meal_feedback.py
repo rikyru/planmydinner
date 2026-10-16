@@ -78,3 +78,27 @@ def test_no_target_flags_unbalanced_carbs():
 
 def test_unresolvable_meal_returns_none():
     assert meal_feedback([], "persona_a") is None
+
+
+def test_low_protein_meal_never_cuts_its_protein():
+    # polpette grasse ma proteine sotto target: niente "riduci polpette"
+    # seguito da "aumenta polpette"
+    content = [_ing("Polpette", "carne_rossa", 100), _ing("Pane", "carboidrati", 100),
+               _ing("Mozzarella", "latticini", 0)]
+    content[0]["nutrition"] = {"kcal": 250, "protein_g": 15, "carbs_g": 8, "fat_g": 18}
+    fb = meal_feedback(content, "persona_a",
+                       target={"kcal": 600, "protein_g": 38, "fat_g": 10})
+    texts = [t["text"] for t in fb["tips"]]
+    assert not any(t.startswith("Riduci Polpette") for t in texts), texts
+    assert any(t["type"] == "protein" for t in fb["tips"])
+
+
+def test_carb_is_cut_once_and_estimated_oil_not_flagged():
+    # pizza grassa e sopra le kcal: un solo taglio (kcal), niente consiglio
+    # sull'olio di cottura stimato
+    content = [_ing("Pizza margherita", "carboidrati", 300)]
+    content[0]["nutrition"] = {"kcal": 270, "protein_g": 11, "carbs_g": 33, "fat_g": 10}
+    fb = meal_feedback(content, "persona_a", target={"kcal": 550, "fat_g": 9})
+    pizza = [t for t in fb["tips"] if "Pizza" in t["text"]]
+    assert len(pizza) == 1 and pizza[0]["type"] == "kcal_high"
+    assert not any("olio" in t["text"] for t in fb["tips"])

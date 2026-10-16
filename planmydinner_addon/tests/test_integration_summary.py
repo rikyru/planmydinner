@@ -163,6 +163,11 @@ class TestSummaryMealDetail:
             rules = PlanRules(id="rules-meal-detail", profile_id="persona_a", imported_at=TODAY)
             db.add(rules)
         rules.nutrition_targets = {"kcal": 1200, "protein_g": 90}
+        plan = db.query(GeneratedWeeklyPlan).filter(GeneratedWeeklyPlan.id == "gen-plan-test").first()
+        days = [dict(d) for d in plan.daily_plans]
+        days[0] = {**days[0], "meals": days[0]["meals"] + [
+            {"meal_type": "merenda_tardo", "items": [_item("pasta_pomodoro_recipe")]}]}
+        plan.daily_plans = days
         db.commit()
 
         data = client.get("/integration/summary", params={
@@ -172,13 +177,16 @@ class TestSummaryMealDetail:
         monday = data["days"][0]
         pranzo, cena = monday["meals"]["pranzo"], monday["meals"]["cena"]
         # la somma dei pasti coincide con il totale del giorno
-        assert pranzo["nutrition"]["kcal"] + cena["nutrition"]["kcal"] == \
+        assert sum(m["nutrition"]["kcal"] for m in monday["meals"].values()) == \
             pytest.approx(monday["nutrition"]["kcal"], abs=1)
         # obiettivo del pasto = target giornaliero diviso tra i pasti principali
         assert pranzo["target"]["kcal"] == 600
         # pasta al pomodoro: proteine lontanissime da 45 g → suggerimento
         assert pranzo["ok"] is False
         assert any(t["type"] == "protein" for t in pranzo["tips"])
+        # slot extra (es. merenda_tardo) non dividono l'obiettivo e non hanno suggerimenti
+        assert monday["meals"]["merenda_tardo"]["target"] is None
+        assert monday["meals"]["merenda_tardo"]["tips"] == []
         # martedì: cena libera senza stima → niente dettaglio per quella cena
         tuesday = data["days"][1]
         assert set(tuesday["meals"]) == {"pranzo"}
