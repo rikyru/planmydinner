@@ -41,6 +41,8 @@ NUTRITION_TABLE: Dict[str, Dict[str, float]] = {
     "patate": _v(77, 2.0, 17.0, 0.1),
     "patata": _v(77, 2.0, 17.0, 0.1),
     "pane": _v(265, 9.0, 49.0, 3.2),
+    "farina": _v(340, 11.0, 72.0, 1.0),
+    "impasto pizza": _v(250, 7.5, 50.0, 2.5),   # impasto crudo (farina + acqua + lievito)
     "piadina": _v(310, 8.0, 48.0, 9.0),
     "polenta": _v(361, 8.7, 79.0, 2.7),
     # Proteine animali
@@ -179,10 +181,20 @@ _COOKED_RE = re.compile(
 )
 
 
+_PAREN_RE = re.compile(r"\([^)]*\)")
+
+
 def _match_table_key(name: str) -> Optional[str]:
-    """Chiave di tabella corrispondente al nome (parola intera, la piu' lunga vince)."""
+    """Chiave di tabella corrispondente al nome (parola intera, la piu' lunga vince).
+    Le parentesi sono una descrizione, non l'alimento: "Impasto pizza (farina,
+    acqua, lievito, sale)" non deve diventare "sale" (0 kcal). Si cerca prima
+    sul nome senza parentesi; se non c'è nulla l'ingrediente resta sconosciuto
+    (→ stima AI) invece di prendere un componente a caso dalla descrizione."""
     if name in NUTRITION_TABLE:
         return name
+    bare = _PAREN_RE.sub(" ", name).strip()
+    if bare and bare != name:
+        return _match_table_key(bare)
     for key in _TABLE_KEYS_BY_LENGTH:
         if re.search(rf"\b{re.escape(key)}\b", name):
             return key

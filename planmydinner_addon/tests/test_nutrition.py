@@ -160,3 +160,14 @@ class TestComputeRecipeNutrition:
         assert compute_recipe_nutrition(content, "persona_a") is None
         assert compute_recipe_nutrition([], "persona_a") is None
         assert compute_recipe_nutrition(None, "persona_a") is None
+
+
+def test_parenthetical_description_does_not_drive_match():
+    """'Impasto pizza (farina, acqua, lievito, sale)' è impasto, non sale a 0 kcal."""
+    from planmydinner_addon.nutrition import lookup_nutrition_table
+    n = lookup_nutrition_table("Impasto pizza (farina, acqua, lievito, sale)")
+    assert n is not None and n["kcal"] > 200
+    # senza un alimento noto fuori dalle parentesi resta sconosciuto (→ stima AI)
+    assert lookup_nutrition_table("Torta della nonna (uova, zucchero)") is None
+    # il caso normale resta invariato
+    assert lookup_nutrition_table("Mozzarella (fior di latte)")["kcal"] > 200
