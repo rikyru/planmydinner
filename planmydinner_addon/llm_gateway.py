@@ -30,6 +30,8 @@ class LLMGateway:
         self.timeout = timeout
         self._client = None
         self.custom_rules: str = ""   # injected into planner prompt if set
+        # alcuni modelli (gpt-5.x, reasoning) accettano solo la temperatura di default
+        self._drop_temperature = False
         # --- Cache ---
         self._cache: Dict[str, Any] = {}
         _data_dir = os.getenv("DATA_DIR", ".")
@@ -90,6 +92,25 @@ class LLMGateway:
         if self._client is None:
             _LOGGER.error("LLM client could not be initialized. LLM-powered features will be unavailable.")
 
+    def _chat_create(self, **kwargs):
+        """chat.completions.create compatibile coi modelli che accettano solo la
+        temperatura di default (gpt-5.x / reasoning): se il modello rifiuta
+        `temperature`, ripete la chiamata senza e da lì in poi non la passa più.
+        Senza questo ogni chiamata con temperatura esplicita falliva (HTTP 400) e,
+        per esempio, gli alimenti fuori tabella restavano senza valori nutrizionali."""
+        if self._drop_temperature:
+            kwargs.pop("temperature", None)
+        try:
+            return self._client.chat.completions.create(**kwargs)
+        except Exception as e:
+            if "temperature" in kwargs and "temperature" in str(e) and not self._drop_temperature:
+                _LOGGER.info("Il modello %s non accetta 'temperature': la ometto d'ora in poi",
+                             kwargs.get("model"))
+                self._drop_temperature = True
+                kwargs.pop("temperature", None)
+                return self._client.chat.completions.create(**kwargs)
+            raise
+
     def _get_system_message(self, task_description: str) -> str:
         """Constructs a system message for the LLM based on the task."""
         # This will be refined with more specific instructions for each task
@@ -128,7 +149,7 @@ class LLMGateway:
 
         try:
             if self.provider == "openai":
-                response = self._client.chat.completions.create(
+                response = self._chat_create(
                     model=self.model,
                     messages=messages,
                     temperature=self.temperature,
@@ -189,7 +210,7 @@ class LLMGateway:
                     {"role": "user", "content": f"Proponi la {slot_label}."}]
         try:
             if self.provider == "openai":
-                r = self._client.chat.completions.create(
+                r = self._chat_create(
                     model=self.model, messages=messages, temperature=self.temperature,
                     response_format={"type": "json_object"})
                 raw = r.choices[0].message.content
@@ -209,63 +230,6 @@ class LLMGateway:
         except Exception as e:
             _LOGGER.warning(f"suggest_meal fallito per {slot_label}: {e}")
             return None
-
-    def estimate_nutrition(self, ingredient_name: str) -> Optional[Dict[str, Any]]:
-        """Stima i valori nutrizionali PER 100 g di un ingrediente sconosciuto
-        (non presente nella tabella locale). Ritorna {kcal, protein_g, carbs_g,
-        fat_g} o None. Risultati in cache su disco per non ripagare la chiamata.
-
-        Rete di sicurezza: usata da resolve_ingredient_nutrition quando un
-        ingrediente non è in tabella, così un nome nuovo non finisce a 0 kcal.
-        """
-        name = (ingredient_name or "").strip()
-        if not name:
-            return None
-        key = self._cache_key("nutrition_estimate", name.lower())
-        if key in self._cache:
-            return self._cache[key]
-        if not self._client:
-            return None
-
-        task_description = (
-            "Sei un esperto di composizione degli alimenti. Dato il nome di un "
-            "ingrediente, stima i valori nutrizionali PER 100 g di prodotto come "
-            "comunemente venduto/consumato (per cereali, pasta e legumi usa il peso "
-            "a crudo/secco). Rispondi SOLO con un oggetto JSON con esattamente le "
-            "chiavi numeriche: kcal, protein_g, carbs_g, fat_g. Nessun testo extra, "
-            "nessun markdown."
-        )
-        messages = [
-            {"role": "system", "content": self._get_system_message(task_description)},
-            {"role": "user", "content": f"Ingrediente: {name}"},
-        ]
-        try:
-            if self.provider == "openai":
-                response = self._client.chat.completions.create(
-                    model=self.model, messages=messages, temperature=0,
-                    response_format={"type": "json_object"},
-                )
-                raw = response.choices[0].message.content
-            elif self.provider == "ollama":
-                response = self._client.chat(
-                    model=self.model, messages=messages, temperature=0)
-                raw = response["message"]["content"]
-            else:
-                return None
-            data = json.loads(raw)
-            result = {k: float(data[k]) for k in ("kcal", "protein_g", "carbs_g", "fat_g")}
-        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as e:
-            _LOGGER.warning(f"Stima nutrizione LLM non valida per '{name}': {e}")
-            return None
-        except Exception as e:
-            _LOGGER.warning(f"Errore stima nutrizione LLM per '{name}': {e}")
-            return None
-        # sanità minima: kcal plausibili per 100 g
-        if not (0 <= result["kcal"] <= 950):
-            return None
-        self._cache[key] = result
-        self._save_cache()
-        return result
 
     def get_llm_description_for_recipe(self, recipe_name: str, ingredients: List[str]) -> Optional[str]:
         """
@@ -288,7 +252,7 @@ class LLMGateway:
 
         try:
             if self.provider == "openai":
-                response = self._client.chat.completions.create(
+                response = self._chat_create(
                     model=self.model,
                     messages=messages,
                     temperature=self.temperature
@@ -335,7 +299,7 @@ class LLMGateway:
 
         try:
             if self.provider == "openai":
-                response = self._client.chat.completions.create(
+                response = self._chat_create(
                     model=self.model,
                     messages=messages,
                     temperature=0.1
@@ -390,7 +354,7 @@ class LLMGateway:
 
         try:
             if self.provider == "openai":
-                response = self._client.chat.completions.create(
+                response = self._chat_create(
                     model=model,
                     messages=[{
                         "role": "user",
@@ -487,7 +451,7 @@ class LLMGateway:
 
         try:
             if self.provider == "openai":
-                response = self._client.chat.completions.create(
+                response = self._chat_create(
                     model=self.model,
                     messages=messages,
                     temperature=0.3,
@@ -559,7 +523,7 @@ class LLMGateway:
 
         try:
             if self.provider == "openai":
-                response = self._client.chat.completions.create(
+                response = self._chat_create(
                     model=self.model,
                     messages=messages,
                     temperature=0.1,
@@ -684,7 +648,7 @@ class LLMGateway:
 
         try:
             if self.provider == "openai":
-                response = self._client.chat.completions.create(model=self.model, messages=messages, temperature=self.temperature, response_format={"type": "json_object"})
+                response = self._chat_create(model=self.model, messages=messages, temperature=self.temperature, response_format={"type": "json_object"})
                 json_output = response.choices[0].message.content
             elif self.provider == "ollama":
                 response = self._client.chat(model=self.model, messages=messages, temperature=self.temperature)
@@ -733,7 +697,7 @@ class LLMGateway:
 
         try:
             if self.provider == "openai":
-                response = self._client.chat.completions.create(
+                response = self._chat_create(
                     model=self.model,
                     messages=messages,
                     temperature=self.temperature,
@@ -854,7 +818,7 @@ Rispondi SOLO con un JSON valido, senza testo aggiuntivo, con questa struttura e
 
         try:
             if self.provider == "openai":
-                response = self._client.chat.completions.create(
+                response = self._chat_create(
                     model=self.model,
                     messages=messages,
                     temperature=self.temperature,
@@ -897,7 +861,7 @@ Rispondi SOLO con un JSON valido, senza testo aggiuntivo, con questa struttura e
 
         try:
             if self.provider == "openai":
-                response = self._client.chat.completions.create(
+                response = self._chat_create(
                     model=self.model,
                     messages=messages,
                     temperature=0.3,
