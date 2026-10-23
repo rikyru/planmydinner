@@ -68,7 +68,9 @@ class TestRoutineInSummary:
         for d in data["days"]:
             assert d["nutrition"]["kcal"] == pytest.approx(COLAZIONE_KCAL, abs=0.2)
             assert d["routine_kcal"] == pytest.approx(COLAZIONE_KCAL, abs=0.2)
-        assert data["averages"]["days_with_data"] == 7
+        # la routine conta ogni giorno, ma le medie sono "a oggi" (oggi = mar 24/02):
+        # lunedì e martedì; i giorni futuri della settimana non entrano
+        assert data["averages"]["days_with_data"] == 2
 
     def test_skip_excludes_single_day(self, client, setup_database):
         _define(client)

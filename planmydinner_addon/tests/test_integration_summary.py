@@ -128,9 +128,11 @@ class TestIntegrationSummaryWithData:
         assert wednesday["not_eaten"] == 1
         assert wednesday["complete"] is True
 
-        # Medie sul periodo presenti, il martedì (incompleto) è escluso
+        # Medie "a oggi" (oggi = mar 24/02): contano solo i giorni CHIUSI fino a
+        # oggi -> lunedì; il martedì (incompleto) e mer..dom (futuri) sono esclusi
         assert data["averages"] is not None
-        assert data["averages"]["days_with_data"] == 6
+        assert data["averages"]["days_with_data"] == 1
+        assert [d["future"] for d in data["days"]] == [False, False] + [True] * 5
         assert data["averages"]["kcal"] > 0
 
     def test_period_without_plan_days(self, client, setup_database):
