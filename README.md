@@ -1,93 +1,137 @@
 # Plan My Dinner
 
-Pianificatore di pasti settimanali con IA, pensato per chi segue un piano alimentare di un nutrizionista.
-Funziona **standalone** (solo Docker, nessun Home Assistant necessario) o come **Add-on + Integrazione per Home Assistant**.
+Pianificatore di pasti settimanali con IA, pensato per chi segue il piano alimentare
+di un nutrizionista: genera la settimana rispettando grammature e frequenze, calcola
+kcal e macro di ogni pasto, tiene il diario di quello che mangi davvero e la
+dispensa, e prepara la lista della spesa.
+Funziona **standalone** (solo Docker) o come **Add-on + Integrazione per Home
+Assistant**, e può ricevere gli obiettivi calorici da un'app di allenamento
+([OpenFit](https://github.com/rikyru/mywahoo)).
 
 ## Funzionalità
 
-- **Importa il PDF del nutrizionista** — estrae grammature, opzioni di carboidrati e proteine, frequenze settimanali
-- **Genera il piano settimanale** — algoritmo con regole di rotazione, limiti per categoria proteica, stagionalità
-- **Genera con AI** — modalità "per slot" o "settimana completa" via LLM (OpenAI o Ollama)
-- **Vista Oggi** — pranzo e cena del giorno, pulsante "Cambia ricetta", segna come consumato
-- **Catalogo ricette** — aggiunta manuale o bulk import JSON, badge "Personale" con boost di priorità
-- **Lista della spesa** — generata dal piano settimanale, esportabile in CSV
-- **Dispensa** — gestione ingredienti in casa, integrata nel calcolo della spesa
-- **Profili** — supporto a due profili (A e B) con grammature distinte, vincoli editabili dalla UI
-- **Cache LLM** — risparmia chiamate API riusando risposte identiche
-- **Valori nutrizionali** — kcal e macro (proteine/carboidrati/grassi) per porzione, da tabella di composizione locale con fallback stima LLM
-- **API per integrazioni** — `GET /integration/summary` per app esterne (aderenza + nutrizione giornaliera in una chiamata)
+### Piano
+- **Importa il PDF del nutrizionista** — grammature, opzioni di carboidrati e
+  proteine, frequenze settimanali, verdure libere.
+- **Genera la settimana** — algoritmo con rotazione, limiti per categoria
+  proteica, stagionalità, dispensa, storico; oppure **con AI** (per slot o
+  settimana intera, OpenAI o Ollama). Modalità **"Dal mio storico"**: pesca dalle
+  ricette che mangi davvero, seguendo le frequenze della nutrizionista.
+- **Settimana** — frequenze del piano a colpo d'occhio, **drag & drop** dei pasti
+  tra slot, cambio di carboidrato/proteina/verdura, "Cambia ricetta", **nuove
+  idee AI** su più pasti selezionati, periodi di **vacanza**, scelta degli slot da
+  generare.
+- **Oggi** — pasti del giorno con navigazione tra i giorni, segna consumato /
+  non mangiato / pasto libero, "segna tutta la giornata", striscia
+  dell'**obiettivo energetico** del giorno.
+
+### Nutrizione
+- **kcal e macro** per ingrediente, ricetta e pasto: tabella di composizione
+  locale, con fallback **stima LLM** in cache (anche con i modelli gpt-5.x).
+- **Quote per pasto** coerenti con la giornata, con suggerimenti e indicazione di
+  quale ingrediente fa sforare; **olio di cottura** stimato su pranzo e cena.
+- **Bilanciamento ricette** — proteine rispetto al target, "Applica adattamento".
+- **Scaling delle porzioni** verso un target kcal (taglia i carboidrati, tiene le
+  proteine; in deficit le porzioni possono solo ridursi), anche **per giorno**
+  (periodizzazione: più kcal nei giorni di allenamento).
+
+### Diario
+- **Routine** — colazione, spuntini e merende fissi, contati ogni giorno; si
+  saltano o si registrano per giorno; **suggerimenti AI** anche **dalla dispensa**.
+- **Merende extra** fuori dagli slot fissi.
+- **Pasto da foto** (mensa) con modello vision, **pasto da descrizione** testuale,
+  catalogo mensa riusabile.
+- **Storico** — kcal e macro per giorno, medie **"a oggi"** calcolate sui soli
+  pasti **mangiati davvero**, indicatore "X/Y pasti registrati".
+
+### Spesa e dispensa
+- **Lista della spesa** dai soli giorni generati, raggruppata **per reparto**,
+  spunte persistenti per settimana, export CSV; aggiunge le **scorte sotto soglia**.
+- **Dispensa** con **barcode** (Open Food Facts) e scansioni multiple, scadenze,
+  soglia minima, **ricette anti-spreco** con quello che sta per scadere.
+
+### Ricette
+- Catalogo con **ricerca e filtri** (nome, ingrediente, tempo, difficoltà),
+  **preferiti 👍 / 👎** ("non proporre più", usato dal planner), **import da URL**
+  (schema JSON-LD + LLM), bulk import JSON, **Cook mode** passo-passo a schermo intero.
+
+### Altro
+- **Profili** (fino a due) con grammature e vincoli distinti.
+- **PWA** installabile, versione dell'app nelle Impostazioni con avviso di aggiornamento.
+- **API per integrazioni** (`/integration/*`): riepilogo per app esterne e
+  ricezione degli obiettivi calorici.
+- **Debug LLM**: trace di generazione e log delle chiamate all'IA.
 
 ---
 
 ## Architettura
 
 ```
-planmydinner_addon/     ← Backend FastAPI + Vue 3 (standalone o HA Add-on)
+planmydinner_addon/     ← Backend FastAPI + frontend Vue 3 (standalone o HA Add-on)
 custom_components/      ← HA Custom Integration (sensori + servizi)
-www/                    ← Lovelace custom card (planmydinner-card.js)
 ```
 
-Il backend funziona in modo completamente autonomo. L'integrazione HA è un adapter opzionale che espone sensori e servizi.
+Il backend funziona in modo completamente autonomo. L'integrazione HA è un adapter
+opzionale che espone sensori e servizi. La card Lovelace sta in un
+[repo separato](https://github.com/rikyru/planmydinner-card).
 
 ---
 
 ## Avvio rapido — Standalone (Docker)
 
 ```bash
-# 1. Clona il repo
 git clone https://github.com/rikyru/planmydinner.git
 cd planmydinner
-
-# 2. Configura il provider LLM
-cp .env.example .env
-# Modifica .env: scegli ollama o openai e inserisci i tuoi valori
-
-# 3. Avvia
+cp .env.example .env            # scegli ollama o openai e compila i valori
 docker-compose -f docker-compose.standalone.yml up -d
-
-# 4. Apri il browser
-open http://localhost:8000
+open http://localhost:8000      # la UI è su /ui/
 ```
 
-I dati sono persistiti nel volume Docker `planmydinner_data`.
+I dati sono persistiti nel volume Docker `planmydinner_data` (`/data`).
 
-### Primo avvio — carica dati di esempio
+**Aggiornamento**: `git pull`, poi ricostruisci **e ricrea** il container
+(`docker compose up -d --build --force-recreate <servizio>`): senza
+`--force-recreate` compose può lasciare in esecuzione il container vecchio.
+
+### Primo avvio — dati di esempio
 
 ```bash
 curl -X POST http://localhost:8000/seed
 ```
 
 Crea 2 profili (persona_a / persona_b), 28 ricette italiane e un piano di test.
-Poi vai su **Settimana → Genera piano** per vedere il pianificatore in azione.
+Poi vai su **Settimana → Genera piano**.
 
 ### Sviluppo locale (senza Docker)
 
 ```bash
 pip install -r planmydinner_addon/requirements.txt
 uvicorn planmydinner_addon.main:app --reload
-# App disponibile su http://localhost:8000
+python -m pytest planmydinner_addon/tests     # i test PDF richiedono Java (tabula)
 ```
 
 ---
 
-## Configurazione LLM
-
-Copia `.env.example` in `.env` e compila:
+## Configurazione
 
 | Variabile | Descrizione | Esempio |
 |-----------|-------------|---------|
 | `LLM_PROVIDER` | Provider LLM | `ollama` o `openai` |
-| `LLM_MODEL` | Modello da usare | `llama3`, `gpt-4o-mini` |
-| `LLM_BASE_URL` | URL Ollama (solo se provider=ollama) | `http://host.docker.internal:11434` |
-| `LLM_API_KEY` | API key (solo se provider=openai) | `sk-...` |
+| `LLM_MODEL` | Modello | `llama3`, `gpt-4o-mini`, `gpt-5.5` |
+| `LLM_BASE_URL` | URL Ollama (solo provider=ollama) | `http://host.docker.internal:11434` |
+| `LLM_API_KEY` | API key (solo provider=openai) | `sk-...` |
+| `API_KEY` | Se impostata, l'API richiede `X-API-Key` (vedi sotto) | |
+| `CORS_ORIGINS` | Origini ammesse per chiamate dal browser | `https://...` |
+| `DATA_DIR` / `DATABASE_URL` | Cartella dati (DB, cache LLM) / URL del database | `/data` |
+
+Provider, modello, temperatura e **modello vision** (per le foto dei pasti) si
+possono anche cambiare dalle **Impostazioni** della UI.
 
 ### Ollama (locale, gratuito)
 
 ```bash
-# Installa Ollama: https://ollama.ai
 ollama pull llama3
-
-# Nel .env:
+# .env
 LLM_PROVIDER=ollama
 LLM_MODEL=llama3
 LLM_BASE_URL=http://host.docker.internal:11434
@@ -96,240 +140,77 @@ LLM_BASE_URL=http://host.docker.internal:11434
 ### OpenAI
 
 ```bash
-# Nel .env:
+# .env
 LLM_PROVIDER=openai
 LLM_MODEL=gpt-4o-mini
 LLM_API_KEY=sk-...
 ```
 
-> Il sistema funziona anche **senza LLM** configurato: usa solo l'algoritmo basato sul catalogo ricette.
-> L'LLM serve per: import PDF, generazione ricette nuove, classificazione alimenti.
+> I modelli che accettano solo la temperatura di default (es. gpt-5.x) sono
+> gestiti in automatico: la richiesta viene ripetuta senza `temperature`.
+
+> Il sistema funziona anche **senza LLM**: usa l'algoritmo sul catalogo ricette.
+> L'LLM serve per import PDF/URL, generazione AI, stima nutrizionale degli
+> alimenti fuori tabella, foto e descrizioni dei pasti, suggerimenti.
 
 ---
 
 ## Home Assistant — Add-on
 
-Per HA OS o HA Supervised con il Supervisor:
+Per HA OS o HA Supervised:
 
-1. Vai su **Impostazioni → Add-on Store**
-2. Menu tre puntini → **Repositories** → aggiungi `https://github.com/rikyru/planmydinner`
-3. Cerca "Plan My Dinner" e installa
-4. Nella tab **Configurazione** imposta le variabili LLM (come sopra)
-5. Avvia l'add-on e verifica i log
+1. **Impostazioni → Add-on Store** → menu tre puntini → **Repositories** → aggiungi
+   `https://github.com/rikyru/planmydinner`
+2. Installa "Plan My Dinner", imposta le variabili LLM nella tab **Configurazione**, avvia.
 
-La Web UI è accessibile tramite **HA Ingress** (sidebar di HA, senza aprire porte extra) o direttamente su `http://<ha-ip>:8000`.
+La Web UI è accessibile tramite **HA Ingress** o su `http://<ha-ip>:8000`.
 
 ### HA Core / Docker puro
 
-> **Nota**: HA Core (container Docker) non supporta il sistema Add-on/Supervisor. La Web UI **non appare in sidebar HA**. Usa il container standalone e accedi direttamente su `http://<ip>:8000/ui/`. L'integrazione HACS (sensori) funziona comunque.
-
-Se usi HA Core in Docker, usa `docker-compose.yml` come riferimento e adattalo al tuo setup:
+HA Core non supporta gli Add-on: la UI non appare in sidebar. Usa il container
+standalone (`http://<ip>:8000/ui/`); l'integrazione HACS funziona comunque.
 
 ```bash
-# Build immagine
 docker build -t planmydinner-addon ./planmydinner_addon
-
-# Avvia (adatta i path)
-docker run -d \
-  -p 8000:8000 \
-  -v /path/to/data:/data \
-  -e LLM_PROVIDER=ollama \
-  -e LLM_BASE_URL=http://host.docker.internal:11434 \
-  -e LLM_MODEL=llama3 \
-  --name planmydinner \
-  planmydinner-addon
+docker run -d -p 8000:8000 -v /path/to/data:/data \
+  -e LLM_PROVIDER=ollama -e LLM_BASE_URL=http://host.docker.internal:11434 \
+  -e LLM_MODEL=llama3 --name planmydinner planmydinner-addon
 ```
 
 ---
 
 ## Home Assistant — Integrazione Custom (HACS)
 
-L'integrazione espone sensori e servizi HA per controllare Plan My Dinner da automazioni e dashboard.
-
-### Installazione via HACS
-
-1. Apri HACS → **Integrazioni** → menu tre puntini → **Repository personalizzati**
-2. Aggiungi `https://github.com/rikyru/planmydinner` come **Integration**
-3. Installa "Plan My Dinner" e riavvia HA
-
-### Installazione manuale
-
-Copia `custom_components/planmydinner/` nella directory `custom_components/` della tua configurazione HA, poi riavvia.
-
-### Configurazione
-
-Vai su **Impostazioni → Dispositivi e servizi → Aggiungi integrazione → Plan My Dinner**.
-Inserisci host e porta del backend (es. `localhost` porta `8000`).
-
-### Sensori esposti
+1. HACS → **Integrazioni** → **Repository personalizzati** → aggiungi
+   `https://github.com/rikyru/planmydinner` come **Integration**, installa e riavvia.
+   (Oppure copia `custom_components/planmydinner/` nella configurazione di HA.)
+2. **Impostazioni → Dispositivi e servizi → Aggiungi integrazione → Plan My Dinner**,
+   host e porta del backend.
 
 | Sensore | Descrizione |
 |---------|-------------|
 | `sensor.plan_my_dinner_today` | Pasti del giorno (pranzo/cena) |
 | `sensor.plan_my_dinner_week` | Piano settimanale riepilogativo |
-| `sensor.plan_my_dinner_shopping` | Conteggio prodotti nella lista spesa |
-| `sensor.plan_my_dinner_pantry` | Conteggio articoli in dispensa |
+| `sensor.plan_my_dinner_shopping` | Prodotti nella lista spesa |
+| `sensor.plan_my_dinner_pantry` | Articoli in dispensa |
+| `sensor.plan_my_dinner_pasti_da_registrare` | Pasti di oggi non ancora registrati |
 | `sensor.plan_my_dinner_web_ui` | URL della Web UI |
-
-### Servizi disponibili
 
 | Servizio | Descrizione |
 |---------|-------------|
 | `planmydinner.generate_week` | Genera piano settimanale (algoritmo) |
 | `planmydinner.generate_week_ai` | Genera piano con AI |
 | `planmydinner.mark_consumed` | Segna un pasto come consumato |
-| `planmydinner.add_pantry_item` | Aggiunge un articolo alla dispensa |
-| `planmydinner.remove_pantry_item` | Rimuove un articolo dalla dispensa |
+| `planmydinner.add_pantry_item` / `remove_pantry_item` | Gestione dispensa |
 
----
-
-## Lovelace Card
-
-> **Repo separato**: [github.com/rikyru/planmydinner-card](https://github.com/rikyru/planmydinner-card)
-
-La card `planmydinner-card` mostra pranzo e cena di oggi, la strip settimanale, lista spesa e dispensa, con pulsanti per generare il piano e aprire la Web UI.
-
-### Installazione tramite HACS
-
-1. **HACS → Frontend → ⋮ → Custom repositories**
-2. Aggiungi `https://github.com/rikyru/planmydinner-card` come tipo **Lovelace**
-3. Cerca "Plan My Dinner Card" e installa
-4. Ricarica la cache del browser
-
-### Installazione manuale
-
-1. Scarica `planmydinner-card.js` dal [repo della card](https://github.com/rikyru/planmydinner-card) e copialo in `config/www/`
-2. Vai su **Impostazioni → Dashboard → Risorse** e aggiungi:
-   - URL: `/local/planmydinner-card.js`
-   - Tipo: **JavaScript Module**
-
-### Uso in Lovelace YAML
-
-```yaml
-type: custom:planmydinner-card
-title: "Piano Pasti"      # opzionale
-show_week: true            # strip settimanale (default true)
-show_shopping: true        # lista spesa + dispensa (default true)
-show_actions: true         # pulsanti genera/apri UI (default true)
-compact: false             # solo pasti, niente strip/spesa/azioni
-```
-
----
-
-## Profili
-
-Plan My Dinner supporta fino a **due profili** (Persona A e Persona B) con grammature distinte per ogni ingrediente. Utile per coppie o famiglie con piani alimentari diversi.
-
-- **Profilo A**: piano nutrizionale principale (es. chi segue la dieta del nutrizionista)
-- **Profilo B**: secondo profilo opzionale con proprie grammature (es. partner con fabbisogno diverso)
-- Il piano settimanale viene generato tenendo conto di entrambi i profili contemporaneamente
-- Ogni ricetta può avere grammature separate per A e B: il pianificatore mostra i valori corretti per ciascuno
-- Vai su **Profili** per creare/modificare i profili e i loro vincoli (categorie proteiche, limiti settimanali)
-- I vincoli (es. "carne rossa max 1 volta/sett") sono configurabili indipendentemente per profilo
-
----
-
-## Funzionalità avanzate
-
-### Vista Settimana — azioni sul pasto
-
-Cliccando su un pasto nella vista settimanale si apre un popup con:
-
-- **↕ Cambia carboidrato** — sostituisce il carboidrato con un'altra opzione del piano, scalando i grammi
-- **↕ Cambia proteina** — sostituisce la proteina mantenendo il target proteico
-- **↕ Cambia verdura** — swap verdura con equivalente calorico
-- **↺ Cambia ricetta** — propone 3 ricette alternative dal catalogo
-- **✨ ExtraFantasy** — chiede all'IA una ricetta nuova generata al momento, coerente con i vincoli del piano
-- **📋 Vedi ricetta** — mostra ingredienti e nome completo della ricetta generata
-- **Non mangiato** (pasti passati) — registra che il pasto non è stato consumato
-- **Pasto libero** (pasti passati) — registra un pasto fuori piano
-
-### ExtraFantasy
-
-Genera una ricetta completamente nuova tramite LLM per quello slot specifico, rispettando:
-- Categoria proteica richiesta da quel giorno (es. "tocca il pesce")
-- Grammature del piano nutrizionale
-- Stagionalità e ingredienti in dispensa
-
-La ricetta viene mostrata subito in un modal con nome e ingredienti.
-
-### Pasti liberi e aderenza
-
-Nel piano nutrizionale puoi specificare un numero di **pasti liberi** a settimana (`free_meal_quota`). Il widget aderenza nella vista Oggi mostra quanti ne hai usati e quanti ne rimangono.
-
-### Valori nutrizionali (kcal + macro)
-
-Ogni ingrediente viene valutato **per 100 g** (peso a crudo/secco per pasta, cereali e legumi) in quest'ordine:
-
-1. valori salvati sull'ingrediente (`nutrition` con `source: manual`)
-2. tabella di composizione locale (~90 alimenti comuni italiani, `source: table`)
-3. stima via LLM con cache permanente su disco (`source: llm`)
-
-`GET /recipes/detail/{id}` include `nutrition_per_portion` per ogni profilo:
-kcal, proteine, carboidrati, grassi, più `coverage` (quota di ingredienti risolti)
-e `sources`. Il campo è calcolato al volo, non persistito.
-
-### Segna tutta la giornata
-
-Nella vista **Oggi** il pulsante "✓✓ Segna tutta la giornata come consumata" registra
-con un tap tutti i pasti pianificati del giorno (salta pasti liberi, "non mangiato"
-e pasti già registrati). Endpoint: `POST /consumed-entries/mark-day?profile_id&day`.
-
-### Pasto da foto (mensa) 📷
-
-Nella vista **Oggi**, il pulsante "📷 Mensa" permette di fotografare il vassoio
-(es. mensa aziendale): il modello vision identifica le portate e stima grammature
-e macro, tu correggi e confermi. Il pasto viene salvato in un **catalogo mensa**
-riusabile: la prossima volta lo registri con un tap, senza chiamate LLM.
-
-- Modello dedicato configurabile in Impostazioni (`Modello vision`, consigliato
-  `gpt-4o`; vuoto = usa il modello principale). Costo: frazioni di centesimo a foto.
-- API: `POST /consumed-entries/photo/analyze` (multipart), `GET/POST /consumed-entries/mensa`,
-  `POST /consumed-entries/mensa/{id}/consume`
-
-### Debug LLM (sviluppatori)
-
-Con almeno 2 profili configurati, appare il bottone **🐛 Debug** in sidebar. Mostra:
-- **Trace generazione**: per ogni slot del piano, quali candidati erano disponibili, i filtri applicati e il punteggio finale
-- **Log LLM**: le ultime 50 chiamate all'IA con prompt completo e risposta grezza, espandibili
-
----
-
-## API per integrazioni esterne
-
-Superficie ufficiale per app esterne (es. dashboard fitness) che leggono i dati in sola lettura:
-
-```
-GET /integration/summary?profile_id=aa&start_date=2026-07-06&end_date=2026-07-12
-```
-
-Restituisce in una sola chiamata (payload versionato, `"version": 1`):
-
-- `adherence` — statistiche di aderenza del periodo (stesso formato di `/planner/adherence`)
-- `days[]` — per ogni giorno: pasti pianificati, liberi, saltati e `nutrition`
-  (kcal + macro sommati dai pasti pianificati, con `coverage`)
-- `averages` — medie giornaliere del periodo (`null` se nessun dato)
-
-Senza parametri data usa la settimana corrente (lunedì → domenica). Risponde
-sempre **200** anche su periodi senza dati (campi a 0/`null`).
-
-### Promemoria "segna il pasto" (Home Assistant)
-
-Il sensore `sensor.plan_my_dinner_pasti_da_registrare` espone quanti pasti di oggi
-non risultano ancora registrati (stato = numero; attributi `unlogged` e `meals`).
-Endpoint sottostante: `GET /integration/today-status?profile_id=...`.
-
-Esempio di automazione con notifica alla companion app (13:45 per il pranzo,
-20:45 per la cena):
+### Promemoria "segna il pasto"
 
 ```yaml
 automation:
   - alias: "Promemoria segna pasto"
     trigger:
-      - platform: time
-        at: "13:45:00"
-      - platform: time
-        at: "20:45:00"
+      - { platform: time, at: "13:45:00" }
+      - { platform: time, at: "20:45:00" }
     condition:
       - condition: template
         value_template: >
@@ -339,67 +220,117 @@ automation:
       - service: notify.mobile_app_TUO_TELEFONO
         data:
           title: "🍽️ Plan My Dinner"
-          message: >
-            {% set meal = 'pranzo' if now().hour < 15 else 'cena' %}
-            Hai registrato il {{ meal }}? Tocca per farlo ora.
-          data:
-            url: "https://dinner.rikyru.ovh/ui/"   # o l'URL locale
+          message: "Hai registrato il pasto? Tocca per farlo ora."
+          data: { url: "https://dinner.esempio.it/ui/" }
 ```
+
+---
+
+## Lovelace Card
+
+[github.com/rikyru/planmydinner-card](https://github.com/rikyru/planmydinner-card) —
+pranzo e cena di oggi, strip settimanale, spesa e dispensa, pulsanti per generare il
+piano e aprire la UI. Installazione via HACS (**Frontend → Custom repositories**,
+tipo Lovelace) o manuale (`config/www/` + risorsa JavaScript Module).
+
+```yaml
+type: custom:planmydinner-card
+title: "Piano Pasti"      # opzionale
+show_week: true
+show_shopping: true
+show_actions: true
+compact: false
+```
+
+---
+
+## Profili
+
+Fino a **due profili** (A e B) con grammature distinte per ingrediente: il piano è
+generato per entrambi insieme, ogni ricetta mostra le dosi di ciascuno, e i vincoli
+(es. "carne rossa max 1 volta/sett") sono indipendenti per profilo.
+
+---
+
+## Valori nutrizionali
+
+Ogni ingrediente è valutato **per 100 g** (peso a crudo/secco per pasta, cereali e
+legumi; peso cotto riconosciuto dal nome), in quest'ordine:
+
+1. valori salvati sull'ingrediente (`source: manual`)
+2. tabella di composizione locale (alimenti comuni italiani, `source: table`)
+3. stima LLM con cache permanente su disco (`source: llm`)
+
+Le risposte riportano `coverage` (quota di ingredienti risolti) e `sources`. Su
+pranzo e cena si aggiunge una stima dell'olio di cottura. Se un alimento resta a
+0 kcal, controlla i log: `docker logs <container> | grep "Error during LLM"`.
+
+---
+
+## API per integrazioni esterne
+
+Superficie ufficiale per app esterne (es. una dashboard fitness).
+
+### `GET /integration/summary`
+
+```
+GET /integration/summary?profile_id=aa&start_date=2026-07-06&end_date=2026-07-12
+```
+
+Payload versionato (`"version": 1`), sempre **200** (campi a 0/`null` senza dati):
+
+- `adherence` — aderenza del periodo (pianificati, consumati, liberi, saltati)
+- `days[]` — per giorno: pasti pianificati e registrati (`main_consumed`),
+  `nutrition` (kcal + macro, `coverage`), `routine_kcal`, `extra_kcal`,
+  `target_kcal` (periodizzato), `training_note`, `complete`, `future`
+- `averages` — medie **"a oggi"**: solo giorni completi fino a oggi
+- `targets` — obiettivi kcal/macro correnti
+
+Parametri: `consumed_only=true` conta solo i pasti **registrati come mangiati**
+(un pasto pianificato e non registrato non conta); `meal_detail=true` aggiunge il
+dettaglio per pasto. Senza date usa la settimana corrente.
+
+### `POST /integration/apply-targets?profile_id=…`
+
+Riceve gli obiettivi da un'app esterna e riscala subito le porzioni del piano corrente:
+
+```json
+{"kcal": 1755, "protein_g": 119, "carbs_g": 201, "fat_g": 53,
+ "allow_upscale": false,
+ "daily": {"2026-10-23": {"kcal": 1995, "training_note": "Corpo libero 40′"}}}
+```
+
+`allow_upscale: false` (deficit) = le porzioni possono solo ridursi; `daily` =
+target per singola data (periodizzazione, anche retroattiva per lo storico).
+
+Altri endpoint: `GET /integration/plan-targets`, `GET /integration/today-status`
+(pasti di oggi da registrare), `GET /integration/unlogged-meals`.
 
 ### Auth opzionale (`API_KEY`)
 
-Di default l'API è aperta (LAN / rete Docker). Impostando la variabile d'ambiente
-`API_KEY`, ogni chiamata richiede l'header `X-API-Key` (o `?api_key=`); la web UI
-salva la chiave passandola una volta come `/ui/?api_key=...`. Se `API_KEY` non è
-impostata **non cambia nulla** (retro-compatibile).
+Di default l'API è aperta (LAN / rete Docker). Con `API_KEY` impostata ogni chiamata
+richiede l'header `X-API-Key` (o `?api_key=`); la UI salva la chiave aprendo una
+volta `/ui/?api_key=...`. Senza `API_KEY` non cambia nulla.
 
 ---
 
 ## Flusso d'uso tipico
 
-### 1. Importa il piano del nutrizionista
-
-Vai su **Importa** nella Web UI:
-- Carica il PDF del nutrizionista (supporta piani strutturati con grammature)
-- L'IA estrae grammature, opzioni proteiche/carboidrati, frequenze settimanali
-- Rivedi e correggi i valori prima di salvare
-- Il piano viene salvato con le ricette trovate nel catalogo
-
-### 2. Genera il piano settimanale
-
-Vai su **Settimana → Genera piano**.
-
-Il pianificatore usa:
-- Frequenze settimanali (es. carne bianca 2/sett, legumi 3-5/sett)
-- Regole di rotazione (no stesso ingrediente due giorni di fila)
-- Dispensa disponibile
-- Stagionalità
-- Storico consumo (evita ripetizioni recenti)
-
-### 3. Giorno per giorno
-
-Vai su **Oggi**:
-- Vedi pranzo e cena del giorno
-- "Cambia ricetta" propone 3 alternative
-- "Ho mangiato altro" registra un pasto libero
-- Segna come consumato al termine del pasto
-
-### 4. Lista della spesa
-
-Vai su **Lista spesa**: la lista è generata automaticamente dal piano settimanale, raggruppata per categoria, esportabile in CSV.
+1. **Importa** il PDF del nutrizionista: rivedi grammature, opzioni e frequenze, salva.
+2. **Settimana → Genera piano** (algoritmo, AI o "Dal mio storico"), poi aggiusta con
+   drag & drop, cambi di componente o nuove idee AI.
+3. **Oggi**: segna i pasti (consumato, non mangiato, pasto libero, foto, descrizione),
+   la routine e le merende extra.
+4. **Spesa**: lista dai giorni generati, per reparto, con le scorte sotto soglia.
+5. **Storico**: com'è andata davvero, sui pasti mangiati.
 
 ---
 
 ## Aggiungere ricette
 
-### Manuale (dalla Web UI)
-
-Vai su **Ricette → + Aggiungi**. Compila nome, ingredienti con grammature, metodo di cottura.
-Le ricette aggiunte manualmente ricevono un boost nel pianificatore.
-
-### Bulk import (JSON)
-
-Vai su **Ricette → Bulk Import**. Incolla un array JSON:
+- **Manuale** — **Ricette → + Aggiungi** (le ricette personali ricevono un boost nel planner).
+- **Da URL** — **Ricette → Importa da URL** (pagine con schema ricetta JSON-LD, altrimenti LLM).
+- **Bulk import (JSON)** — **Ricette → Bulk Import**:
 
 ```json
 [
@@ -418,7 +349,8 @@ Vai su **Ricette → Bulk Import**. Incolla un array JSON:
 ]
 ```
 
-Food group validi: `carboidrati`, `carne_bianca`, `carne_rossa`, `pesce`, `legumi`, `latticini`, `proteina`, `verdure`, `grassi`.
+Food group validi: `carboidrati`, `carne_bianca`, `carne_rossa`, `pesce`, `legumi`,
+`latticini`, `proteina`, `verdure`, `grassi`.
 
 ---
 
@@ -427,33 +359,30 @@ Food group validi: `carboidrati`, `carne_bianca`, `carne_rossa`, `pesce`, `legum
 ```
 planmydinner/
 ├── planmydinner_addon/
-│   ├── main.py               # Entry point FastAPI
-│   ├── planner.py            # PlannerEngine (logica principale)
-│   ├── database.py           # ORM SQLAlchemy + SQLite
-│   ├── schemas.py            # Pydantic schemas
+│   ├── main.py               # Entry point FastAPI, auth opzionale, client LLM
+│   ├── planner.py            # PlannerEngine (generazione, rotazione, spesa)
+│   ├── nutrition.py          # Valori nutrizionali (tabella, LLM, olio di cottura)
+│   ├── scaling.py            # Porzioni verso il target kcal (anche per giorno)
 │   ├── llm_gateway.py        # Astrazione LLM (OpenAI / Ollama) + cache
-│   ├── pdf_parser.py         # Parsing PDF con pdfminer
+│   ├── barcode.py            # Open Food Facts
+│   ├── pdf_parser.py         # Parsing PDF del nutrizionista
+│   ├── database.py · schemas.py
 │   ├── api/
-│   │   ├── planner.py        # Endpoint pianificatore
-│   │   ├── recipes.py        # CRUD ricette + bulk import
+│   │   ├── planner.py        # Generazione, settimana, aderenza, vacanze
+│   │   ├── consumption.py    # Diario pasti, foto/descrizione, mensa
+│   │   ├── routine.py        # Colazione/spuntini/merende fissi e merende extra
+│   │   ├── integration.py    # API per app esterne (summary, apply-targets)
+│   │   ├── recipes.py        # Ricette, import URL, preferiti, bilanciamento
+│   │   ├── pantry.py         # Dispensa, barcode, scadenze, scorte
+│   │   ├── shopping_list.py  # Spesa, spunte, CSV
 │   │   ├── _import.py        # Import PDF/testo
-│   │   ├── shopping_list.py  # Lista spesa
-│   │   ├── pantry.py         # Dispensa
-│   │   ├── profiles.py       # Profili utente
-│   │   └── settings.py       # Impostazioni + cache LLM
-│   └── frontend/
-│       ├── index.html        # App shell Vue 3
-│       ├── today.js          # Vista Oggi
-│       ├── planner.js        # Vista Settimana
-│       ├── recipes.js        # Catalogo ricette
-│       ├── import.js         # Import wizard
-│       ├── profiles.js       # Profili + vincoli
-│       ├── shopping.js       # Lista spesa
-│       └── settings.js       # Impostazioni
-├── custom_components/
-│   └── planmydinner/         # HA Custom Integration
+│   │   ├── profiles.py · settings.py · seed.py
+│   ├── frontend/             # Vue 3 (Oggi, Settimana, Spesa, Ricette, Storico,
+│   │                         #  Dispensa, Importa, Profili, Impostazioni), PWA
+│   └── tests/                # pytest
+├── custom_components/planmydinner/   # HA Custom Integration
 ├── docker-compose.standalone.yml
-├── docker-compose.yml        # Con HA + Ollama
+├── docker-compose.yml                 # Con HA + Ollama
 └── .env.example
 ```
 
@@ -461,10 +390,10 @@ planmydinner/
 
 ## Requisiti
 
-- Docker (per uso standalone o HA addon)
-- Python 3.11+ (per sviluppo locale)
+- Docker (standalone o HA addon) · Python 3.11+ per lo sviluppo
 - Home Assistant 2024.1+ (solo per l'integrazione HA)
 - LLM: Ollama locale o account OpenAI (opzionale ma consigliato)
+- Java solo per i test del parser PDF
 
 ---
 
