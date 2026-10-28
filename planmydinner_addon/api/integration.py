@@ -10,7 +10,7 @@ import json
 import logging
 import uuid
 from datetime import date, datetime, timedelta
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -471,6 +471,7 @@ def get_integration_summary(
     targets_by_date = rules_row.nutrition_targets_by_date if rules_row else None
 
     extras_by_date: Dict[str, Dict[str, float]] = {}
+    extras_list_by_date: Dict[str, List[Dict[str, Any]]] = {}   # cosa (per l'AI)
     extra_rows = db.query(ConsumedEntry).filter(
         ConsumedEntry.profile_id == profile_id,
         ConsumedEntry.date >= start_date.isoformat(),
@@ -492,6 +493,11 @@ def get_integration_summary(
             agg = extras_by_date.setdefault(e.date, {k: 0.0 for k in NUTRITION_KEYS})
             for k in NUTRITION_KEYS:
                 agg[k] += n[k]
+        item = {"name": od.get("free_text_name") or "Merenda extra",
+                "kcal": round(n["kcal"]) if n else None}
+        if od.get("description"):
+            item["description"] = od["description"]
+        extras_list_by_date.setdefault(e.date, []).append(item)
 
     # Pranzo/cena effettivamente consumati (ConsumedEntry non "skipped"): usato sia
     # per l'indicatore "X/Y registrati" sia, con consumed_only, per le medie.
@@ -754,6 +760,7 @@ def get_integration_summary(
             "has_estimated_meal": has_estimated_meal,
             "routine_kcal": round(routine_day["kcal"], 1) if routine_day else 0,
             "extra_kcal": round(extra_day["kcal"], 1) if extra_day else 0,
+            "extras": extras_list_by_date.get(iso, []),
             "target_kcal": day_target_kcal(targets, targets_by_date, iso),
             "training_note": (targets_by_date or {}).get(iso, {}).get("training_note"),
         }

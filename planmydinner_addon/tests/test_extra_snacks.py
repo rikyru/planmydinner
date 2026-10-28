@@ -47,3 +47,23 @@ def test_add_requires_ingredient(client, setup_database):
                     params={"profile_id": "persona_a", "meal_date": TODAY},
                     json={"name": "Vuoto", "ingredients": [{"name": "", "food_group": "altro", "grams": 0}]})
     assert r.status_code == 422
+
+
+def test_extra_free_description_kept_and_listed_in_summary(client, setup_database):
+    # merenda descritta a parole (stimata dall'AI nel frontend): la descrizione
+    # resta e il riepilogo per OpenFit dice COSA è stato mangiato, non solo le kcal
+    r = client.post("/routine/extra",
+                    params={"profile_id": "persona_a", "meal_date": TODAY},
+                    json={"name": "Aperitivo",
+                          "description": "aperitivo: birra media, pane e salumi",
+                          "ingredients": [{"name": "Mela", "food_group": "frutta", "grams": 150}]})
+    assert r.status_code == 200, r.text
+    lst = client.get("/routine/extras", params={"profile_id": "persona_a", "meal_date": TODAY}).json()
+    assert lst["extras"][0]["description"] == "aperitivo: birra media, pane e salumi"
+    s = client.get("/integration/summary", params={
+        "profile_id": "persona_a", "start_date": MONDAY, "end_date": "2026-03-01"}).json()
+    day = next(d for d in s["days"] if d["date"] == TODAY)
+    assert day["extras"] == [{"name": "Aperitivo", "kcal": round(52 * 1.5),
+                              "description": "aperitivo: birra media, pane e salumi"}]
+    other = next(d for d in s["days"] if d["date"] == MONDAY)
+    assert other["extras"] == []

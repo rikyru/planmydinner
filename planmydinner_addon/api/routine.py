@@ -278,6 +278,9 @@ class ExtraSnackIngredient(_BaseModel):
 class ExtraSnackBody(_BaseModel):
     name: str
     ingredients: List[ExtraSnackIngredient]
+    # descrizione libera (es. "aperitivo: birra media, pane e salumi"): da qui l'AI
+    # stima gli ingredienti; si conserva per mostrarla e per il coach di OpenFit
+    description: str = ""
 
 
 def _extra_content(entry: ConsumedEntry) -> list:
@@ -319,6 +322,7 @@ def add_extra_snack(profile_id: str, meal_date: str, body: ExtraSnackBody,
             "ingredients": [{"name": i.name.strip(), "food_group": i.food_group,
                              "qty": float(i.grams), "unit": "g"} for i in ings],
             "notes": "extra",
+            **({"description": body.description.strip()} if body.description.strip() else {}),
         },
     )
     db.add(entry)
@@ -345,6 +349,7 @@ def list_extra_snacks(profile_id: str, meal_date: str, request: Request,
         out.append({
             "id": e.id,
             "name": od.get("free_text_name"),
+            "description": od.get("description"),
             "ingredients": od.get("ingredients") or [],
             "nutrition": _extra_nutrition(e, gw),
         })

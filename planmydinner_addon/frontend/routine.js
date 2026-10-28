@@ -67,11 +67,20 @@ const RoutineStrip = defineComponent({
                 </div>
                 <div v-for="x in extras" :key="x.id" class="routine-row" style="margin-top:6px;">
                     <span>🍪</span>
-                    <span class="routine-row__name">{{ x.name }}<span v-if="x.nutrition" class="routine-row__macros">{{ macroLine(x.nutrition) }}</span></span>
+                    <span class="routine-row__name" :title="x.description || ''">{{ x.name }}<span v-if="x.nutrition" class="routine-row__macros">{{ macroLine(x.nutrition) }}</span></span>
                     <button @click="deleteExtra(x.id)" class="btn-sm btn-danger" title="Rimuovi">×</button>
                 </div>
                 <div v-if="showExtraForm" style="margin-top:8px;border:1px solid var(--border);border-radius:8px;padding:8px;">
-                    <input v-model="extraForm.name" placeholder="Nome (es. Barretta, Frutta, Gelato)" style="width:100%;margin-bottom:6px;">
+                    <textarea v-model="extraForm.description" rows="2" style="width:100%;margin-bottom:4px;"
+                              placeholder="Descrivi a parole (es. aperitivo: birra media, pane e salumi)"></textarea>
+                    <div style="display:flex;gap:6px;align-items:center;margin-bottom:8px;flex-wrap:wrap;">
+                        <button @click="estimateExtra" class="btn-sm btn-primary"
+                                :disabled="extraEstimating || (extraForm.description || '').trim().length < 3">
+                            {{ extraEstimating ? 'Stimo…' : '✨ Stima con AI' }}</button>
+                        <span v-if="extraEstimate" class="hint">≈ {{ macroLine(extraEstimate) }} · controlla i grammi qui sotto</span>
+                        <span v-else class="hint">oppure inserisci gli ingredienti a mano</span>
+                    </div>
+                    <input v-model="extraForm.name" placeholder="Nome (es. Barretta, Frutta, Aperitivo)" style="width:100%;margin-bottom:6px;">
                     <div v-for="(ing, idx) in extraForm.ingredients" :key="idx" style="display:flex;gap:6px;margin-bottom:4px;">
                         <input v-model="ing.name" placeholder="Ingrediente (es. mela)" style="flex:1;">
                         <input v-model.number="ing.grams" type="number" min="0" step="10" placeholder="g" style="width:70px;">
@@ -178,7 +187,9 @@ const RoutineStrip = defineComponent({
             mensaSlot: null,
             extras: [],
             showExtraForm: false,
-            extraForm: { name: '', ingredients: [{ name: '', food_group: 'altro', grams: 50 }] },
+            extraForm: { name: '', description: '', ingredients: [{ name: '', food_group: 'altro', grams: 50 }] },
+            extraEstimating: false,
+            extraEstimate: null,
         };
     },
     computed: {
@@ -233,16 +244,41 @@ const RoutineStrip = defineComponent({
                 const resp = await window.apiFetch('/routine/extra?' + params, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ name: this.extraForm.name || 'Merenda extra', ingredients }),
+                    body: JSON.stringify({ name: this.extraForm.name || 'Merenda extra', ingredients,
+                                           description: this.extraForm.description || '' }),
                 });
                 if (!resp.ok) throw new Error(await resp.text());
                 this.showExtraForm = false;
-                this.extraForm = { name: '', ingredients: [{ name: '', food_group: 'altro', grams: 50 }] };
+                this.extraForm = { name: '', description: '', ingredients: [{ name: '', food_group: 'altro', grams: 50 }] };
+                this.extraEstimate = null;
                 await this.fetchExtras();
                 this.$emit('changed');
                 this.toast.add('Merenda extra aggiunta!', 'success');
             } catch (e) {
                 this.toast.add('Errore: ' + e.message, 'error');
+            }
+        },
+        // descrizione libera -> ingredienti con grammi stimati (stessa analisi del
+        // "pasto diverso"); l'utente li corregge prima di salvare
+        async estimateExtra() {
+            this.extraEstimating = true;
+            try {
+                const params = new URLSearchParams({ profile_id: this.profileId });
+                const resp = await window.apiFetch('/consumed-entries/text/analyze?' + params, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ description: this.extraForm.description }),
+                });
+                if (!resp.ok) throw new Error((await resp.json().catch(() => ({}))).detail || resp.statusText);
+                const r = await resp.json();
+                this.extraForm.name = this.extraForm.name || r.name;
+                this.extraForm.ingredients = r.ingredients.map(i => ({
+                    name: i.name, food_group: i.food_group || 'altro', grams: Math.round(i.grams) }));
+                this.extraEstimate = r.nutrition;
+            } catch (e) {
+                this.toast.add('Stima non riuscita: ' + e.message, 'error');
+            } finally {
+                this.extraEstimating = false;
             }
         },
         async deleteExtra(id) {
