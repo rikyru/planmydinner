@@ -211,8 +211,13 @@ const RoutineStrip = defineComponent({
             return Math.round(this.extras.reduce((s, x) => s + (x.nutrition ? x.nutrition.kcal : 0), 0));
         },
         pantryChoices() {
-            // prima quelli con i valori dell'etichetta (scansionati), poi gli altri
-            return (this.pantryItems || []).slice().sort((a, b) =>
+            // un prodotto scansionato più volte è più righe in dispensa: una sola voce
+            // per nome; prima quelli con i valori dell'etichetta, poi gli altri
+            const seen = new Set();
+            return (this.pantryItems || []).filter(p => {
+                const k = (p.name || '').trim().toLowerCase();
+                return !seen.has(k) && seen.add(k);
+            }).sort((a, b) =>
                 (b.nutrition?.kcal != null) - (a.nutrition?.kcal != null) || a.name.localeCompare(b.name));
         },
         extraCanSave() {
