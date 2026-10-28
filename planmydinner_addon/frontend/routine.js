@@ -84,13 +84,13 @@ const RoutineStrip = defineComponent({
                         <select v-model="pantryPick" @change="addFromPantry" style="flex:1;" @focus="loadPantry">
                             <option value="">📦 Aggiungi dalla dispensa…</option>
                             <option v-for="p in pantryChoices" :key="p.id" :value="p.id">
-                                {{ p.name }}{{ p.nutrition && p.nutrition.kcal != null ? ` · ${Math.round(p.nutrition.kcal)} kcal/100g` : ' · (senza valori)' }}</option>
+                                {{ pantryLabel(p) }}</option>
                         </select>
                     </div>
                     <input v-model="extraForm.name" placeholder="Nome (es. Barretta, Frutta, Aperitivo)" style="width:100%;margin-bottom:6px;">
                     <div v-for="(ing, idx) in extraForm.ingredients" :key="idx" style="display:flex;gap:6px;margin-bottom:4px;">
                         <input v-model="ing.name" placeholder="Ingrediente (es. mela)" style="flex:1;" :readonly="!!ing.pantry_id"
-                               :title="ing.pantry_id ? 'dalla dispensa: valori dell'etichetta' : ''">
+                               :title="ing.pantry_id ? 'dalla dispensa: valori da etichetta' : ''">
                         <span v-if="ing.per100" class="hint" style="align-self:center;white-space:nowrap;">📦 {{ Math.round(ing.per100.kcal * (ing.grams || 0) / 100) }} kcal</span>
                         <input v-model.number="ing.grams" type="number" min="0" step="10" placeholder="g" style="width:70px;">
                         <button @click="extraForm.ingredients.splice(idx, 1)" class="btn-sm btn-danger">×</button>
@@ -279,6 +279,10 @@ const RoutineStrip = defineComponent({
             } catch (e) {
                 this.toast.add('Errore: ' + e.message, 'error');
             }
+        },
+        pantryLabel(p) {
+            const k = p.nutrition && p.nutrition.kcal != null ? Math.round(p.nutrition.kcal) : null;
+            return p.name + (k != null ? ' · ' + k + ' kcal/100g' : ' · (senza valori)');
         },
         async loadPantry() {
             if (this.pantryItems) return;
