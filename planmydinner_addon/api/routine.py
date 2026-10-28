@@ -18,7 +18,7 @@ from pydantic import BaseModel as _BaseModel
 from sqlalchemy.orm import Session
 
 from ..database import get_db, CandidateRecipe, ConsumedEntry, PantryItem
-from ..nutrition import compute_recipe_nutrition
+from ..nutrition import NUTRITION_KEYS, compute_recipe_nutrition
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -273,6 +273,9 @@ class ExtraSnackIngredient(_BaseModel):
     name: str
     food_group: str = "altro"
     grams: float
+    # prodotto della dispensa (es. yogurt scansionato): si usano i SUOI valori per
+    # 100 g dall'etichetta invece di stimare dal nome
+    pantry_id: Optional[str] = None
 
 
 class ExtraSnackBody(_BaseModel):
@@ -283,28 +286,45 @@ class ExtraSnackBody(_BaseModel):
     description: str = ""
 
 
-def _extra_content(entry: ConsumedEntry) -> list:
-    """Ricostruisce il content (per il calcolo nutrizionale) dagli ingredienti
-    salvati in override_details di una merenda extra."""
-    od = entry.override_details or {}
-    ings = od.get("ingredients") or []
-    content = []
-    for ing in ings:
-        grams = ing.get("qty") or 0
-        content.append({
-            "name": ing.get("name"),
-            "food_group": ing.get("food_group") or "altro",
-            "quantities": {entry.profile_id: {"qty": grams, "unit": "g", "grams_equiv": grams}},
-        })
-    return content
+def _extra_content(ings: list, profile_id: str) -> list:
+    """Content (per il calcolo nutrizionale) dagli ingredienti di una merenda extra."""
+    return [{
+        "name": ing.get("name"),
+        "food_group": ing.get("food_group") or "altro",
+        "quantities": {profile_id: {"qty": ing.get("qty") or 0, "unit": "g",
+                                    "grams_equiv": ing.get("qty") or 0}},
+    } for ing in ings]
+
+
+def extra_nutrition(override_details: dict, profile_id: str, llm_gateway=None):
+    """Macro di una merenda extra: gli ingredienti presi dalla dispensa usano i
+    valori per 100 g dell'etichetta (salvati sull'extra), gli altri il calcolo
+    standard per nome. None se non si riesce a stimare nulla."""
+    ings = (override_details or {}).get("ingredients") or []
+    label = [i for i in ings if i.get("per_100g")]
+    rest = [i for i in ings if not i.get("per_100g")]
+    total = {k: 0.0 for k in NUTRITION_KEYS}
+    for i in label:
+        f = (i.get("qty") or 0) / 100.0
+        for k in NUTRITION_KEYS:
+            total[k] += float(i["per_100g"].get(k) or 0) * f
+    if rest:
+        try:
+            n = compute_recipe_nutrition(_extra_content(rest, profile_id), profile_id,
+                                         llm_gateway=llm_gateway)
+        except Exception:
+            n = None
+        if not n and not label:
+            return None
+        for k in NUTRITION_KEYS:
+            total[k] += (n or {}).get(k) or 0
+    elif not label:
+        return None
+    return {k: round(v, 1) for k, v in total.items()}
 
 
 def _extra_nutrition(entry: ConsumedEntry, llm_gateway=None):
-    try:
-        return compute_recipe_nutrition(_extra_content(entry), entry.profile_id,
-                                        llm_gateway=llm_gateway)
-    except Exception:
-        return None
+    return extra_nutrition(entry.override_details, entry.profile_id, llm_gateway)
 
 
 @router.post("/extra")
@@ -314,13 +334,22 @@ def add_extra_snack(profile_id: str, meal_date: str, body: ExtraSnackBody,
     ings = [i for i in body.ingredients if i.name.strip() and i.grams > 0]
     if not ings:
         raise HTTPException(status_code=422, detail="Serve almeno un ingrediente.")
+
+    def _ing(i):
+        row = {"name": i.name.strip(), "food_group": i.food_group, "qty": float(i.grams), "unit": "g"}
+        item = db.query(PantryItem).filter(PantryItem.id == i.pantry_id).first() if i.pantry_id else None
+        per100 = (item.nutrition or {}) if item else {}
+        if per100.get("kcal") is not None:
+            # copia dei valori: se poi il prodotto esce dalla dispensa la merenda non cambia
+            row.update(pantry_id=item.id,
+                       per_100g={k: float(per100.get(k) or 0) for k in NUTRITION_KEYS})
+        return row
     entry = ConsumedEntry(
         id=str(uuid.uuid4()), profile_id=profile_id, date=meal_date,
         meal_type=EXTRA_MEAL_TYPE, type=EXTRA_TYPE,
         override_details={
             "free_text_name": body.name.strip() or "Merenda extra",
-            "ingredients": [{"name": i.name.strip(), "food_group": i.food_group,
-                             "qty": float(i.grams), "unit": "g"} for i in ings],
+            "ingredients": [_ing(i) for i in ings],
             "notes": "extra",
             **({"description": body.description.strip()} if body.description.strip() else {}),
         },

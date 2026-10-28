@@ -67,3 +67,34 @@ def test_extra_free_description_kept_and_listed_in_summary(client, setup_databas
                               "description": "aperitivo: birra media, pane e salumi"}]
     other = next(d for d in s["days"] if d["date"] == MONDAY)
     assert other["extras"] == []
+
+
+def test_extra_from_pantry_uses_label_values(client, setup_database):
+    # yogurt greco scansionato: valori per 100 g dall'etichetta, non stimati dal nome
+    from planmydinner_addon.database import PantryItem
+    from planmydinner_addon.tests.conftest import TestingSessionLocal as SessionLocal
+    db = SessionLocal()
+    db.add(PantryItem(id="yog", name="Yogurt greco 0%", quantity=2, unit="pz",
+                      nutrition={"kcal": 57, "protein_g": 10.3, "carbs_g": 3.4, "fat_g": 0.2}))
+    db.commit()
+    db.close()
+    r = client.post("/routine/extra",
+                    params={"profile_id": "persona_a", "meal_date": TODAY},
+                    json={"name": "Yogurt", "ingredients": [
+                        {"name": "Yogurt greco 0%", "grams": 170, "pantry_id": "yog"},
+                        {"name": "Mela", "food_group": "frutta", "grams": 150}]})
+    assert r.status_code == 200, r.text
+    n = r.json()["nutrition"]
+    assert n["kcal"] == pytest.approx(57 * 1.7 + 52 * 1.5, abs=3)
+    assert n["protein_g"] == pytest.approx(10.3 * 1.7, abs=1)
+    # valori copiati sull'extra: togliere il prodotto dalla dispensa non cambia la merenda
+    db = SessionLocal()
+    db.query(PantryItem).filter(PantryItem.id == "yog").delete()
+    db.commit()
+    db.close()
+    lst = client.get("/routine/extras", params={"profile_id": "persona_a", "meal_date": TODAY}).json()
+    assert lst["extras"][0]["nutrition"]["kcal"] == pytest.approx(n["kcal"], abs=0.5)
+    s = client.get("/integration/summary", params={
+        "profile_id": "persona_a", "start_date": MONDAY, "end_date": "2026-03-01"}).json()
+    day = next(d for d in s["days"] if d["date"] == TODAY)
+    assert day["extra_kcal"] == pytest.approx(n["kcal"], abs=0.5)

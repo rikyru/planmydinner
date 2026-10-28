@@ -23,6 +23,7 @@ from ..nutrition import (DEFAULT_COOKING_FAT_G, NUTRITION_KEYS, apply_portions,
                          recipe_nutrition_split, scaled_nutrition)
 from ..scaling import apply_nutrition_scaling, day_target_kcal
 from .planner import compute_adherence_stats
+from .routine import extra_nutrition
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -480,15 +481,7 @@ def get_integration_summary(
     ).all()
     for e in extra_rows:
         od = e.override_details or {}
-        content = [{
-            "name": i.get("name"), "food_group": i.get("food_group") or "altro",
-            "quantities": {profile_id: {"qty": i.get("qty") or 0, "unit": "g",
-                                        "grams_equiv": i.get("qty") or 0}},
-        } for i in (od.get("ingredients") or [])]
-        try:
-            n = compute_recipe_nutrition(content, profile_id, llm_gateway=llm_gateway)
-        except Exception:
-            n = None
+        n = extra_nutrition(od, profile_id, llm_gateway)   # dispensa = valori d'etichetta
         if n:
             agg = extras_by_date.setdefault(e.date, {k: 0.0 for k in NUTRITION_KEYS})
             for k in NUTRITION_KEYS:

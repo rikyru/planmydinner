@@ -80,9 +80,18 @@ const RoutineStrip = defineComponent({
                         <span v-if="extraEstimate" class="hint">≈ {{ macroLine(extraEstimate) }} · controlla i grammi qui sotto</span>
                         <span v-else class="hint">oppure inserisci gli ingredienti a mano</span>
                     </div>
+                    <div style="display:flex;gap:6px;align-items:center;margin-bottom:8px;">
+                        <select v-model="pantryPick" @change="addFromPantry" style="flex:1;" @focus="loadPantry">
+                            <option value="">📦 Aggiungi dalla dispensa…</option>
+                            <option v-for="p in pantryChoices" :key="p.id" :value="p.id">
+                                {{ p.name }}{{ p.nutrition && p.nutrition.kcal != null ? ` · ${Math.round(p.nutrition.kcal)} kcal/100g` : ' · (senza valori)' }}</option>
+                        </select>
+                    </div>
                     <input v-model="extraForm.name" placeholder="Nome (es. Barretta, Frutta, Aperitivo)" style="width:100%;margin-bottom:6px;">
                     <div v-for="(ing, idx) in extraForm.ingredients" :key="idx" style="display:flex;gap:6px;margin-bottom:4px;">
-                        <input v-model="ing.name" placeholder="Ingrediente (es. mela)" style="flex:1;">
+                        <input v-model="ing.name" placeholder="Ingrediente (es. mela)" style="flex:1;" :readonly="!!ing.pantry_id"
+                               :title="ing.pantry_id ? 'dalla dispensa: valori dell'etichetta' : ''">
+                        <span v-if="ing.per100" class="hint" style="align-self:center;white-space:nowrap;">📦 {{ Math.round(ing.per100.kcal * (ing.grams || 0) / 100) }} kcal</span>
                         <input v-model.number="ing.grams" type="number" min="0" step="10" placeholder="g" style="width:70px;">
                         <button @click="extraForm.ingredients.splice(idx, 1)" class="btn-sm btn-danger">×</button>
                     </div>
@@ -190,6 +199,8 @@ const RoutineStrip = defineComponent({
             extraForm: { name: '', description: '', ingredients: [{ name: '', food_group: 'altro', grams: 50 }] },
             extraEstimating: false,
             extraEstimate: null,
+            pantryItems: null,
+            pantryPick: '',
         };
     },
     computed: {
@@ -198,6 +209,11 @@ const RoutineStrip = defineComponent({
         shownSlots() { return this.slots.filter(s => s.defined || s.today === 'logged'); },
         extrasKcal() {
             return Math.round(this.extras.reduce((s, x) => s + (x.nutrition ? x.nutrition.kcal : 0), 0));
+        },
+        pantryChoices() {
+            // prima quelli con i valori dell'etichetta (scansionati), poi gli altri
+            return (this.pantryItems || []).slice().sort((a, b) =>
+                (b.nutrition?.kcal != null) - (a.nutrition?.kcal != null) || a.name.localeCompare(b.name));
         },
         extraCanSave() {
             return this.extraForm.ingredients.some(i => (i.name || '').trim() && i.grams > 0);
@@ -237,7 +253,8 @@ const RoutineStrip = defineComponent({
         async submitExtra() {
             const ingredients = this.extraForm.ingredients
                 .filter(i => (i.name || '').trim() && i.grams > 0)
-                .map(i => ({ name: i.name.trim(), food_group: i.food_group || 'altro', grams: i.grams }));
+                .map(i => ({ name: i.name.trim(), food_group: i.food_group || 'altro', grams: i.grams,
+                             pantry_id: i.pantry_id || null }));
             if (!ingredients.length) return;
             try {
                 const params = new URLSearchParams({ profile_id: this.profileId, meal_date: this.mealDate });
@@ -257,6 +274,28 @@ const RoutineStrip = defineComponent({
             } catch (e) {
                 this.toast.add('Errore: ' + e.message, 'error');
             }
+        },
+        async loadPantry() {
+            if (this.pantryItems) return;
+            try {
+                const resp = await window.apiFetch('/pantry/items?limit=500');
+                this.pantryItems = resp.ok ? await resp.json() : [];
+            } catch (_) {
+                this.pantryItems = [];
+            }
+        },
+        // prodotto della dispensa -> riga ingrediente (100 g da correggere); il server
+        // userà i valori per 100 g dell'etichetta
+        addFromPantry() {
+            const p = (this.pantryItems || []).find(x => x.id === this.pantryPick);
+            this.pantryPick = '';
+            if (!p) return;
+            const rows = this.extraForm.ingredients.filter(i => (i.name || '').trim());
+            const per100 = p.nutrition && p.nutrition.kcal != null ? p.nutrition : null;
+            rows.push({ name: p.name, food_group: 'altro', grams: 100,
+                        pantry_id: per100 ? p.id : null, per100 });
+            this.extraForm.ingredients = rows;
+            if (!this.extraForm.name) this.extraForm.name = p.name;
         },
         // descrizione libera -> ingredienti con grammi stimati (stessa analisi del
         // "pasto diverso"); l'utente li corregge prima di salvare
