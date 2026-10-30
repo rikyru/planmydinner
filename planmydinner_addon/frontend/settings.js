@@ -1,8 +1,10 @@
 import { defineComponent } from 'vue';
+import RoutineEditor from './routine-editor.js?v=1';
 
 const SettingsView = defineComponent({
     name: 'SettingsView',
     inject: ['toast'],
+    components: { RoutineEditor },
     template: `
         <div class="settings-view">
             <h2>Impostazioni</h2>
@@ -197,6 +199,20 @@ const SettingsView = defineComponent({
                             :disabled="savingGenerationSlots || (!generationSlots.pranzo.length && !generationSlots.cena.length)">
                         {{ savingGenerationSlots ? 'Salvataggio...' : '💾 Salva' }}
                     </button>
+                </div>
+            </div>
+
+            <!-- ── Sezione: Pasti fissi ── -->
+            <div class="settings-section">
+                <h3 class="settings-section__title">☕ Pasti fissi: colazione e merende</h3>
+                <div class="settings-section__body">
+                    <p class="settings-hint">
+                        Quello che mangi ogni giorno uguale: viene contato nei totali in automatico,
+                        senza registrarlo. In Oggi segni solo le eccezioni (saltato o diverso).
+                        Tocca un pasto per modificarlo: i valori si aggiornano mentre cambi ingredienti e grammi.
+                    </p>
+                    <routine-editor v-if="profileId" :profile-id="profileId" />
+                    <div v-else class="hint">Crea prima un profilo.</div>
                 </div>
             </div>
 

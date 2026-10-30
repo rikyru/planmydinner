@@ -867,3 +867,9 @@ input[type="checkbox"] { accent-color: var(--primary); }
 .dot-ok { background: var(--success); }
 .dot-ko { background: var(--danger); }
 .dot-na { background: var(--border-strong); }
+
+/* Editor pasti fissi (Impostazioni e ⚙️ in Oggi) */
+.routine-totals { background: var(--primary-softer); border-radius: var(--radius-sm); padding: 8px 10px; margin-bottom: 10px; font-size: 13px; }
+.routine-editor__slot { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; }
+.routine-editor__head { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.routine-editor__preview { font-size: 12.5px; background: var(--bg); border-radius: var(--radius-xs); padding: 6px 8px; }

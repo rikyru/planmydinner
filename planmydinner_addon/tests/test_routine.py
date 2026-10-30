@@ -147,3 +147,18 @@ class TestRoutineInSummary:
         assert mer["today_name"] == "Trancio di pizza"
         assert mer["today_nutrition"]["kcal"] == pytest.approx(265, abs=0.3)
         assert slots["dopo_cena"]["today_nutrition"] is None
+
+
+def test_preview_totals_and_per_ingredient(client, setup_database):
+    # anteprima in modifica: totale + contributo di ogni ingrediente, niente olio aggiunto
+    r = client.post("/routine/preview", json={"profile_id": "persona_a", "ingredients": [
+        {"name": "Parmigiano", "food_group": "latticini", "grams": 30},
+        {"name": "Mela", "food_group": "frutta", "grams": 150},
+        {"name": "", "grams": 50}]})
+    assert r.status_code == 200, r.text
+    d = r.json()
+    assert [i["name"] for i in d["ingredients"]] == ["Parmigiano", "Mela"]
+    parm = d["ingredients"][0]
+    assert parm["known"] and parm["fat_g"] > 5
+    assert d["nutrition"]["fat_g"] == pytest.approx(sum(i["fat_g"] for i in d["ingredients"]), abs=0.3)
+    assert d["nutrition"]["cooking_fat_added"] is False

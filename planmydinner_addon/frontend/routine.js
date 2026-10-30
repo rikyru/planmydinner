@@ -1,5 +1,6 @@
 import { defineComponent } from 'vue';
 import MensaModal from './mensa.js?v=6';
+import RoutineEditor from './routine-editor.js?v=1';
 import { macroLine } from './meal-nutrition.js?v=4';
 
 /**
@@ -11,7 +12,7 @@ import { macroLine } from './meal-nutrition.js?v=4';
 const RoutineStrip = defineComponent({
     name: 'RoutineStrip',
     inject: ['toast'],
-    components: { MensaModal },
+    components: { MensaModal, RoutineEditor },
     props: {
         profileId: { type: String, required: true },
         mealDate: { type: String, required: true },
@@ -119,63 +120,10 @@ const RoutineStrip = defineComponent({
                     <p class="hint" style="margin:0 0 10px;">
                         Vengono contati automaticamente nei totali di ogni giorno.
                         "Dopo cena" è l'eccezione: conta solo quando lo segni.
+                        Li trovi anche in Impostazioni.
                     </p>
 
-                    <div v-for="s in slots" :key="s.slot" style="border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:8px;">
-                        <div style="display:flex;align-items:center;gap:8px;cursor:pointer;" @click="toggleEdit(s)">
-                            <span>{{ s.icon }}</span>
-                            <strong style="flex:1;font-size:13.5px;">{{ s.label }}</strong>
-                            <span v-if="s.defined" class="hint">{{ s.name }} · ~{{ s.nutrition ? Math.round(s.nutrition.kcal) : '?' }} kcal</span>
-                            <span v-else class="hint">non definito</span>
-                            <span style="color:var(--text-3);">{{ editSlot === s.slot ? '▲' : '✏️' }}</span>
-                        </div>
-
-                        <div v-if="editSlot === s.slot" style="margin-top:10px;display:flex;flex-direction:column;gap:8px;">
-                            <div style="display:flex;gap:8px;">
-                                <input v-model="editForm.description"
-                                       placeholder="es. caffè, 2 fette biscottate con marmellata, yogurt greco"
-                                       :disabled="analyzing" @keyup.enter="analyzeDescription">
-                                <button @click="analyzeDescription" class="btn-primary btn-sm"
-                                        :disabled="analyzing || editForm.description.trim().length < 3" style="flex-shrink:0;"
-                                        title="Struttura il testo che hai scritto">
-                                    {{ analyzing ? '…' : '✨' }}
-                                </button>
-                            </div>
-                            <div style="display:flex;gap:6px;flex-wrap:wrap;">
-                                <button @click="suggestMeal(s, false)" class="btn-secondary btn-sm"
-                                        :disabled="suggesting"
-                                        title="Proponi una nuova idea con l'AI">
-                                    {{ suggesting ? 'Proposta…' : '🍳 Proponi' }}
-                                </button>
-                                <button @click="suggestMeal(s, true)" class="btn-secondary btn-sm"
-                                        :disabled="suggesting"
-                                        title="Proponi usando ciò che hai in dispensa">
-                                    {{ suggesting ? '…' : '🧺 Dalla dispensa' }}
-                                </button>
-                            </div>
-                            <input v-model="editForm.name" placeholder="Nome (es. Colazione tipo)">
-                            <div v-for="(ing, idx) in editForm.ingredients" :key="idx"
-                                 style="display:grid;grid-template-columns:1fr 80px auto;gap:8px;align-items:center;">
-                                <input v-model="ing.name">
-                                <input v-model.number="ing.grams" type="number" min="0" step="5">
-                                <button @click="editForm.ingredients.splice(idx, 1)" class="btn-secondary btn-sm">✕</button>
-                            </div>
-                            <button @click="editForm.ingredients.push({name: '', food_group: 'altro', grams: 50})"
-                                    class="btn-secondary btn-sm" style="align-self:flex-start;">+ ingrediente</button>
-                            <label class="toggle-label">
-                                <input type="checkbox" v-model="editForm.default_on" style="width:auto;">
-                                Conta ogni giorno automaticamente
-                            </label>
-                            <div style="display:flex;gap:8px;">
-                                <button @click="saveSlot(s)" class="btn-primary btn-sm"
-                                        :disabled="saving || !editForm.name || !editForm.ingredients.length">
-                                    {{ saving ? 'Salvataggio…' : '💾 Salva' }}
-                                </button>
-                                <button v-if="s.defined" @click="deleteSlot(s)" class="btn-danger btn-sm" style="margin-left:auto;">🗑️</button>
-                            </div>
-                            <div v-if="editError" class="error">{{ editError }}</div>
-                        </div>
-                    </div>
+                    <routine-editor :profile-id="profileId" @changed="onEditorChanged" />
 
                     <button @click="closeEditor" class="btn-secondary" style="margin-top:8px;">Chiudi</button>
                 </div>
@@ -187,12 +135,6 @@ const RoutineStrip = defineComponent({
             slots: [],
             loading: false,
             editorOpen: false,
-            editSlot: null,
-            suggesting: false,
-            editForm: { description: '', name: '', ingredients: [], default_on: true },
-            analyzing: false,
-            saving: false,
-            editError: null,
             mensaSlot: null,
             extras: [],
             showExtraForm: false,
@@ -368,105 +310,12 @@ const RoutineStrip = defineComponent({
                 this.toast.add('Errore: ' + e.message, 'error');
             }
         },
-        toggleEdit(s) {
-            if (this.editSlot === s.slot) { this.editSlot = null; return; }
-            this.editSlot = s.slot;
-            this.editError = null;
-            this.editForm = {
-                description: '',
-                name: s.name || '',
-                ingredients: (s.ingredients || []).map(i => ({ ...i })),
-                default_on: s.default_on,
-            };
-        },
-        async analyzeDescription() {
-            const description = this.editForm.description.trim();
-            if (description.length < 3) return;
-            this.analyzing = true;
-            this.editError = null;
-            try {
-                const params = new URLSearchParams({ profile_id: this.profileId });
-                const resp = await window.apiFetch('/consumed-entries/text/analyze?' + params, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ description }),
-                });
-                if (!resp.ok) {
-                    const err = await resp.json().catch(() => ({}));
-                    throw new Error(err.detail || 'Analisi fallita.');
-                }
-                const proposal = await resp.json();
-                this.editForm.name = this.editForm.name || proposal.name;
-                this.editForm.ingredients = proposal.ingredients;
-            } catch (e) {
-                this.editError = e.message;
-            } finally {
-                this.analyzing = false;
-            }
-        },
-        async suggestMeal(s, fromPantry = false) {
-            this.suggesting = true;
-            try {
-                const params = new URLSearchParams({ slot: s.slot });
-                // evita di riproporre il pasto attuale (varietà)
-                const cur = s.name || this.editForm.name;
-                if (cur) params.set('avoid', cur);
-                if (fromPantry) params.set('from_pantry', 'true');
-                const resp = await window.apiFetch('/routine/suggest?' + params);
-                if (!resp.ok) throw new Error((await resp.json()).detail || 'errore');
-                const p = await resp.json();
-                this.editForm.name = p.name || this.editForm.name;
-                this.editForm.ingredients = p.ingredients || [];
-                this.toast.add(fromPantry ? 'Proposta dalla dispensa: rivedi e salva'
-                                          : 'Proposta pronta: rivedi e salva', 'success');
-            } catch (e) {
-                this.toast.add('Errore: ' + e.message, 'error');
-            } finally {
-                this.suggesting = false;
-            }
-        },
-        async saveSlot(s) {
-            this.saving = true;
-            this.editError = null;
-            try {
-                const body = {
-                    profile_id: this.profileId,
-                    name: this.editForm.name,
-                    ingredients: this.editForm.ingredients.filter(i => i.name && i.grams > 0),
-                    default_on: this.editForm.default_on,
-                };
-                const resp = await window.apiFetch(`/routine/${s.slot}`, {
-                    method: 'PUT',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(body),
-                });
-                if (!resp.ok) throw new Error(await resp.text());
-                this.toast.add(`${s.label} salvata!`, 'success');
-                this.editSlot = null;
-                await this.load();
-                this.$emit('changed');
-            } catch (e) {
-                this.editError = 'Errore: ' + e.message;
-            } finally {
-                this.saving = false;
-            }
-        },
-        async deleteSlot(s) {
-            if (!confirm(`Rimuovere "${s.name}" da ${s.label}?`)) return;
-            try {
-                const params = new URLSearchParams({ profile_id: this.profileId });
-                const resp = await window.apiFetch(`/routine/${s.slot}?` + params, { method: 'DELETE' });
-                if (!resp.ok) throw new Error(await resp.text());
-                this.editSlot = null;
-                await this.load();
-                this.$emit('changed');
-            } catch (e) {
-                this.toast.add('Errore: ' + e.message, 'error');
-            }
+        async onEditorChanged() {
+            await this.load();
+            this.$emit('changed');
         },
         closeEditor() {
             this.editorOpen = false;
-            this.editSlot = null;
         },
     },
 });

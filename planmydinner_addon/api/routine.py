@@ -18,7 +18,7 @@ from pydantic import BaseModel as _BaseModel
 from sqlalchemy.orm import Session
 
 from ..database import get_db, CandidateRecipe, ConsumedEntry, PantryItem
-from ..nutrition import NUTRITION_KEYS, compute_recipe_nutrition
+from ..nutrition import NUTRITION_KEYS, compute_recipe_nutrition, resolve_ingredient_nutrition
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -186,6 +186,47 @@ def list_routine(request: Request, profile_id: str, target_date: Optional[date] 
     return {"date": iso, "slots": out}
 
 
+def _routine_content(profile_id: str, ingredients: List[RoutineIngredient]) -> list:
+    return [
+        {
+            "name": ing.name.strip(),
+            "food_group": ing.food_group,
+            "quantities": {profile_id: {"qty": float(ing.grams), "unit": "g", "grams_equiv": float(ing.grams)}},
+        }
+        for ing in ingredients if ing.grams > 0 and ing.name.strip()
+    ]
+
+
+class RoutinePreview(_BaseModel):
+    profile_id: str
+    ingredients: List[RoutineIngredient]
+
+
+@router.post("/preview")
+def preview_routine_meal(body: RoutinePreview, request: Request):
+    """kcal/macro di un pasto fisso in modifica (non salvato), totale e per
+    ingrediente, così si vede subito chi porta i grassi. Niente olio di cottura:
+    colazione e spuntini non lo prevedono."""
+    gw = getattr(request.app.state, "llm_gateway", None)
+    content = _routine_content(body.profile_id, body.ingredients)
+    try:
+        total = compute_recipe_nutrition(content, body.profile_id, llm_gateway=gw) if content else None
+    except Exception:
+        total = None
+    per = []
+    for c in content:
+        grams = c["quantities"][body.profile_id]["grams_equiv"]
+        try:
+            n = resolve_ingredient_nutrition(c, llm_gateway=gw)
+        except Exception:
+            n = None
+        row = {"name": c["name"], "grams": grams, "known": bool(n)}
+        if n:
+            row.update({k: round(n[k] * grams / 100.0, 1) for k in NUTRITION_KEYS})
+        per.append(row)
+    return {"nutrition": total, "ingredients": per}
+
+
 @router.put("/{slot}")
 def save_routine_meal(slot: str, body: RoutineMealSave, db: Session = Depends(get_db)):
     """Definisce (o aggiorna) il pasto fisso di uno slot per un profilo."""
@@ -194,14 +235,7 @@ def save_routine_meal(slot: str, body: RoutineMealSave, db: Session = Depends(ge
     if not body.ingredients:
         raise HTTPException(status_code=422, detail="Serve almeno un ingrediente.")
 
-    content = [
-        {
-            "name": ing.name,
-            "food_group": ing.food_group,
-            "quantities": {body.profile_id: {"qty": float(ing.grams), "unit": "g", "grams_equiv": float(ing.grams)}},
-        }
-        for ing in body.ingredients if ing.grams > 0
-    ]
+    content = _routine_content(body.profile_id, body.ingredients)
     default_on = SLOTS[slot]["default_on"] if body.default_on is None else bool(body.default_on)
     recipe_data = {
         "name": body.name.strip(),
