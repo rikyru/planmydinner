@@ -12,7 +12,7 @@ import json
 import logging
 import re
 import uuid
-from datetime import date
+from datetime import date, timedelta
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
@@ -20,7 +20,8 @@ from pydantic import BaseModel as _BaseModel
 from sqlalchemy.orm import Session
 
 from ..barcode import lookup_barcode
-from ..database import get_db, CandidateRecipe, ConsumedEntry, PantryItem
+from ..database import get_db, CandidateRecipe, ConsumedEntry, PantryItem, PantryUse
+from .. import pantry_use
 from ..nutrition import NUTRITION_KEYS, compute_recipe_nutrition, resolve_ingredient_nutrition
 
 _LOGGER = logging.getLogger(__name__)
@@ -150,11 +151,60 @@ def suggest_routine(request: Request, slot: str, avoid: Optional[str] = None,
     return proposal
 
 
+# Quanti giorni indietro si riallinea la dispensa (un "saltato" segnato tardi)
+_PANTRY_SYNC_DAYS = 7
+
+
+def _slot_eaten(entries, meal) -> bool:
+    """Il pasto fisso è stato (o si assume) mangiato quel giorno."""
+    state = _slot_today_state(entries, meal)
+    if state == "assumed":
+        return True
+    return state == "logged" and any(e.type != "skipped" and e.consumed_recipe_id == meal["id"]
+                                     for e in entries)
+
+
+def sync_routine_pantry(db: Session, profile_id: str, today: Optional[date] = None) -> None:
+    """Scala dalla dispensa gli ingredienti dei pasti fissi mangiati (oggi
+    compreso) e restituisce quelli dei pasti poi saltati o sostituiti. Parte dal
+    primo giorno in cui la funzione è attiva: niente arretrati."""
+    today = today or date.today()
+    logs = db.query(PantryUse).filter(PantryUse.profile_id == profile_id).all()
+    first = min((u.date for u in logs), default=today.isoformat())
+    start = max(date.fromisoformat(first), today - timedelta(days=_PANTRY_SYNC_DAYS - 1))
+    done = {(u.date, u.slot): u for u in logs}
+    meals = get_routine_meals(db, profile_id)
+    d = start
+    while d <= today:
+        iso = d.isoformat()
+        for slot in SLOTS:
+            meal = meals.get(slot)
+            eaten = bool(meal) and _slot_eaten(_day_entries(db, profile_id, iso, slot), meal)
+            use = done.get((iso, slot))
+            if eaten and not use:
+                ded = []
+                for ing in meal["content"]:
+                    grams = ((ing.get("quantities") or {}).get(profile_id) or {}).get("grams_equiv") or 0
+                    ded += pantry_use.take(db, ing.get("name"), float(grams), ing.get("pantry_id"))
+                db.add(PantryUse(id=str(uuid.uuid4()), profile_id=profile_id, date=iso,
+                                 slot=slot, deductions=ded))
+            elif use and not eaten:
+                pantry_use.give_back(db, use.deductions)
+                db.delete(use)
+        d += timedelta(days=1)
+    db.commit()
+
+
 @router.get("/")
 def list_routine(request: Request, profile_id: str, target_date: Optional[date] = None,
                  db: Session = Depends(get_db)):
     """Slot con pasto fisso definito (se c'è), macro e stato del giorno."""
     gw = getattr(request.app.state, "llm_gateway", None)
+    try:
+        sync_routine_pantry(db, profile_id)
+    except Exception:
+        db.rollback()
+        _LOGGER.exception("Allineamento dispensa dei pasti fissi fallito")
     meals = get_routine_meals(db, profile_id)
     iso = (target_date or date.today()).isoformat()
     out = []
@@ -410,6 +460,9 @@ def add_extra_snack(profile_id: str, meal_date: str, body: ExtraSnackBody,
             if item:
                 row["pantry_id"] = item.id
             row["per_100g"] = {k: float(per100.get(k) or 0) for k in NUTRITION_KEYS}
+        if item:
+            # mangiato dalla dispensa: si scala (e si ricorda cosa, per restituirlo)
+            row["pantry_used"] = pantry_use.take(db, item.name, float(i.grams), item.id)
         return row
     entry = ConsumedEntry(
         id=str(uuid.uuid4()), profile_id=profile_id, date=meal_date,
@@ -458,6 +511,8 @@ def delete_extra_snack(entry_id: str, db: Session = Depends(get_db)):
         ConsumedEntry.id == entry_id, ConsumedEntry.type == EXTRA_TYPE).first()
     if not e:
         raise HTTPException(status_code=404, detail="Merenda extra non trovata.")
+    for ing in (e.override_details or {}).get("ingredients") or []:
+        pantry_use.give_back(db, ing.get("pantry_used"))
     db.delete(e)
     db.commit()
     return {"deleted": entry_id}

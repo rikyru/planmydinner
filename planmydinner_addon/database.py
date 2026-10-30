@@ -45,6 +45,17 @@ class PantryItem(Base):
     nutrition = Column(JSON, nullable=True)               # {kcal, protein_g, carbs_g, fat_g} per 100g
     min_quantity = Column(Float, nullable=True)           # soglia minima → sotto va in spesa
 
+class PantryUse(Base):
+    """Cosa un pasto fisso ha scalato dalla dispensa in un giorno: serve a non
+    scalarlo due volte e a restituirlo se il pasto viene saltato o sostituito."""
+    __tablename__ = "pantry_uses"
+
+    id = Column(String, primary_key=True)
+    profile_id = Column(String, index=True)
+    date = Column(String, index=True)        # ISO date
+    slot = Column(String)
+    deductions = Column(JSON)                # [{id, name, unit, qty, nutrition, ...}]
+
 class ConsumedEntry(Base):
     __tablename__ = "consumed_entries"
 
