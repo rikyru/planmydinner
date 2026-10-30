@@ -81,6 +81,16 @@ const RoutineStrip = defineComponent({
                         <span v-if="extraEstimate" class="hint">≈ {{ macroLine(extraEstimate) }} · controlla i grammi qui sotto</span>
                         <span v-else class="hint">oppure inserisci gli ingredienti a mano</span>
                     </div>
+                    <div style="display:flex;gap:6px;align-items:center;margin-bottom:8px;flex-wrap:wrap;">
+                        <button @click="startScan" class="btn-sm btn-secondary" :disabled="productLoading"
+                                title="Snack confezionato: inquadra il codice a barre">📷 Codice a barre</button>
+                        <label class="btn-sm btn-secondary" style="cursor:pointer;margin:0;"
+                               title="Foto della confezione, del codice a barre o della tabella nutrizionale">
+                            {{ productLoading ? 'Riconosco…' : '📸 Da foto' }}
+                            <input type="file" accept="image/*" capture="environment" style="display:none;"
+                                   :disabled="productLoading" @change="productFromPhoto">
+                        </label>
+                    </div>
                     <div style="display:flex;gap:6px;align-items:center;margin-bottom:8px;">
                         <select v-model="pantryPick" @change="addFromPantry" style="flex:1;" @focus="loadPantry">
                             <option value="">📦 Aggiungi dalla dispensa…</option>
@@ -101,6 +111,22 @@ const RoutineStrip = defineComponent({
                         <button @click="submitExtra" class="btn-sm btn-primary" :disabled="!extraCanSave">Salva merenda</button>
                         <button @click="showExtraForm = false" class="btn-sm btn-secondary">Annulla</button>
                     </div>
+                </div>
+            </div>
+
+            <!-- Scanner codice a barre per le merende extra -->
+            <div v-if="scanning" class="modal-overlay" @click.self="stopScan">
+                <div class="modal" style="max-width:420px;">
+                    <h3>Inquadra il codice a barre</h3>
+                    <video ref="video" autoplay playsinline muted
+                           style="width:100%;border-radius:8px;background:#000;max-height:50vh;"></video>
+                    <p class="hint">Oppure inserisci il codice a mano:</p>
+                    <div style="display:flex;gap:6px;">
+                        <input v-model="manualCode" placeholder="Es. 8001120..." style="flex:1;" inputmode="numeric"
+                               @keyup.enter="productFromCode(manualCode)">
+                        <button class="btn-sm btn-primary" @click="productFromCode(manualCode)">Cerca</button>
+                    </div>
+                    <div style="margin-top:10px;"><button class="btn-secondary" @click="stopScan">Chiudi</button></div>
                 </div>
             </div>
 
@@ -143,6 +169,9 @@ const RoutineStrip = defineComponent({
             extraEstimate: null,
             pantryItems: null,
             pantryPick: '',
+            scanning: false,
+            manualCode: '',
+            productLoading: false,
         };
     },
     computed: {
@@ -201,7 +230,8 @@ const RoutineStrip = defineComponent({
             const ingredients = this.extraForm.ingredients
                 .filter(i => (i.name || '').trim() && i.grams > 0)
                 .map(i => ({ name: i.name.trim(), food_group: i.food_group || 'altro', grams: i.grams,
-                             pantry_id: i.pantry_id || null }));
+                             pantry_id: i.pantry_id || null,
+                             per_100g: !i.pantry_id && i.per100 ? i.per100 : null }));
             if (!ingredients.length) return;
             try {
                 const params = new URLSearchParams({ profile_id: this.profileId, meal_date: this.mealDate });
@@ -221,6 +251,99 @@ const RoutineStrip = defineComponent({
             } catch (e) {
                 this.toast.add('Errore: ' + e.message, 'error');
             }
+        },
+        // ---- snack confezionato da codice a barre o foto (es. macchinetta)
+        async startScan() {
+            this.manualCode = '';
+            this.scanning = true;
+            if (!('BarcodeDetector' in window)) {
+                this.toast.add('Scanner non supportato dal browser: usa "Da foto" o scrivi il codice.', 'info');
+                return;
+            }
+            try {
+                this._stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+                await this.$nextTick();
+                const video = this.$refs.video;
+                video.srcObject = this._stream;
+                const detector = new window.BarcodeDetector({ formats: ['ean_13', 'ean_8', 'upc_a', 'upc_e'] });
+                const tick = async () => {
+                    if (!this.scanning) return;
+                    try {
+                        const codes = await detector.detect(video);
+                        if (codes && codes.length) { this.productFromCode(codes[0].rawValue); return; }
+                    } catch (_) { /* frame non pronto */ }
+                    this._detectTimer = setTimeout(tick, 400);
+                };
+                this._detectTimer = setTimeout(tick, 600);
+            } catch (_) {
+                this.toast.add('Fotocamera non disponibile: usa "Da foto" o scrivi il codice.', 'info');
+            }
+        },
+        stopScan() {
+            this.scanning = false;
+            clearTimeout(this._detectTimer);
+            if (this._stream) { this._stream.getTracks().forEach(t => t.stop()); this._stream = null; }
+        },
+        async productFromCode(code) {
+            code = (code || '').trim();
+            if (!code) return;
+            this.stopScan();
+            this.productLoading = true;
+            try {
+                const resp = await window.apiFetch('/routine/product/' + encodeURIComponent(code));
+                if (!resp.ok) throw new Error((await resp.json().catch(() => ({}))).detail || resp.statusText);
+                this.addProduct(await resp.json());
+            } catch (e) {
+                this.toast.add('Errore: ' + e.message, 'error');
+            } finally {
+                this.productLoading = false;
+            }
+        },
+        // foto: se il browser legge il codice a barre si usa quello, altrimenti la
+        // foto va all'AI (codice, tabella nutrizionale o stima del prodotto)
+        async productFromPhoto(ev) {
+            const file = ev.target.files && ev.target.files[0];
+            ev.target.value = '';
+            if (!file) return;
+            this.productLoading = true;
+            try {
+                if ('BarcodeDetector' in window) {
+                    try {
+                        const bmp = await createImageBitmap(file);
+                        const codes = await new window.BarcodeDetector({ formats: ['ean_13', 'ean_8', 'upc_a', 'upc_e'] }).detect(bmp);
+                        if (codes && codes.length) {
+                            const r = await window.apiFetch('/routine/product/' + encodeURIComponent(codes[0].rawValue));
+                            const p = r.ok ? await r.json() : null;
+                            if (p && p.found && p.nutrition) { this.addProduct(p); return; }
+                        }
+                    } catch (_) { /* si passa all'AI */ }
+                }
+                const form = new FormData();
+                form.append('file', file);
+                const resp = await window.apiFetch('/routine/product-photo', { method: 'POST', body: form });
+                if (!resp.ok) throw new Error((await resp.json().catch(() => ({}))).detail || resp.statusText);
+                this.addProduct(await resp.json());
+            } catch (e) {
+                this.toast.add('Foto non riconosciuta: ' + e.message, 'error');
+            } finally {
+                this.productLoading = false;
+            }
+        },
+        // prodotto -> riga ingrediente: grammi = confezione intera (da correggere)
+        addProduct(p) {
+            if (!p || !p.found) {
+                this.toast.add('Prodotto non trovato' + (p && p.barcode ? ' (' + p.barcode + ')' : '') + ': prova con una foto.', 'info');
+                return;
+            }
+            const rows = this.extraForm.ingredients.filter(i => (i.name || '').trim());
+            rows.push({ name: p.name, food_group: 'altro', grams: Math.round(p.grams || 100),
+                        pantry_id: null, per100: p.nutrition || null });
+            this.extraForm.ingredients = rows;
+            if (!this.extraForm.name) this.extraForm.name = p.name;
+            const how = { barcode: 'valori dal codice a barre', etichetta: "valori letti dall'etichetta",
+                          stima: 'valori STIMATI, controlla' }[p.source] || '';
+            this.toast.add(p.name + (p.grams ? '' : ' · controlla i grammi') + (how ? ' · ' + how : ''),
+                           p.source === 'stima' ? 'info' : 'success');
         },
         pantryLabel(p) {
             const k = p.nutrition && p.nutrition.kcal != null ? Math.round(p.nutrition.kcal) : null;
@@ -318,6 +441,7 @@ const RoutineStrip = defineComponent({
             this.editorOpen = false;
         },
     },
+    beforeUnmount() { this.stopScan(); },
 });
 
 export default RoutineStrip;

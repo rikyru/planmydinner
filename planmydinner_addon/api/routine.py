@@ -7,16 +7,19 @@ Si interviene solo per le eccezioni: "saltato oggi" oppure un pasto diverso
 (via flusso mensa con meal_type = slot). Lo slot "dopo_cena" è opt-in:
 conta solo quando lo si segna (es. gelato).
 """
+import base64
 import json
 import logging
+import re
 import uuid
 from datetime import date
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from pydantic import BaseModel as _BaseModel
 from sqlalchemy.orm import Session
 
+from ..barcode import lookup_barcode
 from ..database import get_db, CandidateRecipe, ConsumedEntry, PantryItem
 from ..nutrition import NUTRITION_KEYS, compute_recipe_nutrition, resolve_ingredient_nutrition
 
@@ -336,6 +339,9 @@ class ExtraSnackIngredient(_BaseModel):
     # prodotto della dispensa (es. yogurt scansionato): si usano i SUOI valori per
     # 100 g dall'etichetta invece di stimare dal nome
     pantry_id: Optional[str] = None
+    # prodotto scansionato al volo (barcode o foto, es. snack della macchinetta):
+    # valori per 100 g già noti, senza passare dalla dispensa
+    per_100g: Optional[dict] = None
 
 
 class ExtraSnackBody(_BaseModel):
@@ -398,11 +404,12 @@ def add_extra_snack(profile_id: str, meal_date: str, body: ExtraSnackBody,
     def _ing(i):
         row = {"name": i.name.strip(), "food_group": i.food_group, "qty": float(i.grams), "unit": "g"}
         item = db.query(PantryItem).filter(PantryItem.id == i.pantry_id).first() if i.pantry_id else None
-        per100 = (item.nutrition or {}) if item else {}
+        per100 = (item.nutrition or {}) if item else (i.per_100g or {})
         if per100.get("kcal") is not None:
             # copia dei valori: se poi il prodotto esce dalla dispensa la merenda non cambia
-            row.update(pantry_id=item.id,
-                       per_100g={k: float(per100.get(k) or 0) for k in NUTRITION_KEYS})
+            if item:
+                row["pantry_id"] = item.id
+            row["per_100g"] = {k: float(per100.get(k) or 0) for k in NUTRITION_KEYS}
         return row
     entry = ConsumedEntry(
         id=str(uuid.uuid4()), profile_id=profile_id, date=meal_date,
@@ -474,3 +481,70 @@ def toggle_log(slot: str, profile_id: str, meal_date: str, db: Session = Depends
                          override_details={"free_text_name": meal["name"], "notes": "routine"}))
     db.commit()
     return {"slot": slot, "date": meal_date, "state": "logged"}
+
+
+# ------------------------------------------------- prodotto scansionato (merende)
+# Snack confezionati (es. dalla macchinetta) aggiunti come merenda extra dal
+# codice a barre o da una foto: stessa risposta per entrambe le strade,
+#   {found, source: barcode|etichetta|stima, barcode, name, grams, nutrition}
+# con grams = peso della confezione (la merenda tipica è la confezione intera).
+
+_MAX_PHOTO_BYTES = 10 * 1024 * 1024
+
+
+def pack_grams(quantity_text: str) -> Optional[float]:
+    """Peso netto in grammi dal testo della confezione ("45 g", "0,33 l", "6 x 25 g")."""
+    m = re.search(r"(\d+(?:[.,]\d+)?)\s*(kg|g|ml|cl|l)\b", (quantity_text or "").lower())
+    if not m:
+        return None
+    q = float(m.group(1).replace(",", "."))
+    return q * {"kg": 1000, "l": 1000, "cl": 10}.get(m.group(2), 1)
+
+
+def _product_from_barcode(code: str) -> Optional[dict]:
+    res = lookup_barcode(code)
+    if res is None:
+        raise HTTPException(status_code=502, detail="Servizio barcode non raggiungibile.")
+    if not res.get("found"):
+        return None
+    n = res.get("nutrition") or {}
+    return {"found": True, "source": "barcode", "barcode": res["barcode"],
+            "name": " · ".join(x for x in (res.get("name"), res.get("brands")) if x) or ("Prodotto " + code),
+            "grams": pack_grams(res.get("quantity_text")),
+            "nutrition": n if n.get("kcal") is not None else None}
+
+
+@router.get("/product/{code}")
+def product_by_barcode(code: str):
+    """Snack dal codice a barre (Open Food Facts)."""
+    return _product_from_barcode(code) or {"found": False, "barcode": code}
+
+
+@router.post("/product-photo")
+async def product_from_photo(request: Request, file: UploadFile = File(...)):
+    """Snack da una foto: se l'AI legge il codice a barre si usano i dati di Open
+    Food Facts, altrimenti la tabella nutrizionale letta dalla foto o, in mancanza,
+    una stima per quel prodotto."""
+    gw = getattr(request.app.state, "llm_gateway", None)
+    if gw is None or gw._client is None:
+        raise HTTPException(status_code=503, detail="LLM non configurato: impossibile analizzare la foto.")
+    if not (file.content_type or "").startswith("image/"):
+        raise HTTPException(status_code=422, detail="Il file deve essere un'immagine.")
+    raw = await file.read()
+    if len(raw) > _MAX_PHOTO_BYTES:
+        raise HTTPException(status_code=413, detail="Immagine troppo grande (max 10 MB).")
+    guess = gw.identify_product_from_photo(base64.b64encode(raw).decode(), file.content_type)
+    if not guess:
+        raise HTTPException(status_code=422, detail="Non riconosco un prodotto nella foto.")
+    if guess.get("barcode"):
+        try:
+            p = _product_from_barcode(guess["barcode"])
+        except HTTPException:
+            p = None
+        if p and p["nutrition"]:
+            p["grams"] = p["grams"] or guess.get("net_grams")
+            return p
+    name = " · ".join(x for x in (guess.get("name"), guess.get("brand")) if x)
+    return {"found": bool(name), "source": "etichetta" if guess.get("from_label") else "stima",
+            "barcode": guess.get("barcode"), "name": name or "Snack",
+            "grams": guess.get("net_grams"), "nutrition": guess.get("per_100g")}

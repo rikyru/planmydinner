@@ -329,6 +329,82 @@ class LLMGateway:
             _LOGGER.error(f"Error during LLM call for food group classification: {e}")
             return None
 
+    def _vision_json(self, task: str, image_b64: str, mime_type: str, model: str) -> Optional[str]:
+        """Manda testo + immagine al modello vision e ritorna la risposta (JSON grezzo)."""
+        if self.provider == "openai":
+            response = self._chat_create(
+                model=model,
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": task},
+                        {"type": "image_url", "image_url": {
+                            "url": f"data:{mime_type};base64,{image_b64}",
+                            "detail": "high",
+                        }},
+                    ],
+                }],
+                response_format={"type": "json_object"},
+            )
+            return response.choices[0].message.content
+        if self.provider == "ollama":
+            # Richiede un modello multimodale (es. llava)
+            response = self._client.chat(
+                model=model,
+                messages=[{"role": "user", "content": task, "images": [image_b64]}],
+            )
+            return response["message"]["content"]
+        _LOGGER.error(f"Unsupported LLM provider for photo analysis: {self.provider}")
+        return None
+
+    def identify_product_from_photo(self, image_b64: str, mime_type: str = "image/jpeg") -> Optional[Dict[str, Any]]:
+        """
+        Riconosce un prodotto confezionato (es. snack della macchinetta) dalla foto
+        della confezione, del codice a barre o della tabella nutrizionale:
+        {"barcode": str|None, "name": str, "brand": str, "net_grams": float|None,
+         "per_100g": {kcal, protein_g, carbs_g, fat_g}|None, "from_label": bool}.
+        """
+        if not self._client:
+            _LOGGER.error("LLM client not initialized. Cannot identify product.")
+            return None
+        task = (
+            "Questa è la foto di un prodotto alimentare confezionato (es. snack della macchinetta), "
+            "del suo codice a barre o della sua tabella nutrizionale. "
+            "1) Se si leggono le cifre del codice a barre (EAN, 8-13 cifre sotto le barre) riportale esatte, "
+            "altrimenti null: non inventarle. "
+            "2) Nome del prodotto e marca. "
+            "3) Peso netto della confezione in grammi (null se non si capisce). "
+            "4) Valori per 100 g: se la tabella nutrizionale è leggibile copiali e metti from_label true, "
+            "altrimenti stimali per quel prodotto e metti from_label false. "
+            'Rispondi SOLO con JSON: {"barcode": "<cifre>"|null, "name": "<nome>", "brand": "<marca>", '
+            '"net_grams": <numero>|null, "per_100g": {"kcal": <n>, "protein_g": <n>, "carbs_g": <n>, '
+            '"fat_g": <n>}, "from_label": true|false}. '
+            'Se non è un alimento rispondi {"name": null}.'
+        )
+        try:
+            raw = self._vision_json(task, image_b64, mime_type, self.vision_model or self.model)
+            if raw is None:
+                return None
+            data = json.loads(raw)
+        except Exception as e:
+            _LOGGER.error(f"Error during product photo analysis: {e}")
+            return None
+        if not data.get("name") and not data.get("barcode"):
+            return None
+        code = "".join(ch for ch in str(data.get("barcode") or "") if ch.isdigit())
+        per100 = data.get("per_100g") if isinstance(data.get("per_100g"), dict) else None
+        try:
+            per100 = {k: float(per100[k]) for k in ("kcal", "protein_g", "carbs_g", "fat_g")} if per100 else None
+        except (KeyError, TypeError, ValueError):
+            per100 = None
+        try:
+            net = float(data.get("net_grams")) if data.get("net_grams") else None
+        except (TypeError, ValueError):
+            net = None
+        return {"barcode": code if 8 <= len(code) <= 14 else None,
+                "name": str(data.get("name") or "").strip(), "brand": str(data.get("brand") or "").strip(),
+                "net_grams": net, "per_100g": per100, "from_label": bool(data.get("from_label"))}
+
     def estimate_meal_from_photo(self, image_b64: str, mime_type: str = "image/jpeg") -> Optional[Dict[str, Any]]:
         """
         Analizza la foto di un pasto (es. vassoio mensa) e restituisce una stima strutturata:
@@ -353,33 +429,9 @@ class LLMGateway:
         )
 
         try:
-            if self.provider == "openai":
-                response = self._chat_create(
-                    model=model,
-                    messages=[{
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": task},
-                            {"type": "image_url", "image_url": {
-                                "url": f"data:{mime_type};base64,{image_b64}",
-                                "detail": "high",
-                            }},
-                        ],
-                    }],
-                    response_format={"type": "json_object"},
-                )
-                raw = response.choices[0].message.content
-            elif self.provider == "ollama":
-                # Richiede un modello multimodale (es. llava)
-                response = self._client.chat(
-                    model=model,
-                    messages=[{"role": "user", "content": task, "images": [image_b64]}],
-                )
-                raw = response["message"]["content"]
-            else:
-                _LOGGER.error(f"Unsupported LLM provider for photo analysis: {self.provider}")
+            raw = self._vision_json(task, image_b64, mime_type, model)
+            if raw is None:
                 return None
-
             data = json.loads(raw)
             if not data.get("name") or not isinstance(data.get("ingredients"), list):
                 _LOGGER.warning(f"Photo analysis returned no usable meal: {str(raw)[:200]}")
