@@ -63,10 +63,25 @@ def test_extra_free_description_kept_and_listed_in_summary(client, setup_databas
     s = client.get("/integration/summary", params={
         "profile_id": "persona_a", "start_date": MONDAY, "end_date": "2026-03-01"}).json()
     day = next(d for d in s["days"] if d["date"] == TODAY)
-    assert day["extras"] == [{"name": "Aperitivo", "kcal": round(52 * 1.5),
-                              "description": "aperitivo: birra media, pane e salumi"}]
+    [ex] = day["extras"]
+    assert (ex["name"], ex["kcal"], ex["description"]) == (
+        "Aperitivo", round(52 * 1.5), "aperitivo: birra media, pane e salumi")
+    assert ex["fat_g"] is not None
     other = next(d for d in s["days"] if d["date"] == MONDAY)
     assert other["extras"] == []
+
+
+def test_fat_sources_list_the_fattiest_items_of_the_day(client, setup_database):
+    _add(client, name="Frutta secca", ingredients=[{"name": "Mandorle", "food_group": "grassi", "grams": 30}])
+    _add(client, name="Mela", ingredients=[{"name": "Mela", "food_group": "frutta", "grams": 150}])
+    s = client.get("/integration/summary", params={
+        "profile_id": "persona_a", "start_date": TODAY, "end_date": TODAY,
+        "meal_detail": "true"}).json()
+    src = s["days"][0]["fat_sources"]
+    assert src[0]["fat_g"] == max(x["fat_g"] for x in src)
+    almonds = next(x for x in src if x["name"] == "Frutta secca")
+    assert almonds["where"] == "extra" and almonds["fat_g"] > 10
+    assert all(x["name"] != "Mela" for x in src)          # sotto 1 g: non è una fonte
 
 
 def test_extra_from_pantry_uses_label_values(client, setup_database):

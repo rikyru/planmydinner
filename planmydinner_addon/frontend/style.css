@@ -844,3 +844,26 @@ input[type="checkbox"] { accent-color: var(--primary); }
     .ideas-bar { bottom: calc(76px + env(safe-area-inset-bottom)); }
 }
 .week-layout.is-selecting { padding-bottom: 140px; }
+
+/* Oggi: barre macro, fonti di grassi, ultimi 7 giorni */
+.macro-bars { display: grid; gap: 4px; margin: 6px 0 4px; }
+.macro-bar { display: grid; grid-template-columns: 64px 1fr auto; align-items: center; gap: 8px; font-size: 12px; }
+.macro-bar-label { color: var(--text); opacity: .8; }
+.macro-bar-track { height: 7px; background: var(--border); border-radius: 4px; overflow: hidden; }
+.macro-bar-fill { height: 100%; background: var(--primary); border-radius: 4px; }
+.macro-bar.good .macro-bar-fill { background: var(--success); }
+.macro-bar.near .macro-bar-fill { background: var(--warning); }
+.macro-bar.over .macro-bar-fill { background: var(--danger); }
+.macro-bar.over .macro-bar-value { color: var(--danger); font-weight: 600; }
+.macro-bar-value { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.fat-box { margin-top: 8px; padding: 8px 10px; border-radius: var(--radius-sm); font-size: 13px; }
+.fat-box.fat-over { background: var(--danger-soft); }
+.fat-box.fat-ok { background: var(--success-soft); }
+.fat-sources { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.fat-chip { background: var(--surface); border: 1px solid var(--border); border-radius: 999px; padding: 2px 8px; font-size: 12px; }
+.week-dots { margin-top: 8px; font-size: 12px; }
+.week-dots-row { display: flex; align-items: center; gap: 5px; margin-bottom: 3px; }
+.week-dots .dot { width: 12px; height: 12px; border-radius: 50%; display: inline-block; }
+.dot-ok { background: var(--success); }
+.dot-ko { background: var(--danger); }
+.dot-na { background: var(--border-strong); }

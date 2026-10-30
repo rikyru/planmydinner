@@ -30,11 +30,39 @@ const TodayView = defineComponent({
                     <div class="adherence-bar-fill" :style="{width: Math.min(100, dayKcal / dayTarget.kcal * 100) + '%',
                          background: dayKcal > dayTarget.kcal * 1.05 ? '#d62828' : undefined}"></div>
                 </div>
-                <div class="hint" v-if="dayMacros">
-                    P {{ Math.round(dayMacros.protein_g) }}{{ dayTarget.protein_g ? '/' + Math.round(dayTarget.protein_g) : '' }}g ·
-                    C {{ Math.round(dayMacros.carbs_g) }}{{ dayTarget.carbs_g ? '/' + Math.round(dayTarget.carbs_g) : '' }}g ·
-                    G {{ Math.round(dayMacros.fat_g) }}{{ dayTarget.fat_g ? '/' + Math.round(dayTarget.fat_g) : '' }}g
-                    <span v-if="dayTrainingNote"> · {{ dayTrainingNote }}</span>
+                <div v-if="dayMacros" class="macro-bars">
+                    <div v-for="m in macroBars" :key="m.key" class="macro-bar" :class="m.state">
+                        <span class="macro-bar-label">{{ m.label }}</span>
+                        <div class="macro-bar-track"><div class="macro-bar-fill" :style="{width: m.width + '%'}"></div></div>
+                        <span class="macro-bar-value">{{ m.value }}<template v-if="m.target">/{{ m.target }}</template> g</span>
+                    </div>
+                </div>
+                <div class="hint" v-if="dayTrainingNote">🏋️ {{ dayTrainingNote }}</div>
+
+                <!-- Grassi: da dove vengono oggi -->
+                <div v-if="fatInfo" class="fat-box" :class="fatInfo.over > 0 ? 'fat-over' : 'fat-ok'">
+                    <div style="font-weight:600;">{{ fatInfo.headline }}</div>
+                    <div v-if="fatInfo.sources.length" class="fat-sources">
+                        <span v-for="(s, i) in fatInfo.sources" :key="i" class="fat-chip" :title="s.where">
+                            {{ s.name }} <b>{{ s.fat }} g</b>
+                        </span>
+                    </div>
+                    <div v-if="fatInfo.fixedNote" class="hint" style="margin-top:4px;">💡 {{ fatInfo.fixedNote }}</div>
+                </div>
+
+                <!-- Ultimi 7 giorni: costanza su kcal e grassi -->
+                <div v-if="weekStats" class="week-dots">
+                    <div class="week-dots-row">
+                        <span class="hint" style="min-width:64px;">kcal</span>
+                        <span v-for="d in weekStats.days" :key="'k' + d.date" class="dot" :class="d.kcalOk === null ? 'dot-na' : (d.kcalOk ? 'dot-ok' : 'dot-ko')" :title="d.label + ': ' + d.kcalText"></span>
+                        <strong>{{ weekStats.kcalOk }}/{{ weekStats.n }}</strong>
+                    </div>
+                    <div class="week-dots-row">
+                        <span class="hint" style="min-width:64px;">grassi</span>
+                        <span v-for="d in weekStats.days" :key="'f' + d.date" class="dot" :class="d.fatOk === null ? 'dot-na' : (d.fatOk ? 'dot-ok' : 'dot-ko')" :title="d.label + ': ' + d.fatText"></span>
+                        <strong>{{ weekStats.fatOk }}/{{ weekStats.n }}</strong>
+                    </div>
+                    <div class="hint">{{ weekStats.message }}</div>
                 </div>
             </div>
 
@@ -402,6 +430,7 @@ const TodayView = defineComponent({
             showCustomModal: false,
             customForm: { title: '', components: [], notes: '' },
             daySummary: null,   // {nutrition, targets, meals} del giorno (obiettivo energetico)
+            weekStats: null,    // 7 giorni precedenti: kcal/grassi nel target
             balanceBusy: false, // azione bilanciamento (adatta proteine / aggiungi merenda) in corso
             customMealType: null,
         };
@@ -415,6 +444,45 @@ const TodayView = defineComponent({
         dayKcal() { return this.dayMacros ? (this.dayMacros.kcal || 0) : 0; },
         dayRemaining() { return (this.dayTarget ? this.dayTarget.kcal : 0) - this.dayKcal; },
         dayTrainingNote() { return this.daySummary ? this.daySummary.training_note : null; },
+        macroBars() {
+            const n = this.dayMacros || {}, t = this.dayTarget || {};
+            return [['protein_g', 'Proteine', 'min'], ['carbs_g', 'Carbo', 'max'], ['fat_g', 'Grassi', 'max']]
+                .map(([key, label, kind]) => {
+                    const value = Math.round(n[key] || 0);
+                    const target = t[key] ? Math.round(t[key]) : null;
+                    let state = '';
+                    if (target) {
+                        const r = value / target;
+                        if (kind === 'max') state = r > 1.1 ? 'over' : (r > 0.9 ? 'near' : 'good');
+                        else state = r >= 0.9 ? 'good' : 'near';
+                    }
+                    return { key, label, value, target, state,
+                             width: target ? Math.min(100, value / target * 100) : 0 };
+                });
+        },
+        fatInfo() {
+            // quanto grasso oggi, rispetto all'obiettivo, e chi lo porta
+            const s = this.daySummary;
+            const target = this.dayTarget && this.dayTarget.fat_g;
+            if (!s || !s.nutrition || !target) return null;
+            const fat = s.nutrition.fat_g || 0;
+            const over = Math.round(fat - target);
+            const where = { fissi: 'pasti fissi', pranzo: 'pranzo', cena: 'cena', extra: 'extra' };
+            const sources = (s.fat_sources || []).slice(0, 4).map(x => ({
+                name: x.where === 'pranzo' || x.where === 'cena' ? x.name + ' (' + x.where + ')' : x.name,
+                fat: Math.round(x.fat_g), where: where[x.where] || x.where }));
+            let headline;
+            if (over > 3) headline = '🧈 Grassi ' + over + ' g oltre: circa ' + (over * 9) + ' kcal di troppo solo da qui';
+            else if (over >= -3) headline = '🧈 Grassi al limite: ' + Math.round(fat) + ' su ' + Math.round(target) + ' g';
+            else headline = '✅ Grassi sotto controllo: restano ' + (-over) + ' g';
+            const fixed = s.routine_fat_g;
+            let fixedNote = null;
+            if (fixed && fixed >= target * 0.4) {
+                fixedNote = 'Colazione e spuntini fissi valgono già ' + Math.round(fixed) + ' g (' +
+                    Math.round(fixed / target * 100) + '% dei grassi del giorno): alleggerire uno di questi conta ogni giorno, senza pensarci.';
+            }
+            return { over, headline, sources, fixedNote };
+        },
         customValid() {
             return (this.customForm.components || [])
                 .some(c => (c.name || '').trim() && c.grams > 0);
@@ -498,8 +566,52 @@ const TodayView = defineComponent({
                 const targets = Object.assign({}, j.targets || {});
                 if (day.target_kcal) targets.kcal = day.target_kcal;
                 this.daySummary = { nutrition: day.nutrition, targets, meals: day.meals || {},
-                                    training_note: day.training_note || null };
+                                    training_note: day.training_note || null,
+                                    fat_sources: day.fat_sources || [],
+                                    routine_fat_g: day.routine_fat_g || 0 };
             } catch (_) { this.daySummary = null; }
+            this.fetchWeekStats();
+        },
+        async fetchWeekStats() {
+            // i 7 giorni prima di quello mostrato: kcal e grassi nel target?
+            if (!this.profileA) return;
+            const end = new Date(this.today + 'T12:00:00');
+            end.setDate(end.getDate() - 1);
+            const start = new Date(end);
+            start.setDate(start.getDate() - 6);
+            try {
+                const params = new URLSearchParams({ profile_id: this.profileA.id,
+                    start_date: localISO(start), end_date: localISO(end) });
+                const resp = await window.apiFetch('/integration/summary?' + params);
+                if (!resp.ok) { this.weekStats = null; return; }
+                const j = await resp.json();
+                const tg = j.targets || {};
+                if (!tg.kcal && !tg.fat_g) { this.weekStats = null; return; }
+                const days = (j.days || []).map(d => {
+                    const n = d.complete ? d.nutrition : null;
+                    const kT = d.target_kcal || tg.kcal, fT = tg.fat_g;
+                    const label = new Date(d.date + 'T12:00:00').toLocaleDateString('it-IT', { weekday: 'short', day: 'numeric' });
+                    return {
+                        date: d.date, label,
+                        kcalOk: n && kT ? n.kcal <= kT * 1.05 : null,
+                        fatOk: n && fT ? n.fat_g <= fT * 1.1 : null,
+                        kcalText: n && kT ? Math.round(n.kcal) + ' / ' + Math.round(kT) + ' kcal' : 'nessun dato',
+                        fatText: n && fT ? Math.round(n.fat_g) + ' / ' + Math.round(fT) + ' g grassi' : 'nessun dato',
+                    };
+                });
+                const known = days.filter(d => d.fatOk !== null);
+                if (!known.length) { this.weekStats = null; return; }
+                const fatOk = known.filter(d => d.fatOk).length;
+                const kcalOk = days.filter(d => d.kcalOk).length;
+                let streak = 0;
+                for (const d of known.slice().reverse()) { if (d.fatOk) streak++; else break; }
+                let message;
+                if (streak >= 2) message = '🔥 ' + streak + ' giorni di fila con i grassi nel verde: non spezzare la serie!';
+                else if (fatOk === known.length) message = '🏆 Grassi nel verde tutta la settimana!';
+                else if (fatOk === 0) message = 'Primo traguardo: un giorno con i grassi nel verde. Oggi è il giorno buono.';
+                else message = 'Grassi nel verde ' + fatOk + ' giorni su ' + known.length + ': prossimo traguardo ' + (fatOk + 1) + '.';
+                this.weekStats = { days, n: known.length, fatOk, kcalOk, message };
+            } catch (_) { this.weekStats = null; }
         },
         async loadData() {
             this.loading = true;

@@ -443,8 +443,11 @@ def get_integration_summary(
     ).all():
         slot_entries.setdefault((e.date, e.meal_type), []).append(e)
 
+    routine_parts_by_date: Dict[str, list] = {}   # iso → [(nome, nutrizione)] per le fonti grassi
+
     def _routine_for_day(iso: str) -> Optional[Dict[str, float]]:
         total = None
+        parts = routine_parts_by_date[iso] = []
         for slot in ROUTINE_SLOTS:
             meal = routine_meals.get(slot)
             entries = slot_entries.get((iso, slot), [])
@@ -461,6 +464,9 @@ def get_integration_summary(
                     total = {k: 0.0 for k in NUTRITION_KEYS}
                 for k in NUTRITION_KEYS:
                     total[k] += n[k]
+                label = ROUTINE_SLOTS[slot].get("label", slot)
+                name = None if logged else (meal or {}).get("name")
+                parts.append((f"{label}: {name}" if name else label, n))
         return total
 
     # Merende extra (spuntini liberi fuori dai 5 slot fissi): sommate al giorno.
@@ -487,7 +493,8 @@ def get_integration_summary(
             for k in NUTRITION_KEYS:
                 agg[k] += n[k]
         item = {"name": od.get("free_text_name") or "Merenda extra",
-                "kcal": round(n["kcal"]) if n else None}
+                "kcal": round(n["kcal"]) if n else None,
+                "fat_g": round(n["fat_g"], 1) if n else None}
         if od.get("description"):
             item["description"] = od["description"]
         extras_list_by_date.setdefault(e.date, []).append(item)
@@ -645,6 +652,20 @@ def get_integration_summary(
             tail = f"giornata {round(-gap)} kcal sotto l'obiettivo"
         return f"{head} · {tail}"
 
+    def _fat_sources(routine_parts, meals, extras, limit=6):
+        """Da dove vengono i grassi del giorno: pasti fissi, ingredienti di
+        pranzo/cena (olio di cottura compreso) ed extra, dal più grasso."""
+        src = [{"name": name, "where": "fissi", "fat_g": round(n["fat_g"], 1)}
+               for name, n in routine_parts]
+        for mt, m in (meals or {}).items():
+            for ing in m.get("ingredients") or []:
+                src.append({"name": ing["name"], "where": mt, "fat_g": ing["fat_g"],
+                            "estimated": ing.get("estimated", False)})
+        src += [{"name": e.get("description") or e["name"], "where": "extra", "fat_g": e["fat_g"]}
+                for e in extras or [] if e.get("fat_g")]
+        src = [s for s in src if s["fat_g"] and s["fat_g"] >= 1]
+        return sorted(src, key=lambda s: s["fat_g"], reverse=True)[:limit]
+
     days = []
     totals = {k: 0.0 for k in NUTRITION_KEYS}
     days_with_data = 0
@@ -752,6 +773,7 @@ def get_integration_summary(
             "future": iso > today_iso,
             "has_estimated_meal": has_estimated_meal,
             "routine_kcal": round(routine_day["kcal"], 1) if routine_day else 0,
+            "routine_fat_g": round(routine_day["fat_g"], 1) if routine_day else 0,
             "extra_kcal": round(extra_day["kcal"], 1) if extra_day else 0,
             "extras": extras_list_by_date.get(iso, []),
             "target_kcal": day_target_kcal(targets, targets_by_date, iso),
@@ -761,6 +783,8 @@ def get_integration_summary(
             day_entry["meals"] = _meal_details(
                 meal_rows, iso, routine_day, extra_day, targets, targets_by_date,
                 skipped_main=not_eaten, unknown_free=unestimated_free_meal)
+            day_entry["fat_sources"] = _fat_sources(
+                routine_parts_by_date.get(iso, []), day_entry["meals"], day_entry["extras"])
         if day_nutrition is not None:
             day_entry["nutrition"] = {k: round(day_nutrition[k], 1) for k in NUTRITION_KEYS}
             day_entry["nutrition"]["coverage"] = round(sum(coverages) / len(coverages), 2) if coverages else 1.0
