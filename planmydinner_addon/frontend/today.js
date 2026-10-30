@@ -1,7 +1,7 @@
 import { defineComponent } from 'vue';
 import { localISO } from './dates.js';
 import MensaModal from './mensa.js?v=6';
-import RoutineStrip from './routine.js?v=13';
+import RoutineStrip from './routine.js?v=14';
 import MealNutrition, { portionFactor } from './meal-nutrition.js?v=4';
 
 const TodayView = defineComponent({

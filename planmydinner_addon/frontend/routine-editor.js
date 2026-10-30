@@ -63,10 +63,16 @@ const RoutineEditor = defineComponent({
                             {{ suggesting ? '…' : '🧺 Dalla dispensa' }}
                         </button>
                     </div>
+                    <select v-model="pantryPick" @change="addFromPantry" @focus="loadPantry">
+                        <option value="">📦 Aggiungi un ingrediente dalla dispensa…</option>
+                        <option v-for="p in pantryChoices" :key="p.id" :value="p.id">{{ pantryLabel(p) }}</option>
+                    </select>
                     <input v-model="editForm.name" placeholder="Nome (es. Colazione tipo)">
                     <div v-for="(ing, idx) in editForm.ingredients" :key="idx"
                          style="display:grid;grid-template-columns:1fr 70px 90px auto;gap:8px;align-items:center;">
-                        <input v-model="ing.name" @change="schedulePreview">
+                        <input v-model="ing.name" @change="schedulePreview" :readonly="!!ing.pantry_id"
+                               :title="ing.pantry_id ? 'dalla dispensa: valori da etichetta' : ''"
+                               :style="ing.pantry_id ? 'background:var(--surface-2, transparent);' : ''">
                         <input v-model.number="ing.grams" type="number" min="0" step="5" @input="schedulePreview">
                         <span class="hint" style="white-space:nowrap;" :style="ingFat(idx) >= 5 ? 'color:var(--danger);font-weight:600;' : ''">{{ ingLine(idx) }}</span>
                         <button @click="removeIngredient(idx)" class="btn-secondary btn-sm">✕</button>
@@ -112,9 +118,14 @@ const RoutineEditor = defineComponent({
             analyzing: false,
             saving: false,
             editError: null,
+            pantryItems: null,
+            pantryPick: '',
         };
     },
     computed: {
+        pantryChoices() {
+            return (this.pantryItems || []).slice().sort((a, b) => a.name.localeCompare(b.name));
+        },
         totals() {
             // ciò che viene contato ogni giorno senza registrarlo
             const on = this.slots.filter(s => s.defined && s.default_on && s.nutrition);
@@ -161,6 +172,39 @@ const RoutineEditor = defineComponent({
             };
             this.runPreview();
         },
+        pantryLabel(p) {
+            const n = p.nutrition;
+            if (!n || n.kcal == null) return p.name + ' · (senza valori)';
+            return p.name + ' · ' + Math.round(n.kcal) + ' kcal, G ' + Math.round(n.fat_g || 0) + ' /100g';
+        },
+        async loadPantry() {
+            if (this.pantryItems) return;
+            try {
+                const resp = await window.apiFetch('/pantry/items?limit=500');
+                this.pantryItems = resp.ok ? await resp.json() : [];
+            } catch (_) {
+                this.pantryItems = [];
+            }
+        },
+        // prodotto della dispensa -> riga ingrediente; i grammi partono da 30 (da
+        // correggere), i valori sono quelli per 100 g dell'etichetta
+        addFromPantry() {
+            const p = (this.pantryItems || []).find(x => x.id === this.pantryPick);
+            this.pantryPick = '';
+            if (!p) return;
+            const per100 = p.nutrition && p.nutrition.kcal != null ? p.nutrition : null;
+            const rows = this.editForm.ingredients.filter(i => (i.name || '').trim());
+            rows.push({ name: p.name, food_group: 'altro', grams: 30,
+                        pantry_id: per100 ? p.id : null, per_100g: per100 });
+            this.editForm.ingredients = rows;
+            if (!this.editForm.name) this.editForm.name = p.name;
+            this.runPreview();
+        },
+        ingPayload(i) {
+            const row = { name: i.name.trim(), food_group: i.food_group || 'altro', grams: i.grams };
+            if (i.pantry_id) { row.pantry_id = i.pantry_id; row.per_100g = i.per_100g || null; }
+            return row;
+        },
         addIngredient() {
             this.editForm.ingredients.push({ name: '', food_group: 'altro', grams: 50 });
         },
@@ -175,7 +219,7 @@ const RoutineEditor = defineComponent({
         async runPreview() {
             const ingredients = this.editForm.ingredients
                 .filter(i => (i.name || '').trim() && i.grams > 0)
-                .map(i => ({ name: i.name.trim(), food_group: i.food_group || 'altro', grams: i.grams }));
+                .map(i => this.ingPayload(i));
             if (!ingredients.length) { this.preview = null; return; }
             this.previewing = true;
             try {
@@ -205,7 +249,8 @@ const RoutineEditor = defineComponent({
             const r = this.previewRow(idx);
             if (!r) return '';
             if (!r.known) return 'sconosciuto';
-            return Math.round(r.kcal) + ' kcal · G ' + Math.round(r.fat_g);
+            const ing = this.editForm.ingredients[idx];
+            return (ing && ing.pantry_id ? '📦 ' : '') + Math.round(r.kcal) + ' kcal · G ' + Math.round(r.fat_g);
         },
         deltaFat(s) {
             if (!this.preview || !this.preview.nutrition || !s.nutrition) return 0;
@@ -266,7 +311,8 @@ const RoutineEditor = defineComponent({
                 const body = {
                     profile_id: this.profileId,
                     name: this.editForm.name,
-                    ingredients: this.editForm.ingredients.filter(i => i.name && i.grams > 0),
+                    ingredients: this.editForm.ingredients.filter(i => (i.name || '').trim() && i.grams > 0)
+                        .map(i => this.ingPayload(i)),
                     default_on: this.editForm.default_on,
                 };
                 const resp = await window.apiFetch('/routine/' + s.slot, {

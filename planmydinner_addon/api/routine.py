@@ -38,6 +38,10 @@ class RoutineIngredient(_BaseModel):
     name: str
     food_group: str = "altro"
     grams: float
+    # prodotto della dispensa: si usano i valori per 100 g dell'etichetta invece
+    # di stimarli dal nome; per_100g resta come copia se il prodotto sparisce
+    pantry_id: Optional[str] = None
+    per_100g: Optional[dict] = None
 
 
 class RoutineMealSave(_BaseModel):
@@ -167,8 +171,12 @@ def list_routine(request: Request, profile_id: str, target_date: Optional[date] 
         for ing in (meal or {}).get("content", []):
             if isinstance(ing, dict):
                 qty = (ing.get("quantities") or {}).get(profile_id) or {}
-                ingredients.append({"name": ing.get("name"), "food_group": ing.get("food_group"),
-                                    "grams": qty.get("grams_equiv") or qty.get("qty") or 0})
+                row = {"name": ing.get("name"), "food_group": ing.get("food_group"),
+                       "grams": qty.get("grams_equiv") or qty.get("qty") or 0}
+                if ing.get("pantry_id") and ing.get("nutrition"):
+                    row.update(pantry_id=ing["pantry_id"],
+                               per_100g={k: ing["nutrition"].get(k) for k in NUTRITION_KEYS})
+                ingredients.append(row)
         out.append({
             "slot": slot,
             "label": info["label"],
@@ -186,15 +194,33 @@ def list_routine(request: Request, profile_id: str, target_date: Optional[date] 
     return {"date": iso, "slots": out}
 
 
-def _routine_content(profile_id: str, ingredients: List[RoutineIngredient]) -> list:
-    return [
-        {
+def _label_values(db: Session, ing: RoutineIngredient) -> Optional[dict]:
+    """Valori per 100 g da etichetta di un ingrediente preso dalla dispensa: quelli
+    attuali del prodotto, o la copia salvata se il prodotto non c'è più."""
+    if not ing.pantry_id:
+        return None
+    item = db.query(PantryItem).filter(PantryItem.id == ing.pantry_id).first()
+    per100 = (item.nutrition or {}) if item else (ing.per_100g or {})
+    if per100.get("kcal") is None:
+        return None
+    return {**{k: float(per100.get(k) or 0) for k in NUTRITION_KEYS}, "source": "pantry"}
+
+
+def _routine_content(profile_id: str, ingredients: List[RoutineIngredient], db: Session) -> list:
+    out = []
+    for ing in ingredients:
+        if ing.grams <= 0 or not ing.name.strip():
+            continue
+        row = {
             "name": ing.name.strip(),
             "food_group": ing.food_group,
             "quantities": {profile_id: {"qty": float(ing.grams), "unit": "g", "grams_equiv": float(ing.grams)}},
         }
-        for ing in ingredients if ing.grams > 0 and ing.name.strip()
-    ]
+        label = _label_values(db, ing)
+        if label:
+            row.update(pantry_id=ing.pantry_id, nutrition=label)
+        out.append(row)
+    return out
 
 
 class RoutinePreview(_BaseModel):
@@ -203,12 +229,12 @@ class RoutinePreview(_BaseModel):
 
 
 @router.post("/preview")
-def preview_routine_meal(body: RoutinePreview, request: Request):
+def preview_routine_meal(body: RoutinePreview, request: Request, db: Session = Depends(get_db)):
     """kcal/macro di un pasto fisso in modifica (non salvato), totale e per
     ingrediente, così si vede subito chi porta i grassi. Niente olio di cottura:
     colazione e spuntini non lo prevedono."""
     gw = getattr(request.app.state, "llm_gateway", None)
-    content = _routine_content(body.profile_id, body.ingredients)
+    content = _routine_content(body.profile_id, body.ingredients, db)
     try:
         total = compute_recipe_nutrition(content, body.profile_id, llm_gateway=gw) if content else None
     except Exception:
@@ -235,7 +261,7 @@ def save_routine_meal(slot: str, body: RoutineMealSave, db: Session = Depends(ge
     if not body.ingredients:
         raise HTTPException(status_code=422, detail="Serve almeno un ingrediente.")
 
-    content = _routine_content(body.profile_id, body.ingredients)
+    content = _routine_content(body.profile_id, body.ingredients, db)
     default_on = SLOTS[slot]["default_on"] if body.default_on is None else bool(body.default_on)
     recipe_data = {
         "name": body.name.strip(),

@@ -162,3 +162,36 @@ def test_preview_totals_and_per_ingredient(client, setup_database):
     assert parm["known"] and parm["fat_g"] > 5
     assert d["nutrition"]["fat_g"] == pytest.approx(sum(i["fat_g"] for i in d["ingredients"]), abs=0.3)
     assert d["nutrition"]["cooking_fat_added"] is False
+
+
+def test_pantry_ingredient_uses_label_values(client, setup_database):
+    # ingrediente pescato dalla dispensa: valori per 100 g dell'etichetta, non
+    # stimati dal nome; restano anche se il prodotto esce dalla dispensa
+    from planmydinner_addon.database import PantryItem
+    from planmydinner_addon.tests.conftest import TestingSessionLocal as SessionLocal
+    db = SessionLocal()
+    db.add(PantryItem(id="skyr", name="Skyr Lidl", quantity=1, unit="pz",
+                      nutrition={"kcal": 63, "protein_g": 11, "carbs_g": 4, "fat_g": 0.2}))
+    db.commit()
+    db.close()
+    ings = [{"name": "Skyr Lidl", "grams": 150, "pantry_id": "skyr"}]
+    p = client.post("/routine/preview", json={"profile_id": "persona_a", "ingredients": ings}).json()
+    assert p["nutrition"]["kcal"] == pytest.approx(63 * 1.5, abs=0.2)
+    assert p["ingredients"][0]["fat_g"] == pytest.approx(0.3, abs=0.1)
+
+    assert _define(client, slot="merenda_tardo", name="Skyr", ingredients=ings).status_code == 200
+    db = SessionLocal()
+    db.query(PantryItem).filter(PantryItem.id == "skyr").delete()
+    db.commit()
+    db.close()
+    slot = next(s for s in client.get("/routine/", params={"profile_id": "persona_a"}).json()["slots"]
+                if s["slot"] == "merenda_tardo")
+    assert slot["nutrition"]["protein_g"] == pytest.approx(16.5, abs=0.2)
+    ing = slot["ingredients"][0]
+    assert ing["pantry_id"] == "skyr" and ing["per_100g"]["kcal"] == 63
+    # risalvando (prodotto non più in dispensa) si tiene la copia dei valori
+    assert _define(client, slot="merenda_tardo", name="Skyr", ingredients=[
+        {**ings[0], "per_100g": ing["per_100g"], "grams": 200}]).status_code == 200
+    slot = next(s for s in client.get("/routine/", params={"profile_id": "persona_a"}).json()["slots"]
+                if s["slot"] == "merenda_tardo")
+    assert slot["nutrition"]["kcal"] == pytest.approx(126, abs=0.2)

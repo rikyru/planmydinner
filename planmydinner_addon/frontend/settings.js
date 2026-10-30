@@ -1,5 +1,5 @@
 import { defineComponent } from 'vue';
-import RoutineEditor from './routine-editor.js?v=1';
+import RoutineEditor from './routine-editor.js?v=2';
 
 const SettingsView = defineComponent({
     name: 'SettingsView',
