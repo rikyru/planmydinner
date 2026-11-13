@@ -920,3 +920,16 @@ input[type="checkbox"] { accent-color: var(--primary); }
 .sim-ings { font-size: 13px; margin: 6px 0; }
 .sim-ings summary { cursor: pointer; color: var(--text-2); margin-bottom: 6px; }
 .sim-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.sim-macro-table { width: 100%; border-collapse: collapse; font-size: 12.5px; margin: 10px 0 2px; }
+.sim-macro-table th { font-weight: 600; color: var(--text-3); text-align: left; padding: 2px 4px; font-size: 11px; }
+.sim-macro-table td { padding: 3px 4px; white-space: nowrap; }
+.sim-m-bar { width: 38%; }
+.sim-m-wrap { display: flex; align-items: center; gap: 6px; }
+.sim-m-track { position: relative; flex: 1; height: 8px; border-radius: 4px; background: var(--surface-2); }
+.sim-m-track span { display: block; height: 100%; border-radius: 4px; background: var(--success); }
+.sim-m-track i { position: absolute; top: -3px; bottom: -3px; left: 66.67%; width: 2px; background: var(--text); }
+.sim-m-bar em { font-style: normal; font-size: 11px; color: var(--text-2); min-width: 32px; text-align: right; }
+.sim-m-high .sim-m-track span { background: var(--danger); }
+.sim-m-low .sim-m-track span { background: var(--warning); }
+.sim-m-high td:nth-child(3) { color: var(--danger); }
+.sim-m-low td:nth-child(3) { color: var(--warning); }

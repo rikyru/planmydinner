@@ -777,6 +777,13 @@ def get_integration_summary(
             "extra_kcal": round(extra_day["kcal"], 1) if extra_day else 0,
             "extras": extras_list_by_date.get(iso, []),
             "target_kcal": day_target_kcal(targets, targets_by_date, iso),
+            # colazione/spuntini + extra con tutti i macro, e gli obiettivi del
+            # giorno (periodizzati se ci sono): servono al simulatore di pasto
+            "fixed_nutrition": {k: round((routine_day or {}).get(k, 0) + (extra_day or {}).get(k, 0), 1)
+                                for k in NUTRITION_KEYS},
+            "day_targets": {k: v for k, v in {**(targets or {}),
+                                               **((targets_by_date or {}).get(iso) or {})}.items()
+                            if k in NUTRITION_KEYS and v},
             "training_note": (targets_by_date or {}).get(iso, {}).get("training_note"),
         }
         if meal_detail:

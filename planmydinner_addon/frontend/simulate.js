@@ -5,7 +5,8 @@ import { defineComponent } from 'vue';
  * come chiude la giornata e quanto resta per l'altro pasto. Due modi:
  *  - "Cosa mangio": descrizione libera o pasto salvato -> bilancio;
  *  - "Consigliami": dove mangi (es. cinese) -> 3 ordini dimensionati sulla quota.
- * Niente viene registrato finché non si preme "Lo prendo".
+ * "Mettilo nel piano" / "Pasto libero" lo mettono nello slot SENZA segnarlo
+ * mangiato: lo si registra dopo, come ogni pasto del piano.
  * Eventi: 'saved' dopo la registrazione, 'close'.
  */
 const LEVEL_CLASS = { ok: 'sim-ok', under: 'sim-ok', over: 'sim-warn', way_over: 'sim-bad', unknown: '' };
@@ -15,6 +16,7 @@ const SimulateModal = defineComponent({
     inject: ['toast'],
     props: {
         profileId: { type: String, required: true },
+        profileBId: { type: String, default: null },
         mealType: { type: String, default: 'cena' },
         mealDate: { type: String, required: true },
     },
@@ -94,6 +96,16 @@ const SimulateModal = defineComponent({
                         <span v-if="result.other.day_kcal"><i class="sim-other" :class="{ 'sim-assumed': result.other.assumed }"></i>{{ result.other.meal_type }} {{ result.other.day_kcal }}{{ result.other.consumed ? '' : result.other.assumed ? ' (stima: quota)' : ' (previsto)' }}</span>
                         <span>| obiettivo {{ result.target.kcal }}</span>
                     </div>
+                    <table v-if="result.macros && result.macros.length" class="sim-macro-table">
+                        <thead><tr><th></th><th>pasto</th><th>giornata</th><th>obiettivo</th><th></th></tr></thead>
+                        <tbody>
+                            <tr v-for="m in result.macros" :key="m.key" :class="'sim-m-' + m.status">
+                                <td>{{ m.label }}</td><td>{{ m.meal }} g</td><td><strong>{{ m.total }} g</strong></td>
+                                <td>{{ m.target }} g</td>
+                                <td class="sim-m-bar"><div class="sim-m-wrap"><div class="sim-m-track"><span :style="{ width: Math.min(m.pct, 150) / 1.5 + '%' }"></span><i></i></div><em>{{ m.pct }}%</em></div></td>
+                            </tr>
+                        </tbody>
+                    </table>
                     <ul class="sim-lines"><li v-for="l in (result.verdict.lines || [result.verdict.text])" :key="l">{{ l }}</li></ul>
 
                     <details class="sim-ings">
@@ -107,7 +119,8 @@ const SimulateModal = defineComponent({
                     </details>
 
                     <div class="sim-actions">
-                        <button class="btn-consumed" :disabled="busy" @click="take">✓ Lo prendo: registra a {{ slot }}</button>
+                        <button class="btn-consumed" :disabled="busy" @click="take(false)">📅 Mettilo a {{ slot }}</button>
+                        <button class="btn-free" :disabled="busy" @click="take(true)">🎉 Come pasto libero</button>
                         <button class="btn-secondary" @click="result = null">↩ Prova altro</button>
                     </div>
                 </div>
@@ -192,18 +205,19 @@ const SimulateModal = defineComponent({
             const r = await this.post('/simulate/suggest', { place, notes: this.notes.trim() });
             if (r) this.advice = r;
         },
-        async take() {
+        async take(asFree) {
+            // nel piano ma NON consumato: si segna mangiato dopo, come gli altri pasti
             const r = this.result;
             this.busy = true;
             this.error = null;
             try {
-                const resp = await window.apiFetch('/consumed-entries/mensa', {
+                const resp = await window.apiFetch('/simulate/choose?' + this.params(), {
                     method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ profile_id: this.profileId, date: this.mealDate, meal_type: this.slot,
-                                           name: r.name, plan_eligible: false,
+                    body: JSON.stringify({ name: r.name, as_free_meal: asFree, profile_id_B: this.profileBId,
                                            ingredients: r.ingredients.filter(i => i.name && i.grams > 0) }) });
-                if (!resp.ok) throw new Error(await resp.text());
-                this.toast.add(`"${r.name}" registrato a ${this.slot}`, 'success');
+                const j = await resp.json().catch(() => ({}));
+                if (!resp.ok) throw new Error(j.detail || 'Errore');
+                this.toast.add(`"${r.name}" messo a ${this.slot}${asFree ? ' come pasto libero' : ''} (da segnare quando lo mangi)`, 'success');
                 this.$emit('saved');
                 this.$emit('close');
             } catch (e) {

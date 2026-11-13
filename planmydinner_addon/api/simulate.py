@@ -130,10 +130,51 @@ def simulate_day(day: Dict[str, Any], targets: Dict[str, Any], meal_type: str,
     how = ("mangiato" if other_eaten else "alla sua quota" if other_assumed else "come previsto")
     lines.append(f"Giornata con {_FOR[other_mt]} {how}: "
                  f"{round(day_total)} / {round(t['kcal'])} kcal ({out['day_pct']}%).")
+
+    # Macro della giornata, con le stesse ipotesi delle kcal sull'altro pasto
+    out["macros"] = macros = _day_macros(day, t, meal, other, other_assumed)
+    for m in macros:
+        if m["status"] == "high":
+            lines.append(f"{m['label']}: {m['total']} / {m['target']} g nella giornata ({m['pct']}%), "
+                         f"{m['meal']} g da questo pasto.")
+        elif m["status"] == "low" and m["key"] == "protein_g":
+            tail = (f": a {_FOR[other_mt].split()[1]} punta su una proteina magra"
+                    if not other_eaten else "")
+            lines.append(f"Proteine basse: {m['total']} / {m['target']} g ({m['pct']}%){tail}.")
     out["verdict"] = {"level": level, "lines": lines,
                       "text": {"ok": "Si può fare", "over": "Sgarro gestibile",
                                "way_over": "Sgarro pesante", "under": "Leggero",
                                }.get(level, "")}
+    return out
+
+
+MACROS = (("protein_g", "Proteine"), ("carbs_g", "Carboidrati"), ("fat_g", "Grassi"))
+# soglie sul totale della giornata (% dell'obiettivo): proteine sono un minimo,
+# grassi un tetto, carboidrati il "resto" (si segnala solo se molto fuori)
+_LOW = {"protein_g": 85, "carbs_g": 70, "fat_g": 60}
+_HIGH = {"protein_g": 160, "carbs_g": 120, "fat_g": 115}
+
+
+def _day_macros(day: Dict[str, Any], t: Dict[str, float], meal: Dict[str, float],
+                other: Optional[Dict[str, Any]], other_assumed: bool) -> List[Dict[str, Any]]:
+    """Proteine/carbo/grassi della giornata se si mangia `meal`: fissi + pasto +
+    altro pasto (registrato, previsto, o alla sua quota se non è nel piano)."""
+    fixed = day.get("fixed_nutrition") or {}
+    dt = dict(t)
+    dt.update({k: float(v) for k, v in (day.get("day_targets") or {}).items() if k != "kcal" and v})
+    out = []
+    for k, label in MACROS:
+        if not dt.get(k):
+            continue
+        f = float(fixed.get(k) or 0)
+        o = (max(dt[k] - f, 0) / 2 if other_assumed
+             else float(((other or {}).get("nutrition") or {}).get(k) or 0))
+        total = f + float(meal.get(k) or 0) + o
+        pct = round(total / dt[k] * 100)
+        status = "low" if pct < _LOW[k] else "high" if pct > _HIGH[k] else "ok"
+        out.append({"key": k, "label": label, "meal": round(meal.get(k) or 0),
+                    "fixed": round(f), "other": round(o), "total": round(total),
+                    "target": round(dt[k]), "pct": pct, "status": status})
     return out
 
 
@@ -237,3 +278,69 @@ def suggest_order(body: SuggestBody, request: Request, profile_id: str, meal_typ
     options.sort(key=lambda o: abs(o.get("diff_quota") or 0))
     return {"place": place, "quota_kcal": quota, "protein_quota_g": protein,
             "options": options, "avoid": res.get("avoid") or [], "tips": res.get("tips") or []}
+
+
+class ChooseBody(_BaseModel):
+    name: str
+    ingredients: List[PhotoIngredient]
+    as_free_meal: bool = False
+    profile_id_B: Optional[str] = None
+
+
+@router.post("/choose")
+def choose_meal(body: ChooseBody, profile_id: str, meal_type: str,
+                target_date: Optional[date] = None, db: Session = Depends(get_db)):
+    """Mette il pasto simulato nel piano per (data, pasto) SENZA registrarlo come
+    mangiato: lo si segna consumato dopo, come ogni pasto del piano.
+    - normale: pasto salvato fra i "pasti da foto" (riusabile dal simulatore, mai
+      proposto dal generatore) e messo nello slot come pasto pianificato;
+    - as_free_meal: slot "pasto libero" con la stima già fatta (niente nuova
+      chiamata all'LLM), conta nella quota settimanale dei liberi."""
+    import copy
+    import uuid
+    from .planner import _set_day_slot, ensure_plan_for_date
+
+    if meal_type not in MAIN_MEALS:
+        raise HTTPException(status_code=422, detail="meal_type deve essere pranzo o cena.")
+    ings = [i for i in body.ingredients if i.name and i.grams > 0]
+    name = (body.name or "").strip() or "Pasto"
+    if not ings:
+        raise HTTPException(status_code=422, detail="Serve almeno un ingrediente.")
+    d = target_date or date.today()
+    content = _mensa_content(ings, profile_id)
+    if body.as_free_meal:
+        cand = CandidateRecipe(id=str(uuid.uuid4()), status="draft_structured", recipe_data={
+            "name": name, "description": f"Pasto libero (stima automatica): {name}",
+            "is_composed_dish": False, "content": content, "steps": [],
+            "total_time_minutes": 0, "difficulty": "sconosciuto",
+            "tags": {"free_meal_estimate": ["true"]}})
+        item = {"item_name": name, "food_group": "free_meal", "quantity": 0, "unit": "",
+                "is_estimated_unit": False, "alternatives": [], "recipe_id": cand.id}
+    else:
+        cand = None
+        for existing in db.query(CandidateRecipe).filter(CandidateRecipe.status == "draft_structured").all():
+            data = _is_mensa_candidate(existing)
+            if data and (data.get("name") or "").strip().lower() == name.lower():
+                cand = existing
+                break
+        recipe_data = {"name": name, "description": "Pasto fuori casa (dal simulatore)",
+                       "is_composed_dish": False, "content": content, "steps": [],
+                       "total_time_minutes": 0, "difficulty": "sconosciuto",
+                       "tags": {"mensa": ["true"]}, "plan_eligible": False}
+        if cand is None:
+            cand = CandidateRecipe(id=str(uuid.uuid4()), status="draft_structured", usage_count=0,
+                                   recipe_data=recipe_data)
+        else:
+            cand.recipe_data = recipe_data
+        item = {"item_name": name, "food_group": "recipe", "quantity": 1, "unit": "recipe",
+                "is_estimated_unit": False, "alternatives": [], "recipe_id": cand.id}
+    db.add(cand)
+    db.commit()
+    plan = ensure_plan_for_date(db, profile_id, d, body.profile_id_B)
+    updated = copy.deepcopy(plan.daily_plans)
+    if not _set_day_slot(updated, d.isoformat(), meal_type, item):
+        raise HTTPException(status_code=409, detail="Giorno non presente nel piano.")
+    plan.daily_plans = updated
+    db.add(plan)
+    db.commit()
+    return {"recipe_id": cand.id, "free_meal": body.as_free_meal}
