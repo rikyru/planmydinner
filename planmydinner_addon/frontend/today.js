@@ -1,13 +1,14 @@
 import { defineComponent } from 'vue';
 import { localISO } from './dates.js';
 import MensaModal from './mensa.js?v=6';
+import SimulateModal from './simulate.js?v=1';
 import RoutineStrip from './routine.js?v=15';
 import MealNutrition, { portionFactor } from './meal-nutrition.js?v=4';
 
 const TodayView = defineComponent({
     name: 'TodayView',
     inject: ['toast'],
-    components: { MensaModal, RoutineStrip, MealNutrition },
+    components: { MensaModal, SimulateModal, RoutineStrip, MealNutrition },
     template: `
         <div class="today-view">
             <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px;">
@@ -104,8 +105,10 @@ const TodayView = defineComponent({
 
             <div v-if="displayPlan">
                 <div v-for="meal in displayPlan.meals" :key="meal.meal_type" class="meal-box">
-                    <div class="meal-header">
+                    <div class="meal-header meal-header--sim">
                         <h3>{{ meal.meal_type === 'pranzo' ? '🍽 Pranzo' : '🌙 Cena' }}</h3>
+                        <button v-if="profileA" class="btn-sm btn-secondary" title="Prima di decidere: come chiude la giornata e cosa resta per l'altro pasto"
+                                @click="openSimulate(meal.meal_type)">🧮 Simula</button>
                     </div>
 
                     <div v-if="meal.items && meal.items.length > 0">
@@ -340,6 +343,14 @@ const TodayView = defineComponent({
                          @close="closeMensaModal"
                          @saved="onMensaSaved" />
 
+            <!-- Simula un pasto (mensa, ristorante, take-away) -->
+            <simulate-modal v-if="simulateMealType"
+                            :profile-id="profileA.id"
+                            :meal-type="simulateMealType"
+                            :meal-date="today"
+                            @close="simulateMealType = null"
+                            @saved="onMensaSaved" />
+
             <!-- Custom meal modal -->
             <div v-if="showCustomModal" class="modal-overlay" @click.self="showCustomModal=false">
                 <div class="modal">
@@ -425,6 +436,7 @@ const TodayView = defineComponent({
             markingDay: false,
             // Mensa / foto pasto
             showMensaModal: false,
+            simulateMealType: null,
             mensaMealType: null,
             // Custom meal
             showCustomModal: false,
@@ -955,6 +967,9 @@ const TodayView = defineComponent({
             }
         },
 
+        openSimulate(mealType) {
+            this.simulateMealType = mealType;
+        },
         // --- Mensa / foto pasto ---
         openMensaModal(mealType) {
             this.mensaMealType = mealType;

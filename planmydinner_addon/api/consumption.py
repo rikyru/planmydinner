@@ -316,6 +316,9 @@ class MensaMealSave(_BaseModel):
     name: str
     ingredients: List[PhotoIngredient]
     register_consumption: bool = True
+    # None = default sul nome (vedi photo_meal_plan_eligible); il simulatore manda
+    # False: un ordine al cinese non deve finire fra le proposte del piano
+    plan_eligible: Optional[bool] = None
 
 
 def _mensa_content(ingredients: List[PhotoIngredient], profile_id: str) -> list:
@@ -519,7 +522,9 @@ def save_mensa_meal(body: MensaMealSave, db: Session = Depends(get_db)):
         "difficulty": "sconosciuto",
         "tags": {"mensa": ["true"]},
     }
-    if cand is not None:
+    if body.plan_eligible is not None:
+        recipe_data["plan_eligible"] = body.plan_eligible
+    elif cand is not None:
         # Ri-salvare un pasto gia' in catalogo (stesso nome) non deve azzerare la
         # scelta dell'utente su "usabile nel piano".
         previous = _is_mensa_candidate(cand) or {}

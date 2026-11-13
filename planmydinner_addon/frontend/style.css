@@ -873,3 +873,48 @@ input[type="checkbox"] { accent-color: var(--primary); }
 .routine-editor__slot { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; }
 .routine-editor__head { display: flex; align-items: center; gap: 8px; cursor: pointer; }
 .routine-editor__preview { font-size: 12.5px; background: var(--bg); border-radius: var(--radius-xs); padding: 6px 8px; }
+
+/* ---------- Simula un pasto ---------- */
+.meal-header--sim { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.sim-modal .sim-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+.sim-modal .sim-row .chip { text-transform: capitalize; }
+.sim-label { font-size: 13px; color: var(--text-2); font-weight: 600; }
+.sim-input { display: flex; gap: 8px; }
+.sim-input input { flex: 1; min-width: 0; }
+.sim-input button { flex-shrink: 0; }
+.sim-notes { width: 100%; margin-top: 8px; box-sizing: border-box; }
+.sim-saved { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.sim-saved .chip { text-transform: none; }
+.sim-hint { font-size: 12px; color: var(--text-3); width: 100%; }
+.sim-advice { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
+.sim-option.sim-picked { border-color: var(--primary); background: var(--primary-softer); }
+.sim-option b.sim-ok { color: var(--success); }
+.sim-option b.sim-warn { color: var(--warning); }
+.sim-option b.sim-bad { color: var(--danger); }
+.sim-tips { margin: 0; padding-left: 18px; font-size: 13px; color: var(--text-2); }
+.sim-result { margin-top: 14px; border: 1px solid var(--border); border-left: 4px solid var(--border-strong);
+  border-radius: 10px; padding: 12px; background: var(--surface); }
+.sim-result.sim-ok { border-left-color: var(--success); }
+.sim-result.sim-warn { border-left-color: var(--warning); }
+.sim-result.sim-bad { border-left-color: var(--danger); }
+.sim-head { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+.sim-badge { font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 99px; background: var(--surface-2); color: var(--text-2); white-space: nowrap; }
+.sim-ok .sim-badge { background: var(--success-soft); color: var(--success); }
+.sim-warn .sim-badge { background: var(--warning-soft); color: var(--warning); }
+.sim-bad .sim-badge { background: var(--danger-soft); color: var(--danger); }
+.sim-macros { font-size: 13px; margin: 4px 0 10px; }
+.sim-bar { position: relative; display: flex; height: 12px; border-radius: 6px; background: var(--surface-2); overflow: visible; }
+.sim-seg { height: 100%; }
+.sim-seg:first-child { border-radius: 6px 0 0 6px; }
+.sim-fixed { background: var(--text-3); }
+.sim-meal { background: var(--primary); }
+.sim-warn .sim-meal { background: var(--warning); }
+.sim-bad .sim-meal { background: var(--danger); }
+.sim-other { background: var(--info); opacity: .55; }
+.sim-target { position: absolute; top: -4px; bottom: -4px; width: 2px; background: var(--text); }
+.sim-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--text-2); margin-top: 6px; }
+.sim-legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
+.sim-lines { margin: 10px 0 6px; padding-left: 18px; font-size: 13px; }
+.sim-ings { font-size: 13px; margin: 6px 0; }
+.sim-ings summary { cursor: pointer; color: var(--text-2); margin-bottom: 6px; }
+.sim-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }

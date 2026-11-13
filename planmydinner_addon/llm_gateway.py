@@ -185,6 +185,68 @@ class LLMGateway:
             _LOGGER.error(f"Error during LLM call for structured recipe generation: {e}")
             return None
 
+    def suggest_restaurant_order(self, place: str, kcal: float, protein_g: float,
+                                 notes: str = "") -> Optional[Dict[str, Any]]:
+        """"Stasera mangio cinese: cosa prendo?" — 3 ordini realistici per quel
+        locale/cucina vicini a `kcal` con una buona quota di proteine.
+        Ritorna {"options": [{"name", "why", "ingredients": [{name, food_group,
+        grams}]}], "avoid": [str], "tips": [str]} o None. I grammi servono a
+        ricalcolare kcal/macro col database nutrizionale: niente kcal dall'LLM."""
+        if not self._client:
+            return None
+        food_groups = "carboidrati, carne_bianca, carne_rossa, pesce, legumi, uova, latticini, verdure, grassi, frutta, altro"
+        task = (
+            "Sei un nutrizionista pratico. L'utente mangia fuori (ristorante, take-away, mensa, "
+            "locale) e vuole un ordine che non sia uno sgarro pesante. Proponi 3 ordini "
+            "REALISTICI per quel tipo di locale (piatti che si trovano davvero nel menu, porzioni "
+            f"da ristorante), ciascuno intorno a {round(kcal)} kcal e con almeno ~{round(protein_g)} g "
+            "di proteine: uno più leggero, uno centrato, uno più goloso ma ancora ragionevole. "
+            "Scomponi ogni ordine negli ingredienti principali con i grammi della porzione servita, "
+            "compresi olio/condimenti/salse (al ristorante se ne usano parecchi: non sottostimarli). "
+            f"food_group fra: {food_groups}. "
+            "Aggiungi 2-4 piatti tipici di quel locale da EVITARE (molto calorici: fritti, salse, "
+            "porzioni enormi) e 2-3 consigli pratici brevi (es. riso bianco invece di fritto, salsa a parte). "
+            "Rispondi SOLO con JSON: {\"options\": [{\"name\": \"<ordine breve, es. Pollo al limone + riso bianco>\", "
+            "\"why\": \"<perché va bene, max 12 parole>\", \"ingredients\": [{\"name\": \"<ingrediente>\", "
+            "\"food_group\": \"<gruppo>\", \"grams\": <numero>}]}], \"avoid\": [\"<piatto>\"], "
+            "\"tips\": [\"<consiglio>\"]}. Tutto in italiano."
+        )
+        user = f"Dove/cosa: {place}." + (f" Note: {notes}" if notes else "")
+        messages = [{"role": "system", "content": task}, {"role": "user", "content": user}]
+        try:
+            if self.provider == "openai":
+                r = self._chat_create(model=self.model, messages=messages, temperature=0.5,
+                                      response_format={"type": "json_object"})
+                raw = r.choices[0].message.content
+            elif self.provider == "ollama":
+                r = self._client.chat(model=self.model, messages=messages)
+                raw = r["message"]["content"]
+            else:
+                return None
+            data = json.loads(raw)
+            options = []
+            for o in data.get("options") or []:
+                ings = []
+                for i in o.get("ingredients") or []:
+                    try:
+                        g = float(i.get("grams") or 0)
+                    except (TypeError, ValueError):
+                        continue
+                    if i.get("name") and g > 0:
+                        ings.append({"name": str(i["name"]), "food_group": str(i.get("food_group") or "altro"),
+                                     "grams": g})
+                if o.get("name") and ings:
+                    options.append({"name": str(o["name"]), "why": str(o.get("why") or ""),
+                                    "ingredients": ings})
+            if not options:
+                return None
+            return {"options": options[:3],
+                    "avoid": [str(x) for x in data.get("avoid") or []][:4],
+                    "tips": [str(x) for x in data.get("tips") or []][:3]}
+        except Exception as e:
+            _LOGGER.warning(f"suggest_restaurant_order fallito per '{place}': {e}")
+            return None
+
     def suggest_meal(self, slot_label: str, avoid: Optional[str] = None,
                      pantry: Optional[List[str]] = None) -> Optional[Dict[str, Any]]:
         """Propone un pasto fisso (es. colazione) sano e bilanciato. Ritorna
