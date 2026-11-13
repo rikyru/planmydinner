@@ -27,7 +27,7 @@ router = APIRouter(prefix="/simulate", tags=["simulate"])
 KEYS = ("kcal", "protein_g", "carbs_g", "fat_g")
 DAY_TOL = 0.10          # giornata "in linea" entro ±10% dell'obiettivo
 MIN_OTHER_KCAL = 300
-SUGGEST_AIM = 0.8       # tetto chiesto all'LLM per i consigli, rispetto alla quota    # sotto questa quota l'altro pasto diventa poco realistico
+SUGGEST_AIM = 0.9       # tetto chiesto all'LLM per i consigli, rispetto alla quota    # sotto questa quota l'altro pasto diventa poco realistico
 
 
 _OF = {"pranzo": "del pranzo", "cena": "della cena"}
