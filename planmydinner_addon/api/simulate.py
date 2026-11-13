@@ -29,6 +29,10 @@ DAY_TOL = 0.10          # giornata "in linea" entro ±10% dell'obiettivo
 MIN_OTHER_KCAL = 300    # sotto questa quota l'altro pasto diventa poco realistico
 
 
+_OF = {"pranzo": "del pranzo", "cena": "della cena"}
+_FOR = {"pranzo": "il pranzo", "cena": "la cena"}
+
+
 def _r(n: Dict[str, float]) -> Dict[str, int]:
     return {k: round(n.get(k) or 0) for k in KEYS}
 
@@ -68,10 +72,11 @@ def simulate_day(day: Dict[str, Any], targets: Dict[str, Any], meal_type: str,
     out.update(budget_kcal=round(budget), quota_kcal=round(quota),
                diff_quota=round(meal["kcal"] - quota))
 
-    if other_eaten or other is None:
-        day_total = fixed + meal["kcal"] + (other_kcal or 0)
-    else:
-        day_total = fixed + meal["kcal"] + other_kcal
+    # l'altro pasto: registrato o previsto; se non è nel piano (es. mensa non
+    # pianificata) si assume che stia nella sua quota
+    other_assumed = other_kcal is None and not other_eaten
+    other_day = budget / 2 if other_assumed else (other_kcal or 0)
+    day_total = fixed + meal["kcal"] + other_day
     gap = day_total - t["kcal"]
     out.update(day_total=round(day_total), day_gap=round(gap),
                day_pct=round(day_total / t["kcal"] * 100))
@@ -85,46 +90,44 @@ def simulate_day(day: Dict[str, Any], targets: Dict[str, Any], meal_type: str,
     lines: List[str] = []
     tol = max(quota * DAY_TOL, 60)
     if abs(meal["kcal"] - quota) <= tol:
-        lines.append(f"In linea con la quota del {meal_type} ({round(quota)} kcal).")
+        lines.append(f"In linea con la quota {_OF[meal_type]} ({round(quota)} kcal).")
     elif meal["kcal"] > quota:
-        lines.append(f"{round(meal['kcal'] - quota)} kcal sopra la quota del {meal_type} "
+        lines.append(f"{round(meal['kcal'] - quota)} kcal sopra la quota {_OF[meal_type]} "
                      f"({round(quota)} kcal).")
     else:
-        lines.append(f"{round(quota - meal['kcal'])} kcal sotto la quota del {meal_type} "
+        lines.append(f"{round(quota - meal['kcal'])} kcal sotto la quota {_OF[meal_type]} "
                      f"({round(quota)} kcal).")
 
     rebalance = None
     if not other_eaten:
         if left_for_other < MIN_OTHER_KCAL:
-            lines.append(f"Per il {other_mt} resterebbero solo ~{round(max(left_for_other, 0))} kcal: "
+            lines.append(f"Per {_FOR[other_mt]} resterebbero solo ~{round(max(left_for_other, 0))} kcal: "
                          "difficile compensare in un pasto solo, meglio scegliere più leggero.")
         else:
-            lines.append(f"Per il {other_mt} restano ~{round(left_for_other)} kcal.")
+            lines.append(f"Per {_FOR[other_mt]} restano ~{round(left_for_other)} kcal.")
         if other_kcal:
             factor = left_for_other / other_kcal
             rebalance = {"meal_type": other_mt, "planned_kcal": round(other_kcal),
                          "left_kcal": round(max(left_for_other, 0)),
                          "factor": round(max(factor, 0), 2)}
             if factor < 0.9 and left_for_other >= MIN_OTHER_KCAL:
-                lines.append(f"Il {other_mt} previsto ne vale {round(other_kcal)}: "
+                lines.append(f"Previsto per {_FOR[other_mt]}: {round(other_kcal)} kcal → "
                              f"porzioni al ~{round(factor * 100)}% (o un piatto più leggero).")
             elif factor > 1.1:
-                lines.append(f"Il {other_mt} previsto ne vale {round(other_kcal)}: "
+                lines.append(f"Previsto per {_FOR[other_mt]}: {round(other_kcal)} kcal → "
                              "c'è margine per una porzione più abbondante.")
     out["rebalance"] = rebalance
 
     over = gap / t["kcal"]
-    if other is None and not other_eaten:
-        level = "ok" if meal["kcal"] <= quota + tol else "over"
-    elif abs(over) <= DAY_TOL:
+    if abs(over) <= DAY_TOL:
         level = "ok"
     elif over > 0:
         level = "over" if over <= 0.25 else "way_over"
     else:
         level = "under"
-    if other is not None or other_eaten:
-        lines.append(f"Giornata con il {other_mt} {'mangiato' if other_eaten else 'previsto'}: "
-                     f"{round(day_total)} / {round(t['kcal'])} kcal ({out['day_pct']}%).")
+    how = ("mangiato" if other_eaten else "alla sua quota" if other_assumed else "come previsto")
+    lines.append(f"Giornata con {_FOR[other_mt]} {how}: "
+                 f"{round(day_total)} / {round(t['kcal'])} kcal ({out['day_pct']}%).")
     out["verdict"] = {"level": level, "lines": lines,
                       "text": {"ok": "Si può fare", "over": "Sgarro gestibile",
                                "way_over": "Sgarro pesante", "under": "Leggero",

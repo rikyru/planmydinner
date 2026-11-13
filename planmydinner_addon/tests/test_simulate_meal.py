@@ -37,3 +37,11 @@ def test_too_heavy_meal_warns_other_cannot_compensate():
 def test_no_target_only_reports_kcal():
     r = simulate_day({"meals": {}}, {}, "pranzo", {"kcal": 700, "protein_g": 30, "carbs_g": 80, "fat_g": 20})
     assert r["verdict"]["level"] == "unknown"
+
+
+def test_unplanned_other_meal_assumed_at_its_quota():
+    # pranzo non nel piano (mensa): si assume alla sua quota (1255/2), non a zero
+    r = simulate_day(_day(None), T, "cena", {"kcal": 1500, "protein_g": 70, "carbs_g": 130, "fat_g": 70})
+    assert r["day_total"] == 2728 and r["verdict"]["level"] == "way_over"
+    assert any("alla sua quota" in l for l in r["verdict"]["lines"])
+    assert any("quota della cena" in l for l in r["verdict"]["lines"])
