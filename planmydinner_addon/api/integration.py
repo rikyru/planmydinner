@@ -24,6 +24,7 @@ from ..nutrition import (DEFAULT_COOKING_FAT_G, NUTRITION_KEYS, apply_portions,
 from ..scaling import apply_nutrition_scaling, day_target_kcal
 from .planner import compute_adherence_stats
 from .routine import extra_nutrition
+from .. import produce
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -443,6 +444,7 @@ def get_integration_summary(
     ).all():
         slot_entries.setdefault((e.date, e.meal_type), []).append(e)
 
+    produce_by_date: Dict[str, Dict[str, float]] = {}   # iso → grammi verdura/frutta
     routine_parts_by_date: Dict[str, list] = {}   # iso → [(nome, nutrizione)] per le fonti grassi
 
     def _routine_for_day(iso: str) -> Optional[Dict[str, float]]:
@@ -457,9 +459,13 @@ def get_integration_summary(
             n = None
             if logged:
                 n = _nutrition_for_recipe(logged[0].consumed_recipe_id)
+                used = _get_recipe_content(db, logged[0].consumed_recipe_id)
             elif meal and meal["default_on"]:
                 n = routine_nutrition.get(slot)
+                used = meal["content"]
             if n:
+                produce.add(produce_by_date.setdefault(iso, {}),
+                            produce.content_produce(used, profile_id))
                 if total is None:
                     total = {k: 0.0 for k in NUTRITION_KEYS}
                 for k in NUTRITION_KEYS:
@@ -492,6 +498,8 @@ def get_integration_summary(
             agg = extras_by_date.setdefault(e.date, {k: 0.0 for k in NUTRITION_KEYS})
             for k in NUTRITION_KEYS:
                 agg[k] += n[k]
+        produce.add(produce_by_date.setdefault(e.date, {}),
+                    produce.items_produce(od.get("ingredients") or []))
         item = {"name": od.get("free_text_name") or "Merenda extra",
                 "kcal": round(n["kcal"]) if n else None,
                 "fat_g": round(n["fat_g"], 1) if n else None}
@@ -666,6 +674,22 @@ def get_integration_summary(
         src = [s for s in src if s["fat_g"] and s["fat_g"] >= 1]
         return sorted(src, key=lambda s: s["fat_g"], reverse=True)[:limit]
 
+    def _day_produce(iso, meal_rows):
+        """Grammi di verdura e frutta del giorno: pasti fissi ed extra (già
+        accumulati) + pranzo/cena (registrati o da piano, porzioni comprese)."""
+        tot = dict(produce_by_date.get(iso) or {})
+        for row in (meal_rows or {}).values():
+            if not row.get("recipe_id"):
+                continue
+            content = _get_recipe_content(db, row["recipe_id"])
+            free = row.get("kind") == "free_meal"
+            produce.add(tot, produce.content_produce(
+                content, profile_id, scale=1.0 if free else (row.get("scale") or 1.0),
+                portions=None if free else row.get("portions")))
+        veg, fruit = round(tot.get("veg_g", 0)), round(tot.get("fruit_g", 0))
+        return {"veg_g": veg, "fruit_g": fruit, "total_g": veg + fruit,
+                "target_g": produce.TARGET_TOTAL_G}
+
     days = []
     totals = {k: 0.0 for k in NUTRITION_KEYS}
     days_with_data = 0
@@ -779,6 +803,8 @@ def get_integration_summary(
             "target_kcal": day_target_kcal(targets, targets_by_date, iso),
             # colazione/spuntini + extra con tutti i macro, e gli obiettivi del
             # giorno (periodizzati se ci sono): servono al simulatore di pasto
+            "produce": _day_produce(iso, meal_rows),
+            "routine_items": [name for name, _ in routine_parts_by_date.get(iso, [])],
             "fixed_nutrition": {k: round((routine_day or {}).get(k, 0) + (extra_day or {}).get(k, 0), 1)
                                 for k in NUTRITION_KEYS},
             "day_targets": {k: v for k, v in {**(targets or {}),

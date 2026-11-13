@@ -185,6 +185,79 @@ class LLMGateway:
             _LOGGER.error(f"Error during LLM call for structured recipe generation: {e}")
             return None
 
+    BALANCE_NUTRIENTS = ("Fibre", "Vitamina C", "Vitamina D", "Vitamina B12", "Folati",
+                         "Ferro", "Calcio", "Potassio", "Magnesio", "Omega-3",
+                         "Sale (sodio)", "Zuccheri aggiunti")
+
+    def review_diet_balance(self, week: Dict[str, Any], use_cache: bool = True) -> Optional[Dict[str, Any]]:
+        """Valutazione qualitativa dell'equilibrio di una settimana di pasti
+        (varietà, frutta/verdura, fibre, micronutrienti probabilmente scarsi o in
+        eccesso) con poche azioni concrete. `week` = giorni con alimenti e grammi.
+        Ritorna {"voto", "sintesi", "punti_forti", "da_migliorare",
+        "nutrienti": [{"nome", "stato", "nota"}], "azioni"} o None. Cache sul
+        contenuto: rivedere la stessa settimana non ripaga l'LLM."""
+        if not self._client:
+            return None
+        payload = json.dumps(week, ensure_ascii=False, sort_keys=True)
+        key = self._cache_key("diet_balance_v1", payload)
+        if use_cache and key in self._cache:
+            return self._cache[key]
+        nutrients = ", ".join(self.BALANCE_NUTRIENTS)
+        task = (
+            "Sei un nutrizionista. Ricevi in JSON una settimana di alimentazione di un adulto che "
+            "si allena (ciclismo, nuoto, corpo libero) e vuole perdere grasso: per ogni giorno gli "
+            "alimenti con i grammi (pasti fissi, pranzo, cena, extra), i grammi di frutta e verdura "
+            "già calcolati, kcal/macro e obiettivi. Valuta l'EQUILIBRIO dell'alimentazione, non le "
+            "calorie (quelle le segue già): varietà, frutta e verdura (riferimento >= 400 g/giorno), "
+            "fibre, qualità di proteine e grassi, e per ciascuno di questi nutrienti stima se "
+            f"l'apporto è probabilmente adeguato: {nutrients}. Sono stime dagli alimenti, non "
+            "analisi: se un dato non è deducibile usa stato 'incerto'. Sii concreto e riferisciti "
+            "agli alimenti che mangia davvero (es. 'il muesli a colazione porta fibre ma...'). "
+            "Le azioni devono essere 3, piccole e pratiche per la settimana dopo (es. 'aggiungi "
+            "150 g di verdura cotta alla cena del martedì e giovedì', 'pesce azzurro 2 volte'). "
+            'Rispondi SOLO con JSON: {"voto": <1-10 equilibrio>, "sintesi": "<2 frasi>", '
+            '"punti_forti": ["..."], "da_migliorare": ["..."], '
+            '"nutrienti": [{"nome": "<uno della lista>", "stato": "ok|basso|alto|incerto", '
+            '"nota": "<max 15 parole, con l\'alimento che lo spiega>"}], "azioni": ["...", "...", "..."]}. '
+            "Tutto in italiano."
+        )
+        messages = [{"role": "system", "content": task}, {"role": "user", "content": payload}]
+        try:
+            if self.provider == "openai":
+                r = self._chat_create(model=self.model, messages=messages, temperature=0.3,
+                                      response_format={"type": "json_object"})
+                raw = r.choices[0].message.content
+            elif self.provider == "ollama":
+                r = self._client.chat(model=self.model, messages=messages)
+                raw = r["message"]["content"]
+            else:
+                return None
+            data = json.loads(raw)
+            stati = {"ok", "basso", "alto", "incerto"}
+            nutr = []
+            for n in data.get("nutrienti") or []:
+                if isinstance(n, dict) and n.get("nome"):
+                    st = str(n.get("stato") or "incerto").lower()
+                    nutr.append({"nome": str(n["nome"]), "stato": st if st in stati else "incerto",
+                                 "nota": str(n.get("nota") or "")})
+            try:
+                voto = max(1, min(10, round(float(data.get("voto")))))
+            except (TypeError, ValueError):
+                voto = None
+            out = {"voto": voto, "sintesi": str(data.get("sintesi") or ""),
+                   "punti_forti": [str(x) for x in data.get("punti_forti") or []][:4],
+                   "da_migliorare": [str(x) for x in data.get("da_migliorare") or []][:4],
+                   "nutrienti": nutr, "azioni": [str(x) for x in data.get("azioni") or []][:3]}
+            if not (out["sintesi"] or nutr):
+                return None
+            if use_cache:
+                self._cache[key] = out
+                self._save_cache()
+            return out
+        except Exception as e:
+            _LOGGER.warning(f"review_diet_balance fallito: {e}")
+            return None
+
     def suggest_restaurant_order(self, place: str, kcal: float, protein_g: float,
                                  notes: str = "") -> Optional[Dict[str, Any]]:
         """"Stasera mangio cinese: cosa prendo?" — 3 ordini realistici per quel

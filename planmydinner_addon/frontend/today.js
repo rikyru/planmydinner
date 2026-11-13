@@ -38,6 +38,11 @@ const TodayView = defineComponent({
                         <span class="macro-bar-value">{{ m.value }}<template v-if="m.target">/{{ m.target }}</template> g</span>
                     </div>
                 </div>
+                <div v-if="dayProduce" class="hint produce-line" :class="{ 'produce-ok': dayProduce.total_g >= dayProduce.target_g }"
+                     title="Dai pasti di oggi (previsti compresi). Riferimento: almeno 400 g di frutta + verdura">
+                    🥗 Frutta e verdura {{ dayProduce.total_g }} / {{ dayProduce.target_g }} g
+                    · verdura {{ dayProduce.veg_g }} g · frutta {{ dayProduce.fruit_g }} g
+                </div>
                 <div class="hint" v-if="dayTrainingNote">🏋️ {{ dayTrainingNote }}</div>
 
                 <!-- Grassi: da dove vengono oggi -->
@@ -456,6 +461,7 @@ const TodayView = defineComponent({
         dayMacros() { return this.daySummary ? this.daySummary.nutrition : null; },
         dayKcal() { return this.dayMacros ? (this.dayMacros.kcal || 0) : 0; },
         dayRemaining() { return (this.dayTarget ? this.dayTarget.kcal : 0) - this.dayKcal; },
+        dayProduce() { return this.daySummary ? this.daySummary.produce : null; },
         dayTrainingNote() { return this.daySummary ? this.daySummary.training_note : null; },
         macroBars() {
             const n = this.dayMacros || {}, t = this.dayTarget || {};
@@ -580,6 +586,7 @@ const TodayView = defineComponent({
                 if (day.target_kcal) targets.kcal = day.target_kcal;
                 this.daySummary = { nutrition: day.nutrition, targets, meals: day.meals || {},
                                     training_note: day.training_note || null,
+                                    produce: day.produce || null,
                                     fat_sources: day.fat_sources || [],
                                     routine_fat_g: day.routine_fat_g || 0 };
             } catch (_) { this.daySummary = null; }

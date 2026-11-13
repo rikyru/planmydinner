@@ -40,6 +40,7 @@ from .api import seed as seed_router
 from .api import settings as settings_router
 from .api import integration as integration_router
 from .api import simulate as simulate_router
+from .api import balance as balance_router
 from .api import routine as routine_router
 
 # Fix for Windows MIME types
@@ -233,6 +234,7 @@ app.include_router(seed_router.router)
 app.include_router(settings_router.router)
 app.include_router(integration_router.router)
 app.include_router(simulate_router.router)
+app.include_router(balance_router.router)
 app.include_router(routine_router.router)
 
 

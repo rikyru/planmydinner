@@ -933,3 +933,31 @@ input[type="checkbox"] { accent-color: var(--primary); }
 .sim-m-low .sim-m-track span { background: var(--warning); }
 .sim-m-high td:nth-child(3) { color: var(--danger); }
 .sim-m-low td:nth-child(3) { color: var(--warning); }
+
+/* ---------- Storico: equilibrio (frutta/verdura + AI) ---------- */
+.bal-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+.bal-chart { position: relative; display: flex; align-items: flex-end; gap: 8px; height: 110px; border-bottom: 1px solid var(--border); }
+.bal-col { flex: 1; min-width: 0; height: 100%; display: flex; flex-direction: column-reverse; align-items: stretch; }
+.bal-col span { display: block; width: 100%; max-width: 34px; margin: 0 auto; }
+.bal-col .bal-veg { border-radius: 0; }
+.bal-col .bal-fruit { border-radius: 4px 4px 0 0; }
+.bal-veg { background: var(--success); }
+.bal-fruit { background: #e8964a; }
+.bal-target { position: absolute; left: 0; right: 0; border-top: 2px dashed var(--text-3); pointer-events: none; }
+.bal-days { display: flex; gap: 8px; }
+.bal-days .hist-day { flex: 1; text-align: center; }
+.bal-legend { display: flex; gap: 14px; font-size: 12px; color: var(--text-2); margin-top: 6px; }
+.bal-legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
+.bal-ai { margin-top: 12px; }
+.bal-review { border-top: 1px solid var(--border); padding-top: 10px; font-size: 13.5px; }
+.bal-review-head { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+.bal-nutr { display: flex; flex-wrap: wrap; gap: 5px; margin: 8px 0; }
+.bal-chip { font-size: 12px; border-radius: 99px; padding: 2px 9px; background: var(--surface-2); color: var(--text-2); border: 1px solid var(--border); }
+.bal-chip b { margin-left: 4px; font-weight: 700; }
+.bal-ok { background: var(--success-soft); color: var(--success); }
+.bal-basso { background: var(--warning-soft); color: var(--warning); }
+.bal-alto { background: var(--danger-soft); color: var(--danger); }
+.bal-notes, .bal-actions { margin: 6px 0; padding-left: 20px; }
+.bal-notes li, .bal-actions li { margin: 3px 0; }
+.bal-sub { margin-top: 6px; color: var(--text-2); }
+.produce-line.produce-ok { color: var(--success); }

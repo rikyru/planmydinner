@@ -79,6 +79,51 @@ const HistoryView = defineComponent({
                     </div>
                 </div>
 
+                <!-- Equilibrio: frutta e verdura + valutazione AI -->
+                <div class="card bal-card">
+                    <div class="bal-head">
+                        <div style="font-size:13px;font-weight:600;color:var(--text-2);">🥗 Frutta e verdura (g al giorno)</div>
+                        <span v-if="produceAvg" class="hint">media {{ produceAvg.total }} g · obiettivo ≥ 400</span>
+                    </div>
+                    <div class="bal-chart">
+                        <div class="bal-target" :style="{ bottom: 400 / produceMax * 100 + '%' }" title="400 g"></div>
+                        <div v-for="d in produceDays" :key="d.date" class="bal-col"
+                             :title="d.has ? (d.veg + ' g verdura · ' + d.fruit + ' g frutta') : 'nessun dato'">
+                            <span class="bal-fruit" :style="{ height: d.fruit / produceMax * 100 + '%' }"></span>
+                            <span class="bal-veg" :style="{ height: d.veg / produceMax * 100 + '%' }"></span>
+                        </div>
+                    </div>
+                    <div class="bal-days"><span v-for="d in produceDays" :key="'l' + d.date" class="hist-day">{{ dayInitial(d.date) }}</span></div>
+                    <div class="bal-legend"><span><i class="bal-veg"></i>verdura{{ produceAvg ? ' ' + produceAvg.veg + ' g' : '' }}</span>
+                        <span><i class="bal-fruit"></i>frutta{{ produceAvg ? ' ' + produceAvg.fruit + ' g' : '' }}</span></div>
+
+                    <div class="bal-ai">
+                        <button v-if="!review" class="btn-secondary btn-sm" :disabled="reviewing" @click="runReview">
+                            {{ reviewing ? '🔎 Analisi in corso...' : '✨ Equilibrio della settimana (AI)' }}
+                        </button>
+                        <div v-if="reviewError" class="error">{{ reviewError }}</div>
+                        <div v-if="review" class="bal-review">
+                            <div class="bal-review-head">
+                                <strong>Equilibrio {{ review.voto ? review.voto + '/10' : '' }}</strong>
+                                <span class="hint">{{ review.days }} giorni registrati · stime dagli alimenti, non analisi</span>
+                            </div>
+                            <p style="margin:6px 0;">{{ review.sintesi }}</p>
+                            <div class="bal-nutr">
+                                <span v-for="n in review.nutrienti" :key="n.nome" class="bal-chip" :class="'bal-' + n.stato"
+                                      :title="n.nota">{{ n.nome }}<b>{{ statoLabel(n.stato) }}</b></span>
+                            </div>
+                            <ul class="bal-notes">
+                                <li v-for="n in review.nutrienti.filter(x => x.stato === 'basso' || x.stato === 'alto')" :key="'n' + n.nome">
+                                    <strong>{{ n.nome }}</strong> {{ statoLabel(n.stato) }}: {{ n.nota }}</li>
+                            </ul>
+                            <div v-if="review.punti_forti.length" class="bal-sub">👍 {{ review.punti_forti.join(' · ') }}</div>
+                            <div v-if="review.da_migliorare.length" class="bal-sub">⚠️ {{ review.da_migliorare.join(' · ') }}</div>
+                            <div class="bal-sub"><strong>Per la prossima settimana</strong></div>
+                            <ol class="bal-actions"><li v-for="a in review.azioni" :key="a">{{ a }}</li></ol>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- Diario per giorno -->
                 <div v-for="d in summary.days" :key="'card-' + d.date" class="card hist-daycard" :id="'hist-' + d.date">
                     <div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;">
@@ -161,6 +206,9 @@ const HistoryView = defineComponent({
             start: localISO(monday),
             profiles: [],
             summary: null,
+            review: null,
+            reviewing: false,
+            reviewError: null,
             planMeals: {},   // date -> [{meal_type, name}]
             loading: false,
             targetsOpen: false,
@@ -173,6 +221,22 @@ const HistoryView = defineComponent({
         };
     },
     computed: {
+        produceDays() {
+            return ((this.summary && this.summary.days) || []).filter(d => !d.future).map(d => ({
+                date: d.date, has: !!d.nutrition,
+                veg: (d.produce && d.nutrition) ? d.produce.veg_g : 0,
+                fruit: (d.produce && d.nutrition) ? d.produce.fruit_g : 0 }));
+        },
+        produceAvg() {
+            const ds = this.produceDays.filter(d => d.has);
+            if (!ds.length) return null;
+            const avg = k => Math.round(ds.reduce((s, d) => s + d[k], 0) / ds.length);
+            const veg = avg('veg'), fruit = avg('fruit');
+            return { veg, fruit, total: veg + fruit };
+        },
+        produceMax() {
+            return Math.max(500, ...this.produceDays.map(d => d.veg + d.fruit)) * 1.05;
+        },
         end() {
             const d = new Date(this.start + 'T12:00:00');
             d.setDate(d.getDate() + 6);
@@ -223,6 +287,26 @@ const HistoryView = defineComponent({
     },
     mounted() { this.init(); },
     methods: {
+        statoLabel(s) {
+            return { ok: '✓', basso: '↓ basso', alto: '↑ alto', incerto: '?' }[s] || s;
+        },
+        async runReview() {
+            if (!this.profiles.length) return;
+            this.reviewing = true;
+            this.reviewError = null;
+            try {
+                const end = this.end < this.today ? this.end : this.today;
+                const params = new URLSearchParams({ profile_id: this.profiles[0].id, end_date: end });
+                const resp = await window.apiFetch('/balance/review?' + params, { method: 'POST' });
+                const j = await resp.json().catch(() => ({}));
+                if (!resp.ok) throw new Error(j.detail || 'Analisi non riuscita');
+                this.review = j;
+            } catch (e) {
+                this.reviewError = e.message;
+            } finally {
+                this.reviewing = false;
+            }
+        },
         async init() {
             try {
                 const resp = await window.apiFetch('/profiles/');
@@ -292,6 +376,8 @@ const HistoryView = defineComponent({
         async load() {
             if (!this.profiles.length) return;
             this.loading = true;
+            this.review = null;
+            this.reviewError = null;
             try {
                 const pid = this.profiles[0].id;
                 // Storico = diario del consumato: medie/nutrizione solo sui pasti
