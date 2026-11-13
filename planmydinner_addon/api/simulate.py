@@ -26,7 +26,8 @@ router = APIRouter(prefix="/simulate", tags=["simulate"])
 
 KEYS = ("kcal", "protein_g", "carbs_g", "fat_g")
 DAY_TOL = 0.10          # giornata "in linea" entro ±10% dell'obiettivo
-MIN_OTHER_KCAL = 300    # sotto questa quota l'altro pasto diventa poco realistico
+MIN_OTHER_KCAL = 300
+SUGGEST_AIM = 0.8       # tetto chiesto all'LLM per i consigli, rispetto alla quota    # sotto questa quota l'altro pasto diventa poco realistico
 
 
 _OF = {"pranzo": "del pranzo", "cena": "della cena"}
@@ -215,7 +216,9 @@ def suggest_order(body: SuggestBody, request: Request, profile_id: str, meal_typ
     probe = simulate_day(day, targets, meal_type, {k: 0.0 for k in KEYS})
     quota = probe.get("quota_kcal") or 700
     protein = probe.get("protein_quota_g") or 35
-    res = gw.suggest_restaurant_order(place, quota, protein, body.notes)
+    # l'LLM tende a sovrastimare porzioni e a sottostimare i condimenti: gli si
+    # chiede un tetto più basso, così ricalcolati col database restano vicini alla quota
+    res = gw.suggest_restaurant_order(place, quota * SUGGEST_AIM, protein, body.notes)
     if not res or not res.get("options"):
         raise HTTPException(status_code=502, detail="Nessun consiglio dall'AI, riprova.")
     options = []
