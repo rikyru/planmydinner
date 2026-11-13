@@ -23,7 +23,7 @@ const SimulateModal = defineComponent({
         <div class="modal-overlay" @click.self="$emit('close')">
             <div class="modal sim-modal">
                 <h3>🧮 Simula un pasto</h3>
-                <div class="sim-row">
+                <div class="sim-row sim-slots">
                     <span class="sim-label">Per</span>
                     <button v-for="t in ['pranzo', 'cena']" :key="t" class="chip"
                             :class="{ 'chip--on': slot === t }" @click="setSlot(t)">{{ t }}</button>
@@ -85,13 +85,13 @@ const SimulateModal = defineComponent({
                     <div v-if="result.target" class="sim-bar" :title="result.day_total + ' / ' + result.target.kcal + ' kcal'">
                         <span class="sim-seg sim-fixed" :style="seg(result.fixed_kcal)" title="colazione/spuntini/extra"></span>
                         <span class="sim-seg sim-meal" :style="seg(result.meal.kcal)" :title="slot"></span>
-                        <span v-if="result.other.kcal" class="sim-seg sim-other" :style="seg(result.other.kcal)" :title="result.other.meal_type"></span>
+                        <span v-if="result.other.day_kcal" class="sim-seg sim-other" :class="{ 'sim-assumed': result.other.assumed }" :style="seg(result.other.day_kcal)" :title="result.other.meal_type"></span>
                         <span class="sim-target" :style="{ left: Math.min(100, result.target.kcal / scaleMax * 100) + '%' }"></span>
                     </div>
                     <div v-if="result.target" class="sim-legend">
                         <span><i class="sim-fixed"></i>fissi {{ result.fixed_kcal }}</span>
                         <span><i class="sim-meal"></i>{{ slot }} {{ result.meal.kcal }}</span>
-                        <span v-if="result.other.kcal"><i class="sim-other"></i>{{ result.other.meal_type }} {{ result.other.kcal }}{{ result.other.consumed ? '' : ' (previsto)' }}</span>
+                        <span v-if="result.other.day_kcal"><i class="sim-other" :class="{ 'sim-assumed': result.other.assumed }"></i>{{ result.other.meal_type }} {{ result.other.day_kcal }}{{ result.other.consumed ? '' : result.other.assumed ? ' (stima: quota)' : ' (previsto)' }}</span>
                         <span>| obiettivo {{ result.target.kcal }}</span>
                     </div>
                     <ul class="sim-lines"><li v-for="l in (result.verdict.lines || [result.verdict.text])" :key="l">{{ l }}</li></ul>
@@ -124,7 +124,7 @@ const SimulateModal = defineComponent({
         scaleMax() {
             const r = this.result;
             if (!r || !r.target) return 1;
-            return Math.max(r.target.kcal, r.fixed_kcal + r.meal.kcal + (r.other.kcal || 0)) * 1.05;
+            return Math.max(r.target.kcal, r.fixed_kcal + r.meal.kcal + (r.other.day_kcal || 0)) * 1.05;
         },
     },
     mounted() { this.loadSaved(); },

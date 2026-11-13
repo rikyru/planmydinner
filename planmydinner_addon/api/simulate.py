@@ -26,8 +26,8 @@ router = APIRouter(prefix="/simulate", tags=["simulate"])
 
 KEYS = ("kcal", "protein_g", "carbs_g", "fat_g")
 DAY_TOL = 0.10          # giornata "in linea" entro ±10% dell'obiettivo
-MIN_OTHER_KCAL = 300
-SUGGEST_AIM = 0.9       # tetto chiesto all'LLM per i consigli, rispetto alla quota    # sotto questa quota l'altro pasto diventa poco realistico
+MIN_OTHER_KCAL = 300    # sotto questa quota l'altro pasto diventa poco realistico
+SUGGEST_AIM = 0.9       # tetto chiesto all'LLM per i consigli, rispetto alla quota
 
 
 _OF = {"pranzo": "del pranzo", "cena": "della cena"}
@@ -78,6 +78,7 @@ def simulate_day(day: Dict[str, Any], targets: Dict[str, Any], meal_type: str,
     other_assumed = other_kcal is None and not other_eaten
     other_day = budget / 2 if other_assumed else (other_kcal or 0)
     day_total = fixed + meal["kcal"] + other_day
+    out["other"].update(day_kcal=round(other_day), assumed=other_assumed)
     gap = day_total - t["kcal"]
     out.update(day_total=round(day_total), day_gap=round(gap),
                day_pct=round(day_total / t["kcal"] * 100))

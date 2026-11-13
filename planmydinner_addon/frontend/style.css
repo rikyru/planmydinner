@@ -877,7 +877,8 @@ input[type="checkbox"] { accent-color: var(--primary); }
 /* ---------- Simula un pasto ---------- */
 .meal-header--sim { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .sim-modal .sim-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
-.sim-modal .sim-row .chip { text-transform: capitalize; }
+.sim-modal .sim-row .chip { text-transform: none; }
+.sim-modal .sim-slots .chip { text-transform: capitalize; }
 .sim-label { font-size: 13px; color: var(--text-2); font-weight: 600; }
 .sim-input { display: flex; gap: 8px; }
 .sim-input input { flex: 1; min-width: 0; }
@@ -911,6 +912,7 @@ input[type="checkbox"] { accent-color: var(--primary); }
 .sim-warn .sim-meal { background: var(--warning); }
 .sim-bad .sim-meal { background: var(--danger); }
 .sim-other { background: var(--info); opacity: .55; }
+.sim-assumed { background: repeating-linear-gradient(45deg, var(--info) 0 4px, transparent 4px 7px); opacity: .6; }
 .sim-target { position: absolute; top: -4px; bottom: -4px; width: 2px; background: var(--text); }
 .sim-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--text-2); margin-top: 6px; }
 .sim-legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
