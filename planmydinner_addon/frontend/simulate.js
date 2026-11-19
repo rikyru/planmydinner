@@ -4,7 +4,9 @@ import { defineComponent } from 'vue';
  * "Simula un pasto": prima di decidere (mensa, ristorante, take-away) vedi
  * come chiude la giornata e quanto resta per l'altro pasto. Due modi:
  *  - "Cosa mangio": descrizione libera o pasto salvato -> bilancio;
- *  - "Consigliami": dove mangi (es. cinese) -> 3 ordini dimensionati sulla quota.
+ *  - "Consigliami": dove mangi (es. cinese) -> 3 ordini dimensionati sulla quota;
+ *  - "Mensa": dato l'altro pasto (es. stasera pizza), un vassoio per tipo di
+ *    secondo dallo storico mensa, così qualunque cosa ci sia sai cosa prendere.
  * "Mettilo nel piano" / "Pasto libero" lo mettono nello slot SENZA segnarlo
  * mangiato: lo si registra dopo, come ogni pasto del piano.
  * Eventi: 'saved' dopo la registrazione, 'close'.
@@ -33,6 +35,7 @@ const SimulateModal = defineComponent({
                 <div class="sim-row">
                     <button class="chip" :class="{ 'chip--on': mode === 'eat' }" @click="mode = 'eat'">Cosa mangio</button>
                     <button class="chip" :class="{ 'chip--on': mode === 'advice' }" @click="mode = 'advice'">Consigliami cosa prendere</button>
+                    <button class="chip" :class="{ 'chip--on': mode === 'mensa' }" @click="mode = 'mensa'">🍱 Mensa: cosa prendo</button>
                 </div>
 
                 <!-- Cosa mangio: descrizione o pasto salvato -->
@@ -47,6 +50,31 @@ const SimulateModal = defineComponent({
                         <div class="sim-hint">oppure un pasto salvato:</div>
                         <button v-for="m in saved.slice(0, 8)" :key="m.id" class="chip" :disabled="busy"
                                 @click="simulateSaved(m)">{{ m.name }}<span v-if="m.nutrition"> · {{ Math.round(m.nutrition.kcal) }}</span></button>
+                    </div>
+                </div>
+
+                <!-- Mensa: dai vassoi registrati, dato l altro pasto -->
+                <div v-else-if="mode === 'mensa'">
+                    <div class="sim-input">
+                        <input v-model="otherDesc" :disabled="busy" @keyup.enter="mensa"
+                               :placeholder="'e ' + (slot === 'pranzo' ? 'stasera' : 'a pranzo') + '? es. pizza margherita (vuoto = quello del piano)'">
+                        <button class="btn-primary" :disabled="busy" @click="mensa">{{ busy ? '…' : 'Proponi' }}</button>
+                    </div>
+                    <div v-if="mensaRes" class="sim-advice">
+                        <div class="sim-hint">
+                            <template v-if="mensaRes.other">Con «{{ mensaRes.other.name }}» (~{{ mensaRes.other.nutrition.kcal }} kcal) {{ mensaRes.other.meal_type === 'cena' ? 'a cena' : 'a pranzo' }}, </template>
+                            per {{ slot === 'pranzo' ? 'il pranzo' : 'la cena' }} restano ~{{ mensaRes.room_kcal }} kcal<template v-if="mensaRes.aim_kcal > mensaRes.room_kcal">: troppo poco per un vassoio, miro a ~{{ mensaRes.aim_kcal }} e la giornata sfora un po</template>.
+                            Un vassoio per tipo di secondo, dai tuoi {{ mensaRes.trays }} registrati: prendi quello che trovi.
+                        </div>
+                        <div v-for="(o, i) in mensaRes.options" :key="i" class="recipe-option sim-option"
+                             :class="{ 'sim-picked': result === o }" @click="result = o">
+                            <strong>{{ o.category_label }}</strong>
+                            <span>{{ o.name }}</span>
+                            <span><b :class="o.fits ? 'sim-ok' : 'sim-warn'">~{{ o.meal.kcal }} kcal</b> · P {{ o.meal.protein_g }} g · C {{ o.meal.carbs_g }} g · G {{ o.meal.fat_g }} g<template v-if="o.dropped.length"> · <b>senza {{ o.dropped.join(' e ') }}</b></template><template v-if="o.times > 1"> · preso {{ o.times }} volte</template></span>
+                        </div>
+                        <div v-if="!mensaRes.options.length" class="sim-hint">Nessun vassoio stimabile nello storico.</div>
+                        <button v-if="mensaRes.other && mensaRes.other.ingredients" class="btn-secondary" :disabled="busy"
+                                @click="takeOther">📅 Metti «{{ mensaRes.other.name }}» {{ mensaRes.other.meal_type === 'cena' ? 'a cena' : 'a pranzo' }} come pasto libero</button>
                     </div>
                 </div>
 
@@ -131,7 +159,8 @@ const SimulateModal = defineComponent({
     `,
     data() {
         return { slot: this.mealType || 'cena', mode: 'eat', description: '', place: '', notes: '',
-                 busy: false, error: null, result: null, advice: null, saved: [] };
+                 busy: false, error: null, result: null, advice: null, saved: [],
+                 otherDesc: '', mensaRes: null };
     },
     computed: {
         scaleMax() {
@@ -173,7 +202,8 @@ const SimulateModal = defineComponent({
             if (this.slot === t) return;
             this.slot = t;
             // stesso pasto, altro slot: ricalcola il bilancio (senza LLM)
-            if (this.advice && this.place.trim()) { this.result = null; await this.suggest(); }
+            if (this.mode === 'mensa' && this.mensaRes) { this.result = null; await this.mensa(); }
+            else if (this.advice && this.place.trim()) { this.result = null; await this.suggest(); }
             else if (this.result) await this.recompute();
         },
         async simulateText() {
@@ -204,6 +234,32 @@ const SimulateModal = defineComponent({
             this.result = null;
             const r = await this.post('/simulate/suggest', { place, notes: this.notes.trim() });
             if (r) this.advice = r;
+        },
+        async mensa() {
+            this.result = null;
+            const r = await this.post('/simulate/mensa', { other_description: this.otherDesc.trim() || null });
+            if (r) this.mensaRes = r;
+        },
+        async takeOther() {
+            // l altro pasto deciso (es. la pizza) nel piano come pasto libero, con la stima già fatta
+            const o = this.mensaRes.other;
+            this.busy = true;
+            this.error = null;
+            try {
+                const p = new URLSearchParams({ profile_id: this.profileId, meal_type: o.meal_type, target_date: this.mealDate });
+                const resp = await window.apiFetch('/simulate/choose?' + p, {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name: o.name, as_free_meal: true, profile_id_B: this.profileBId,
+                                           ingredients: o.ingredients.filter(i => i.name && i.grams > 0) }) });
+                const j = await resp.json().catch(() => ({}));
+                if (!resp.ok) throw new Error(j.detail || 'Errore');
+                this.toast.add('"' + o.name + '" messo a ' + o.meal_type + ' come pasto libero', 'success');
+                this.$emit('saved');
+            } catch (e) {
+                this.error = 'Errore nel salvataggio: ' + e.message;
+            } finally {
+                this.busy = false;
+            }
         },
         async take(asFree) {
             // nel piano ma NON consumato: si segna mangiato dopo, come gli altri pasti
