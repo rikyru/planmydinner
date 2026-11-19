@@ -60,7 +60,7 @@ def simulate_day(day: Dict[str, Any], targets: Dict[str, Any], meal_type: str,
         "meal": _r(meal), "meal_type": meal_type, "fixed_kcal": round(fixed),
         "target": _r(t) if t else None,
         "other": {"meal_type": other_mt, "planned": other is not None,
-                  "consumed": other_eaten,
+                  "consumed": other_eaten, "decided": other_locked and not other_eaten,
                   "kcal": round(other_kcal) if other_kcal is not None else None},
     }
     if "kcal" not in t:

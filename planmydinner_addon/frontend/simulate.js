@@ -121,7 +121,7 @@ const SimulateModal = defineComponent({
                     <div v-if="result.target" class="sim-legend">
                         <span><i class="sim-fixed"></i>fissi {{ result.fixed_kcal }}</span>
                         <span><i class="sim-meal"></i>{{ slot }} {{ result.meal.kcal }}</span>
-                        <span v-if="result.other.day_kcal"><i class="sim-other" :class="{ 'sim-assumed': result.other.assumed }"></i>{{ result.other.meal_type }} {{ result.other.day_kcal }}{{ result.other.consumed ? '' : result.other.assumed ? ' (stima: quota)' : ' (previsto)' }}</span>
+                        <span v-if="result.other.day_kcal"><i class="sim-other" :class="{ 'sim-assumed': result.other.assumed }"></i>{{ result.other.meal_type }} {{ result.other.day_kcal }}{{ result.other.consumed ? '' : result.other.decided ? ' (deciso)' : result.other.assumed ? ' (stima: quota)' : ' (previsto)' }}</span>
                         <span>| obiettivo {{ result.target.kcal }}</span>
                     </div>
                     <table v-if="result.macros && result.macros.length" class="sim-macro-table">
