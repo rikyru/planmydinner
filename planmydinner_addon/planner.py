@@ -2956,9 +2956,11 @@ class PlannerEngine:
 
     @staticmethod
     def _pantry_matches(rec_name: str, pantry_items) -> bool:
-        """Token-overlap match: ingredient name matches pantry item if any word overlaps."""
-        tokens = set(rec_name.lower().split())
-        return any(tokens & set(pi.name.lower().split()) for pi in pantry_items)
+        """L'ingrediente è uno dei prodotti in dispensa? Confronta il cibo principale
+        (pantry_use.same_food), non più una parola qualsiasi: con "di" in comune il
+        polpo risultava in ogni ricetta col "petto di pollo"."""
+        from .pantry_use import same_food
+        return any(same_food(rec_name, pi.name) for pi in pantry_items)
 
     # Recognised short method names. Anything else is treated as free-text and parsed.
     _KNOWN_METHODS = {"tegame", "forno", "vapore", "griglia", "crudo", "bollitura", "microonde"}

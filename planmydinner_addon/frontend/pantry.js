@@ -40,7 +40,11 @@ const Pantry = defineComponent({
                                 <tr v-for="(it, i) in lidl.items" :key="i" :style="it.include ? '' : 'opacity:.45'">
                                     <td><input type="checkbox" v-model="it.include"></td>
                                     <td style="min-width:220px;"><input v-model="it.name" style="width:100%;">
-                                        <div class="hint" style="font-size:11px;">{{ (it.synonyms || [])[0] }} · {{ it.category }}</div></td>
+                                        <div class="hint" style="font-size:11px;">{{ (it.synonyms || [])[0] }} · {{ it.category }}</div>
+                                        <div v-if="(it.eaten_after || []).length" class="hint" style="font-size:11px;color:#b5651d;">
+                                            🍽 {{ it.eaten_all ? 'già finito' : 'usati ~' + it.eaten_grams + ' g' }}:
+                                            {{ it.eaten_after.map(m => m.date.slice(8,10) + '/' + m.date.slice(5,7) + ' ' + m.meal_type.replace('_', ' ') + ' (' + m.name + ')').join(', ') }}
+                                        </div></td>
                                     <td><input v-model.number="it.count" type="number" min="1" style="width:55px;"></td>
                                     <td style="white-space:nowrap;"><input v-model.number="it.quantity" type="number" min="0" style="width:70px;">
                                         <input v-model="it.unit" style="width:42px;"></td>
@@ -73,8 +77,14 @@ const Pantry = defineComponent({
 
             <!-- In scadenza → ricette che li consumano -->
             <div v-if="expiringInfo.expiring.length" class="card" style="margin-top:12px;border:1px solid #d6282855;">
-                <strong>⏰ In scadenza</strong>
-                <span class="hint"> — {{ expiringInfo.expiring.map(e => e.name + (e.days < 0 ? ' (scaduto)' : ' (' + e.days + 'g)')).join(', ') }}</span>
+                <template v-if="expiringSoon.length">
+                    <strong>⏰ In scadenza</strong>
+                    <span class="hint"> — {{ expiringSoon.map(e => e.name + (e.count > 1 ? ' ×' + e.count : '') + (e.days === 0 ? ' (oggi)' : ' (' + e.days + 'g)')).join(', ') }}</span>
+                </template>
+                <div v-if="expiredItems.length" :style="expiringSoon.length ? 'margin-top:4px' : ''">
+                    <strong style="color:#d62828;">🗑 Scaduti</strong>
+                    <span class="hint"> — controlla prima di usarli o eliminali: {{ expiredItems.map(e => e.name + (e.count > 1 ? ' ×' + e.count : '')).join(', ') }}</span>
+                </div>
                 <div v-if="expiringInfo.recipes.length" style="margin-top:8px;">
                     <div class="hint" style="margin-bottom:4px;">Ricette che li usano:</div>
                     <div v-for="r in expiringInfo.recipes" :key="r.id" style="margin-bottom:5px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
@@ -83,7 +93,7 @@ const Pantry = defineComponent({
                         <button class="btn-sm" :disabled="assigning" @click="assignToday(r.id, 'cena')">+ Cena oggi</button>
                     </div>
                 </div>
-                <div v-else class="hint" style="margin-top:6px;">Nessuna ricetta in catalogo usa questi prodotti.</div>
+                <div v-else-if="expiringSoon.length" class="hint" style="margin-top:6px;">Nessuna ricetta in catalogo usa questi prodotti.</div>
             </div>
 
             <!-- Scanner fotocamera -->
@@ -139,6 +149,17 @@ const Pantry = defineComponent({
             <div class="modal-overlay" v-if="showModal" @click.self="closeModal">
                 <div class="modal">
                     <h3>{{ editedItem.id ? 'Modifica prodotto' : 'Aggiungi prodotto' }}</h3>
+                    <div v-if="(editedItem._matches || []).length" class="card" style="margin-bottom:12px;border:1px solid #2a9d8f66;padding:10px;">
+                        <strong>🏷 È già in dispensa con valori stimati?</strong>
+                        <div class="hint" style="margin:4px 0 8px;">Se è lo stesso prodotto, gli do i valori dell'etichetta invece di aggiungerne uno nuovo
+                            (e me lo ricordo per i prossimi scontrini).</div>
+                        <select v-model="editedItem._matchId" style="width:100%;">
+                            <option v-for="m in editedItem._matches" :key="m.id" :value="m.id">
+                                {{ m.name }}{{ m.count > 1 ? ' ×' + m.count : '' }}{{ m.nutrition ? ' — stima ' + Math.round(m.nutrition.kcal) + ' kcal' : ' — senza valori' }}
+                            </option>
+                        </select>
+                        <button class="btn-primary btn-sm" style="margin-top:8px;" @click="applyLabelValues">Sì, aggiorna i valori</button>
+                    </div>
                     <div v-if="editedItem.nutrition" class="hint" style="margin-bottom:8px;">
                         🧾 {{ Math.round(editedItem.nutrition.kcal||0) }} kcal · P {{ editedItem.nutrition.protein_g }} · C {{ editedItem.nutrition.carbs_g }} · G {{ editedItem.nutrition.fat_g }} <span>(per 100 g)</span>
                     </div>
@@ -181,6 +202,8 @@ const Pantry = defineComponent({
         };
     },
     computed: {
+        expiringSoon() { return this.expiringInfo.expiring.filter(e => e.days >= 0); },
+        expiredItems() { return this.expiringInfo.expiring.filter(e => e.days < 0); },
         sortedItems() {
             // in scadenza prima
             return [...this.items].sort((a, b) =>
@@ -248,6 +271,21 @@ const Pantry = defineComponent({
             this.showModal = true;
         },
         closeModal() { this.showModal = false; },
+        async applyLabelValues() {
+            const e = this.editedItem;
+            try {
+                const r = await window.apiFetch(`/pantry/items/${e._matchId}/label-values`, {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ nutrition: e.nutrition, barcode: e.barcode, name: e.name }) });
+                const d = await r.json();
+                if (!r.ok) throw new Error(d.detail || 'errore');
+                this.toast && this.toast.add(`Valori dell'etichetta su ${d.updated} confezioni ✓`, 'success');
+                this.closeModal();
+                this.fetchItems();
+            } catch (err) {
+                this.toast && this.toast.add('Errore: ' + err.message, 'error');
+            }
+        },
         saveItem() {
             const method = this.editedItem.id ? 'PUT' : 'POST';
             const url = this.editedItem.id ? `/pantry/items/${this.editedItem.id}` : '/pantry/items';
@@ -296,8 +334,10 @@ const Pantry = defineComponent({
                 Object.assign(this.lidl, {
                     open: true, needToken: false, ticket: d.ticket, pending: d.pending || [],
                     known: d.known_products || [],
+                    // finito dopo l'acquisto (scontrino di qualche giorno fa): senza spunta
                     items: (d.items || []).map(i => ({
-                        ...i, include: true, choice: i.match == null ? -1 : i.match })),
+                        ...i, include: !i.eaten_all,
+                        choice: i.match == null ? -1 : i.match })),
                 });
             } catch (e) {
                 this.toast && this.toast.add('Lidl: ' + e.message, 'error');
@@ -456,10 +496,12 @@ const Pantry = defineComponent({
                     this.editedItem = { unit: 'g', barcode: code };
                 } else {
                     const pack = this._parsePack(p.quantity_text);
+                    const matches = p.estimated_matches || [];
                     this.editedItem = {
                         name: [p.name, p.brands].filter(Boolean).join(' · ') || ('Prodotto ' + code),
                         quantity: pack.quantity, unit: pack.unit,
                         barcode: code, nutrition: p.nutrition || null,
+                        _matches: matches, _matchId: matches.length ? matches[0].id : null,
                     };
                     this.toast && this.toast.add('Trovato: ' + (p.name || code), 'success');
                 }

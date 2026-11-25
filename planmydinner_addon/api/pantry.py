@@ -10,7 +10,7 @@ from .. import lidl, schemas
 from ..barcode import lookup_barcode
 from ..database import get_db, PantryItem, AppSettings, LidlImport, ReceiptProductLink
 from ..known_products import collect_known_products, label_values
-from ..pantry_use import norm_name
+from ..pantry_use import norm_name, same_food
 from pydantic import BaseModel as _BaseModel
 
 _LOG = logging.getLogger(__name__)
@@ -42,20 +42,43 @@ def expiring_recipes(days: int = 5, limit: int = 6, db: Session = Depends(get_db
     if not expiring:
         return {"expiring": [], "recipes": []}
     eng = PlannerEngine(db)
-    items_only = [it for it, _ in expiring]
+    # Le ricette si propongono solo per ciò che si può ancora mangiare: uno
+    # scaduto (pesce, carne) va controllato, non cucinato. Più scade presto,
+    # più conta: le zucchine fra 1 giorno prima dello yogurt fra 5.
+    usable = [(it, n) for it, n in expiring if n >= 0]
     scored = []
     for r in eng._get_all_recipes():
         ings = r.content.components if r.is_composed_dish else r.content
-        uses = [it.name for it in items_only
-                if any(eng._pantry_matches(getattr(i, "name", "") or "", [it]) for i in ings)]
+        names = [getattr(i, "name", "") or "" for i in ings]
+        uses, urgency, seen = [], 0.0, set()
+        for it, n in usable:
+            key = norm_name(it.name)
+            if key in seen or not any(same_food(nm, it.name) for nm in names):
+                continue
+            seen.add(key)        # 3 yogurt uguali = un prodotto solo
+            uses.append(it.name)
+            urgency += 1.0 / (1 + n)
         if uses:
-            scored.append({"id": r.id, "name": r.name, "uses": uses, "n": len(uses)})
-    scored.sort(key=lambda x: -x["n"])
+            scored.append({"id": r.id, "name": r.name, "uses": uses, "n": len(uses),
+                           "urgency": round(urgency, 3)})
+    scored.sort(key=lambda x: (-x["urgency"], -x["n"], x["name"]))
     return {
-        "expiring": [{"name": it.name, "expiration_date": it.expiration_date, "days": n}
-                     for it, n in sorted(expiring, key=lambda x: x[1])],
+        "expiring": _one_per_product(expiring),
         "recipes": scored[:limit],
     }
+
+
+def _one_per_product(expiring) -> list:
+    """Una voce per prodotto (la confezione che scade prima), con quante sono."""
+    out, index = [], {}
+    for it, n in sorted(expiring, key=lambda x: x[1]):
+        key = norm_name(it.name)
+        if key in index:
+            out[index[key]]["count"] += 1
+            continue
+        index[key] = len(out)
+        out.append({"name": it.name, "expiration_date": it.expiration_date, "days": n, "count": 1})
+    return out
 
 
 @router.get("/low-stock", response_model=List[schemas.PantryItem])
@@ -67,14 +90,73 @@ def low_stock_items(db: Session = Depends(get_db)):
 
 
 @router.get("/barcode/{code}")
-def pantry_barcode_lookup(code: str):
+def pantry_barcode_lookup(code: str, db: Session = Depends(get_db)):
     """Cerca un prodotto da codice a barre (Open Food Facts): nome, marca,
     quantità confezione e valori nutrizionali per 100 g, per pre-compilare
     l'aggiunta in dispensa (stile Yuka)."""
     res = lookup_barcode(code)
     if res is None:
         raise HTTPException(status_code=502, detail="Servizio barcode non raggiungibile.")
+    if res.get("found") and label_values(res.get("nutrition")):
+        res["estimated_matches"] = _estimated_matches(db, res.get("name") or "")
     return res
+
+
+def _estimated_matches(db: Session, product_name: str) -> list:
+    """Prodotti in dispensa dello stesso cibo, senza barcode e con valori solo
+    stimati (o nessuno): la scansione può dar loro quelli dell'etichetta.
+    Una voce per nome, con quante confezioni sono."""
+    out, index = [], {}
+    for p in db.query(PantryItem).filter(PantryItem.barcode.is_(None)).all():
+        source = (p.nutrition or {}).get("source") if isinstance(p.nutrition, dict) else None
+        if (p.nutrition and source != "stima") or not same_food(product_name, p.name):
+            continue
+        key = norm_name(p.name)
+        if key in index:
+            out[index[key]]["count"] += 1
+            continue
+        index[key] = len(out)
+        out.append({"id": p.id, "name": p.name, "count": 1, "nutrition": p.nutrition})
+    return out
+
+
+class LabelValuesBody(_BaseModel):
+    nutrition: dict
+    barcode: Optional[str] = None
+    name: Optional[str] = None      # nome del prodotto scansionato (facoltativo)
+
+
+@router.post("/items/{item_id}/label-values")
+def set_label_values(item_id: str, body: LabelValuesBody, db: Session = Depends(get_db)):
+    """Valori da etichetta (barcode) su un prodotto importato con la stima: si
+    aggiornano tutte le sue confezioni senza barcode e, se veniva da uno
+    scontrino, si ricorda l'abbinamento per gli scontrini futuri."""
+    item = db.query(PantryItem).filter(PantryItem.id == item_id).first()
+    if item is None:
+        raise HTTPException(status_code=404, detail="Pantry item not found")
+    values = label_values(body.nutrition)
+    if not values:
+        raise HTTPException(status_code=422, detail="Valori nutrizionali incompleti.")
+    key = norm_name(item.name)
+    receipt_names = set()
+    rows = [p for p in db.query(PantryItem).filter(PantryItem.barcode.is_(None)).all()
+            if norm_name(p.name) == key]
+    new_name = (body.name or "").strip() or item.name
+    for p in rows:
+        receipt_names.update(s for s in (p.synonyms or []) if s and s == s.upper())
+        p.nutrition = dict(values, source="etichetta")
+        p.barcode = body.barcode
+        p.name = new_name
+    now = datetime.now().isoformat(timespec="seconds")
+    for rn in receipt_names:     # dicitura dello scontrino (maiuscola, es. YOMO DELT.YOG.GR.CAF)
+        link = db.query(ReceiptProductLink).filter(ReceiptProductLink.receipt_name == rn).first()
+        if link is None:
+            link = ReceiptProductLink(receipt_name=rn)
+            db.add(link)
+        link.product_name, link.barcode, link.nutrition, link.updated_at = \
+            new_name, body.barcode, values, now
+    db.commit()
+    return {"updated": len(rows), "remembered": sorted(receipt_names), "name": new_name}
 
 @router.post("/items", response_model=schemas.PantryItem)
 def create_pantry_item(item: schemas.PantryItemCreate, db: Session = Depends(get_db)):
@@ -308,6 +390,15 @@ def sync_lidl_preview(request: Request, ticket_id: Optional[str] = None,
             "message": "L'AI non ha risposto: riprova (lo scontrino non è stato importato)."})
     links = {l.receipt_name: l for l in db.query(ReceiptProductLink).all()}
     items = [_with_label_values(it, known, links) for it in items]
+    meals = _meals_since(db, receipt_date)
+    for it in items:
+        it["eaten_after"], it["eaten_grams"] = _eaten_in(meals, it)
+        bought = (it.get("quantity") or 0) * (it.get("count") or 1)
+        # Già mangiato almeno metà dopo l'acquisto: lo si dà per finito (il resto è
+        # andato nello stesso piatto, spesso registrato per un profilo solo, o è da
+        # buttare). Sotto, resta spuntato con la nota dei grammi usati.
+        it["eaten_all"] = bool(it["eaten_after"]) and (
+            it.get("unit") not in ("g", "ml") or it["eaten_grams"] >= 0.5 * bought)
     return {
         "ticket": dict(target, date=receipt_date, already_imported=target["id"] in seen),
         "raw_items": raw_items,
@@ -315,6 +406,66 @@ def sync_lidl_preview(request: Request, ticket_id: Optional[str] = None,
         "known_products": known,
         "pending": [t for t in pending if t["id"] != target["id"]],
     }
+
+
+def _meals_since(db: Session, since: str) -> list:
+    """Pasti registrati dal giorno dello scontrino (compreso) a oggi:
+    [{date, meal_type, name, ingredients}]. Servono a capire se qualcosa della
+    spesa è già stato mangiato prima di importarla (i pasti del piano non
+    scalano la dispensa, quindi l'import la gonfierebbe)."""
+    from ..scaling import _recipe_content
+    from ..nutrition import _content_ingredients
+    from ..database import Recipe, CandidateRecipe, ConsumedEntry
+    if not since or since >= date.today().isoformat():
+        return []
+    names = {}
+
+    def recipe_name(rid):
+        if rid not in names:
+            r = db.query(Recipe).filter(Recipe.id == rid).first() or \
+                db.query(CandidateRecipe).filter(CandidateRecipe.id == rid).first()
+            names[rid] = getattr(r, "name", None)
+        return names[rid]
+
+    def grams(ing: dict, profile_id: str) -> float:
+        q = (ing.get("quantities") or {})
+        q = q.get(profile_id) or q.get("persona_a") or q.get("persona_b") or {}
+        try:
+            return float(q.get("grams_equiv") or q.get("qty") or ing.get("qty") or ing.get("grams") or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    out = []
+    rows = db.query(ConsumedEntry).filter(ConsumedEntry.date >= since,
+                                          ConsumedEntry.type != "skipped").all()
+    for e in sorted(rows, key=lambda e: (e.date, e.meal_type or "")):
+        details = e.override_details if isinstance(e.override_details, dict) else {}
+        ings = [i for i in details.get("ingredients") or [] if isinstance(i, dict)]
+        name = details.get("free_text_name")
+        if not ings and e.consumed_recipe_id:
+            ings = _content_ingredients(_recipe_content(db, e.consumed_recipe_id))
+            name = recipe_name(e.consumed_recipe_id)
+        ings = [(i.get("name"), grams(i, e.profile_id)) for i in ings if i.get("name")]
+        if ings:             # una riga per profilo: i grammi si sommano
+            out.append({"date": e.date, "meal_type": e.meal_type, "name": name or e.meal_type,
+                        "ingredients": ings})
+    return out
+
+
+def _eaten_in(meals: list, item: dict):
+    """(pasti in cui compare il prodotto, grammi mangiati in tutto)."""
+    names = {item.get("name"), item.get("ai_name")} - {None, ""}
+    found, seen, total = [], set(), 0.0
+    for m in meals:
+        used = [gr for ing, gr in m["ingredients"] if any(same_food(ing, n) for n in names)]
+        if not used:
+            continue
+        total += sum(used)
+        key = (m["date"], m["meal_type"], m["name"])
+        if key not in seen:          # stesso pasto per i due profili: una voce
+            seen.add(key)
+            found.append({"date": m["date"], "meal_type": m["meal_type"], "name": m["name"]})
+    return found, round(total)
 
 
 def _with_label_values(item: dict, known: list, links: dict) -> dict:
