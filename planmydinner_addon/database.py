@@ -173,6 +173,22 @@ class AppSettings(Base):
     llm_temperature = Column(Float, nullable=True)
     llm_custom_rules = Column(Text, nullable=True)
     llm_generation_mode = Column(String, nullable=True, default="off")  # "off" | "per_slot" | "full_week"
+    # Lidl Plus ruota il refresh token a ogni uso: quello buono è sempre l'ultimo
+    # salvato qui (LIDL_REFRESH_TOKEN dall'ambiente serve solo la prima volta)
+    lidl_refresh_token = Column(Text, nullable=True)
+
+
+class LidlImport(Base):
+    """Scontrino Lidl Plus già passato dalla dispensa (importato o saltato):
+    la sincronizzazione non lo ripropone."""
+    __tablename__ = "lidl_imports"
+
+    ticket_id = Column(String, primary_key=True)
+    receipt_date = Column(String, nullable=True)
+    total_amount = Column(Float, nullable=True)
+    imported_at = Column(String, nullable=True)
+    items_count = Column(Integer, nullable=True)
+    skipped = Column(Boolean, default=False)
 
 
 class ShoppingCheck(Base):
@@ -239,6 +255,7 @@ def create_db_and_tables():
             ("pantry_items", "barcode", "TEXT"),
             ("pantry_items", "nutrition", "JSON"),
             ("pantry_items", "min_quantity", "FLOAT"),
+            ("app_settings", "lidl_refresh_token", "TEXT"),
         ]:
             try:
                 conn.execute(__import__("sqlalchemy").text(

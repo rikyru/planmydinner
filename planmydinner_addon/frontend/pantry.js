@@ -9,6 +9,54 @@ const Pantry = defineComponent({
                 <h2 style="margin:0">Dispensa</h2>
                 <button class="btn-primary" @click="startScan">📷 Scansiona barcode</button>
                 <button class="btn-secondary" @click="addItem">+ Aggiungi a mano</button>
+                <button class="btn-secondary" @click="syncLidl()" :disabled="lidl.loading">
+                    {{ lidl.loading ? '⏳ Leggo lo scontrino…' : '🧾 Sincronizza Lidl' }}
+                </button>
+            </div>
+
+            <!-- Scontrino Lidl Plus: rivedi e importa -->
+            <div v-if="lidl.open" class="modal-overlay" @click.self="lidl.open = false">
+                <div class="modal" style="width:min(800px, 96vw);">
+                    <template v-if="lidl.needToken">
+                        <h3>Collega Lidl Plus</h3>
+                        <p class="hint">{{ lidl.error }}</p>
+                        <p class="hint">Sul PC lancia <code>manual_auth.py</code>, fai il login e incolla qui il
+                            <code>LIDL_REFRESH_TOKEN</code> che finisce nel file <code>.env</code>.</p>
+                        <input v-model="lidl.token" placeholder="Refresh token" style="width:100%;">
+                        <div style="display:flex;gap:10px;margin-top:12px;">
+                            <button class="btn-primary" :disabled="!lidl.token.trim()" @click="saveLidlToken">Collega e sincronizza</button>
+                            <button class="btn-secondary" @click="lidl.open = false">Annulla</button>
+                        </div>
+                    </template>
+                    <template v-else>
+                        <h3>🧾 Scontrino Lidl del {{ lidl.ticket.date }}
+                            <span class="hint" v-if="lidl.ticket.total != null">· € {{ lidl.ticket.total }}</span></h3>
+                        <p class="hint">Controlla nomi, confezioni e scadenze: in dispensa va una riga per confezione.
+                            <span v-if="lidl.pending.length"> Dopo questo restano {{ lidl.pending.length }} scontrini più vecchi da vedere
+                                — <a href="#" @click.prevent="skipOlderLidl">ignorali tutti</a> (spesa già consumata).</span></p>
+                        <table class="recipe-table">
+                            <thead><tr><th></th><th>Prodotto</th><th>Conf.</th><th>Ciascuna</th><th>Scadenza</th></tr></thead>
+                            <tbody>
+                                <tr v-for="(it, i) in lidl.items" :key="i" :style="it.include ? '' : 'opacity:.45'">
+                                    <td><input type="checkbox" v-model="it.include"></td>
+                                    <td style="min-width:220px;"><input v-model="it.name" style="width:100%;">
+                                        <div class="hint" style="font-size:11px;">{{ (it.synonyms || [])[0] }} · {{ it.category }}</div></td>
+                                    <td><input v-model.number="it.count" type="number" min="1" style="width:55px;"></td>
+                                    <td style="white-space:nowrap;"><input v-model.number="it.quantity" type="number" min="0" style="width:70px;">
+                                        <input v-model="it.unit" style="width:42px;"></td>
+                                    <td><input v-model="it.expiration_date" type="date"></td>
+                                </tr>
+                            </tbody>
+                        </table>
+                        <div style="display:flex;gap:10px;margin-top:14px;flex-wrap:wrap;">
+                            <button class="btn-primary" :disabled="lidl.saving || !lidl.items.some(i => i.include)" @click="confirmLidl">
+                                Aggiungi {{ lidl.items.filter(i => i.include).reduce((s, i) => s + (Number(i.count) || 1), 0) }} confezioni</button>
+                            <button class="btn-secondary" :disabled="lidl.saving" @click="skipLidl"
+                                    title="Non lo riproporrà più (es. spesa vecchia, già consumata)">Salta scontrino</button>
+                            <button class="btn-secondary" @click="lidl.open = false">Chiudi</button>
+                        </div>
+                    </template>
+                </div>
             </div>
 
             <!-- In scadenza → ricette che li consumano -->
@@ -116,6 +164,8 @@ const Pantry = defineComponent({
             _detectTimer: null,
             _lastCode: null,
             _lastAt: 0,
+            lidl: { open: false, loading: false, saving: false, needToken: false, error: '',
+                    token: '', ticket: {}, items: [], pending: [] },
         };
     },
     computed: {
@@ -210,6 +260,92 @@ const Pantry = defineComponent({
         },
         deleteItem(itemId) {
             window.apiFetch(`/pantry/items/${itemId}`, { method: 'DELETE' }).then(() => this.fetchItems());
+        },
+        // --- Scontrini Lidl Plus ---
+        async syncLidl() {
+            this.lidl.loading = true;
+            try {
+                const r = await window.apiFetch('/pantry/sync-lidl', { method: 'POST' });
+                const d = await r.json();
+                if (!r.ok) {
+                    const det = d.detail || {};
+                    const msg = det.message || det || 'errore';
+                    if (det.code === 'lidl_not_configured' || det.code === 'lidl_auth') {
+                        Object.assign(this.lidl, { open: true, needToken: true, error: msg, token: '' });
+                        return;
+                    }
+                    throw new Error(msg);
+                }
+                if (!d.ticket) {
+                    this.toast && this.toast.add('Nessuno scontrino Lidl nuovo.', 'info');
+                    this.lidl.open = false;
+                    return;
+                }
+                Object.assign(this.lidl, {
+                    open: true, needToken: false, ticket: d.ticket, pending: d.pending || [],
+                    items: (d.items || []).map(i => ({ ...i, include: true })),
+                });
+            } catch (e) {
+                this.toast && this.toast.add('Lidl: ' + e.message, 'error');
+            } finally {
+                this.lidl.loading = false;
+            }
+        },
+        async saveLidlToken() {
+            const r = await window.apiFetch('/pantry/lidl/token', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ refresh_token: this.lidl.token.trim() }) });
+            if (!r.ok) { this.toast && this.toast.add('Token non salvato', 'error'); return; }
+            this.lidl.open = false;
+            this.syncLidl();
+        },
+        _lidlTicketBody() {
+            return { ticket_id: this.lidl.ticket.id, receipt_date: this.lidl.ticket.date,
+                     total_amount: this.lidl.ticket.total };
+        },
+        async _lidlDone(url, body, okMsg) {
+            this.lidl.saving = true;
+            try {
+                const r = await window.apiFetch(url, {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+                const d = await r.json();
+                if (!r.ok) throw new Error((d.detail && d.detail.message) || d.detail || 'errore');
+                this.toast && this.toast.add(okMsg(d), 'success');
+                this.fetchItems();
+                const more = this.lidl.pending.length;
+                this.lidl.open = false;
+                if (more) this.syncLidl();          // passa al prossimo scontrino
+            } catch (e) {
+                this.toast && this.toast.add('Lidl: ' + e.message, 'error');
+            } finally {
+                this.lidl.saving = false;
+            }
+        },
+        confirmLidl() {
+            const items = this.lidl.items.filter(i => i.include && i.name).map(i => ({
+                name: i.name.trim(), quantity: Number(i.quantity) || 0, unit: i.unit || 'g',
+                category: i.category || null, expiration_date: i.expiration_date || null,
+                synonyms: i.synonyms || [], count: Math.max(1, Math.round(Number(i.count) || 1)),
+            }));
+            this._lidlDone('/pantry/sync-lidl/confirm', { ...this._lidlTicketBody(), items },
+                d => `Aggiunte ${d.created} confezioni in dispensa ✓`);
+        },
+        async skipOlderLidl() {
+            // Primo collegamento: decine di scontrini arretrati da non riproporre.
+            // Resta aperto quello corrente.
+            const failed = [];
+            for (const t of this.lidl.pending) {
+                const r = await window.apiFetch('/pantry/sync-lidl/skip', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ticket_id: t.id, receipt_date: t.date, total_amount: t.total }) });
+                if (!r.ok && r.status !== 409) failed.push(t);   // 409 = già segnato
+            }
+            const done = this.lidl.pending.length - failed.length;
+            this.lidl.pending = failed;
+            this.toast && this.toast.add(`Ignorati ${done} scontrini più vecchi`, 'success');
+        },
+        skipLidl() {
+            this._lidlDone('/pantry/sync-lidl/skip', this._lidlTicketBody(), () => 'Scontrino saltato');
         },
         // --- Barcode ---
         async startScan() {

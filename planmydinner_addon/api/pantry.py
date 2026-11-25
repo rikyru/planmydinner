@@ -1,12 +1,17 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional
+from datetime import date, datetime
+import logging
+import os
 import uuid
 
-from .. import schemas
+from .. import lidl, schemas
 from ..barcode import lookup_barcode
-from ..database import get_db, PantryItem
+from ..database import get_db, PantryItem, AppSettings, LidlImport
 from pydantic import BaseModel as _BaseModel
+
+_LOG = logging.getLogger(__name__)
 
 router = APIRouter(
     prefix="/pantry",
@@ -163,3 +168,182 @@ def bulk_upsert_pantry_items(items: List[schemas.PantryItemCreate], db: Session 
             created += 1
     db.commit()
     return {"created": created, "updated": updated, "total": created + updated}
+
+
+# ---------------------------------------------------------------------------
+# Scontrini digitali Lidl Plus -> dispensa
+#
+# 1. POST /pantry/sync-lidl          anteprima dell'ultimo scontrino non ancora
+#                                    importato (NON scrive in dispensa)
+# 2. POST /pantry/sync-lidl/confirm  salva le righe riviste dall'utente
+#    POST /pantry/sync-lidl/skip     oppure lo segna come visto senza importarlo
+# ---------------------------------------------------------------------------
+
+def _settings_row(db: Session) -> AppSettings:
+    row = db.query(AppSettings).filter(AppSettings.id == 1).first()
+    if row is None:
+        row = AppSettings(id=1)
+        db.add(row)
+        db.commit()
+    return row
+
+
+def _lidl_access_token(db: Session) -> str:
+    """Rinnova l'access token e salva SUBITO il refresh token ruotato: se lo
+    si perdesse (eccezione più avanti) il collegamento sarebbe da rifare."""
+    row = _settings_row(db)
+    refresh = row.lidl_refresh_token or os.getenv("LIDL_REFRESH_TOKEN")
+    if not refresh:
+        raise HTTPException(status_code=400, detail={
+            "code": "lidl_not_configured",
+            "message": "Lidl Plus non collegato: incolla il refresh token."})
+    try:
+        access, new_refresh = lidl.refresh_access_token(refresh)
+    except lidl.LidlAuthError as e:
+        raise HTTPException(status_code=401, detail={"code": "lidl_auth", "message": str(e)})
+    except lidl.LidlError as e:
+        raise HTTPException(status_code=502, detail={"code": "lidl_unreachable", "message": str(e)})
+    if new_refresh != row.lidl_refresh_token:
+        row.lidl_refresh_token = new_refresh
+        db.commit()
+    return access
+
+
+def _ticket_summary(t: dict) -> dict:
+    store = t.get("store") or {}
+    return {
+        "id": str(t.get("id")),
+        "date": str(t.get("date") or "")[:10],
+        "total": t.get("totalAmount"),
+        "store": store.get("name") if isinstance(store, dict) else None,
+    }
+
+
+class LidlTokenBody(_BaseModel):
+    refresh_token: str
+
+
+class LidlImportItem(schemas.PantryItemCreate):
+    count: int = 1
+
+
+class LidlConfirmBody(_BaseModel):
+    ticket_id: str
+    receipt_date: Optional[str] = None
+    total_amount: Optional[float] = None
+    items: List[LidlImportItem] = []
+
+
+class LidlSkipBody(_BaseModel):
+    ticket_id: str
+    receipt_date: Optional[str] = None
+    total_amount: Optional[float] = None
+
+
+@router.get("/lidl/status")
+def lidl_status(db: Session = Depends(get_db)):
+    row = _settings_row(db)
+    last = db.query(LidlImport).order_by(LidlImport.receipt_date.desc()).limit(5).all()
+    return {
+        "configured": bool(row.lidl_refresh_token or os.getenv("LIDL_REFRESH_TOKEN")),
+        "recent": [{"ticket_id": i.ticket_id, "date": i.receipt_date, "total": i.total_amount,
+                    "items": i.items_count, "skipped": bool(i.skipped)} for i in last],
+    }
+
+
+@router.post("/lidl/token")
+def lidl_set_token(body: LidlTokenBody, db: Session = Depends(get_db)):
+    """Collega (o ricollega) l'account: il token si ottiene dal PC con manual_auth.py."""
+    token = body.refresh_token.strip()
+    if not token:
+        raise HTTPException(status_code=422, detail="Token vuoto.")
+    _settings_row(db).lidl_refresh_token = token
+    db.commit()
+    return {"configured": True}
+
+
+@router.post("/sync-lidl")
+def sync_lidl_preview(request: Request, ticket_id: Optional[str] = None,
+                      db: Session = Depends(get_db)):
+    """Anteprima dello scontrino più recente non ancora importato né saltato
+    (o di `ticket_id`): articoli già normalizzati dall'LLM, da rivedere.
+    Non scrive in dispensa."""
+    access = _lidl_access_token(db)
+    try:
+        tickets = [_ticket_summary(t) for t in lidl.list_tickets(access)]
+    except lidl.LidlAuthError as e:
+        raise HTTPException(status_code=401, detail={"code": "lidl_auth", "message": str(e)})
+    except lidl.LidlError as e:
+        raise HTTPException(status_code=502, detail={"code": "lidl_unreachable", "message": str(e)})
+    seen = {i.ticket_id for i in db.query(LidlImport.ticket_id).all()}
+    pending = sorted([t for t in tickets if t["id"] not in seen],
+                     key=lambda t: t["date"], reverse=True)
+    if ticket_id:
+        target = next((t for t in tickets if t["id"] == ticket_id), None)
+        if target is None:
+            raise HTTPException(status_code=404, detail="Scontrino non trovato fra i recenti.")
+    elif not pending:
+        return {"ticket": None, "items": [], "raw_items": [], "pending": []}
+    else:
+        target = pending[0]
+
+    try:
+        detail = lidl.get_ticket(target["id"], access)
+    except lidl.LidlError as e:
+        raise HTTPException(status_code=502, detail={"code": "lidl_unreachable", "message": str(e)})
+    raw_items = lidl.extract_items(detail)
+    receipt_date = str(detail.get("date") or target["date"])[:10] or date.today().isoformat()
+
+    gw = getattr(request.app.state, "llm_gateway", None)
+    items = gw.normalize_lidl_receipt(raw_items, receipt_date) if gw else None
+    if items is None:
+        raise HTTPException(status_code=503, detail={
+            "code": "llm_unavailable",
+            "message": "L'AI non ha risposto: riprova (lo scontrino non è stato importato)."})
+    return {
+        "ticket": dict(target, date=receipt_date, already_imported=target["id"] in seen),
+        "raw_items": raw_items,
+        "items": items,
+        "pending": [t for t in pending if t["id"] != target["id"]],
+    }
+
+
+def _valid_iso(d: Optional[str]) -> Optional[str]:
+    try:
+        return date.fromisoformat(d[:10]).isoformat() if d else None
+    except ValueError:
+        return None
+
+
+def _mark_seen(db: Session, ticket_id: str, receipt_date, total, items_count: int, skipped: bool):
+    if db.query(LidlImport).filter(LidlImport.ticket_id == ticket_id).first():
+        raise HTTPException(status_code=409, detail="Scontrino già importato.")
+    db.add(LidlImport(ticket_id=ticket_id, receipt_date=_valid_iso(receipt_date),
+                      total_amount=total, items_count=items_count, skipped=skipped,
+                      imported_at=datetime.now().isoformat(timespec="seconds")))
+
+
+@router.post("/sync-lidl/confirm")
+def sync_lidl_confirm(body: LidlConfirmBody, db: Session = Depends(get_db)):
+    """Salva le righe riviste: una riga di dispensa per confezione (come col
+    barcode), così il consumo scala prima le confezioni aperte."""
+    _mark_seen(db, body.ticket_id, body.receipt_date, body.total_amount,
+               sum(max(1, it.count) for it in body.items), skipped=False)
+    created = 0
+    for it in body.items:
+        data = it.model_dump(exclude={"count"})
+        data["expiration_date"] = _valid_iso(data.get("expiration_date"))
+        for _ in range(max(1, min(it.count, 50))):
+            db.add(PantryItem(**data, id=str(uuid.uuid4())))
+            created += 1
+    db.commit()
+    _LOG.info("Lidl: scontrino %s importato, %d righe in dispensa", body.ticket_id, created)
+    return {"created": created, "ticket_id": body.ticket_id}
+
+
+@router.post("/sync-lidl/skip")
+def sync_lidl_skip(body: LidlSkipBody, db: Session = Depends(get_db)):
+    """Segna lo scontrino come visto senza importare nulla (es. spesa vecchia)."""
+    _mark_seen(db, body.ticket_id, body.receipt_date, body.total_amount, 0, skipped=True)
+    db.commit()
+    return {"skipped": body.ticket_id}

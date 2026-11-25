@@ -681,6 +681,123 @@ class LLMGateway:
             _LOGGER.error(f"Error during LLM text meal analysis: {e}")
             return None
 
+    LIDL_CATEGORIES = ("carboidrati", "proteine", "latticini", "verdure", "frutta", "grassi", "altro")
+
+    def normalize_lidl_receipt(self, raw_items: List[Dict[str, Any]], receipt_date: str,
+                               use_cache: bool = True) -> Optional[List[Dict[str, Any]]]:
+        """Articoli grezzi di uno scontrino Lidl (vedi lidl.extract_items) ->
+        prodotti per la dispensa, uno per riga di scontrino:
+        {name, quantity, unit, category, expiration_date, synonyms, count}.
+        I primi sei campi sono quelli di PantryItemCreate; `count` è il numero di
+        confezioni (la dispensa tiene una riga per confezione, come il barcode).
+        quantity/unit si riferiscono a UNA confezione. I non alimentari spariscono.
+        None se l'LLM non risponde: il chiamante non deve importare niente."""
+        if not raw_items:
+            return []
+        lines = []
+        for i, it in enumerate(raw_items):
+            extra = (f"pesato alla cassa: {it['weight_kg']:.3f} kg" if it.get("weight_kg")
+                     else f"pezzi: {int(it.get('quantity') or 1)}")
+            lines.append(f"{i}. {it['name']} ({extra}, prezzo unitario € {it.get('unit_price', 0):.2f})")
+        items_text = "\n".join(lines)
+        cache_key = self._cache_key("lidl_receipt", receipt_date, items_text)
+        if use_cache and cache_key in self._cache:
+            _LOGGER.info("LLM cache hit: normalize_lidl_receipt")
+            return self._cache[cache_key]
+        if not self._client:
+            _LOGGER.error("LLM client not initialized. Cannot normalize Lidl receipt.")
+            return None
+
+        task = f"""Sei un assistente nutrizionale per l'applicazione 'PlanMyDinner'.
+Devi convertire gli articoli grezzi di uno scontrino Lidl Italia in prodotti per la dispensa.
+
+DATA ACQUISTO: {receipt_date}
+
+REGOLE OBBLIGATORIE:
+1. NOME (name): decodifica le abbreviazioni in un nome italiano chiaro, senza marca
+   (es. 'MSC FIL.MERL.IN PORZ' -> 'Filetti di merluzzo', 'YOMO DELT.YOG.GR.MIR' -> 'Yogurt greco ai mirtilli').
+2. CATEGORIA (category): ESATTAMENTE una tra {list(self.LIDL_CATEGORIES)}.
+3. UNA CONFEZIONE (quantity, unit): quantity e unit descrivono UNA SOLA confezione.
+   - Peso o volume scritto nel nome (es. 'ZUCCHINE 750G'): quantity=750, unit="g".
+   - Altrimenti stima il formato tipico della confezione venduta da Lidl, in "g" o "ml"
+     (yogurt 150 g, mozzarella di bufala 125 g, bevanda vegetale 1000 ml, muesli 500 g,
+     filetti di pesce surgelati 400 g, bresaola carpaccio 80 g, tavoletta di cioccolato 100 g).
+   - Usa unit="pz" solo se non ha senso pesarlo (es. uova: quantity = numero di uova).
+   - Articolo pesato alla cassa: quantity = peso in grammi, count = 1.
+4. CONFEZIONI (count): il numero di pezzi indicato sullo scontrino.
+5. SCADENZA (expiration_date, 'YYYY-MM-DD') stimata dalla data di acquisto:
+   pesce e carne freschi +3 giorni; salumi in vaschetta +10; latticini freschi (mozzarella,
+   ricotta) +7; verdura e frutta fresca +7; yogurt +15; surgelati +180; bevande UHT +180;
+   pasta, riso, muesli, cioccolato, conserve +365.
+6. SINONIMI (synonyms): includi SEMPRE la dicitura originale dello scontrino.
+7. SOURCE (source): l'indice numerico della riga di partenza.
+8. Ignora i non alimentari (sacchetti, detersivi, casalinghi) e le righe di sconto.
+
+Rispondi SOLO con JSON:
+{{"pantry_items": [{{"source": 0, "name": "...", "quantity": 150, "unit": "g", "count": 2,
+  "category": "latticini", "expiration_date": "YYYY-MM-DD", "synonyms": ["VOCE SCONTRINO"]}}]}}"""
+        messages = [
+            {"role": "system", "content": task},
+            {"role": "user", "content": f"Articoli dello scontrino:\n{items_text}"},
+        ]
+        try:
+            if self.provider == "openai":
+                response = self._chat_create(model=self.model, messages=messages, temperature=0.1,
+                                             response_format={"type": "json_object"})
+                raw = response.choices[0].message.content
+            elif self.provider == "ollama":
+                response = self._client.chat(model=self.model, messages=messages, format="json")
+                raw = response["message"]["content"]
+            else:
+                _LOGGER.error(f"Unsupported LLM provider for Lidl receipt: {self.provider}")
+                return None
+            data = json.loads(raw)
+        except Exception as e:
+            _LOGGER.error(f"Error during LLM Lidl receipt normalization: {e}")
+            return None
+
+        out = []
+        for it in data.get("pantry_items") or []:
+            try:
+                name = str(it.get("name") or "").strip()
+                if not name:
+                    continue
+                src = raw_items[int(it["source"])] if str(it.get("source", "")).isdigit() \
+                    and int(it["source"]) < len(raw_items) else None
+                qty = max(0.0, float(it.get("quantity") or 0))
+                unit = str(it.get("unit") or "pz").strip().lower()
+                count = max(1, int(round(float(it.get("count") or 1))))
+                if src is not None:
+                    # i pezzi e il peso li dice lo scontrino, non l'LLM
+                    if src.get("weight_kg"):
+                        qty, unit, count = round(src["weight_kg"] * 1000), "g", 1
+                    else:
+                        count = max(1, int(round(src.get("quantity") or 1)))
+                if unit == "kg":
+                    qty, unit = qty * 1000, "g"
+                elif unit == "l":
+                    qty, unit = qty * 1000, "ml"
+                cat = str(it.get("category") or "altro").strip().lower()
+                synonyms = [str(s) for s in (it.get("synonyms") or []) if s]
+                if src is not None and src["name"] not in synonyms:
+                    synonyms.insert(0, src["name"])
+                out.append({
+                    "name": name,
+                    "quantity": qty or 1.0,
+                    "unit": unit if qty else "pz",
+                    "category": cat if cat in self.LIDL_CATEGORIES else "altro",
+                    "expiration_date": str(it.get("expiration_date") or "")[:10] or None,
+                    "synonyms": synonyms,
+                    "count": count,
+                })
+            except (KeyError, TypeError, ValueError):
+                continue
+        if use_cache and out:
+            self._cache[cache_key] = out
+            self._save_cache()
+        _LOGGER.info(f"Lidl receipt: {len(raw_items)} righe -> {len(out)} prodotti")
+        return out
+
     def estimate_nutrition(self, item_name: str) -> Optional[Dict[str, float]]:
         """
         Stima i valori nutrizionali per 100 g di un ingrediente:
