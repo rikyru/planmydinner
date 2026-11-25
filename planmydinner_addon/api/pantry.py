@@ -8,7 +8,9 @@ import uuid
 
 from .. import lidl, schemas
 from ..barcode import lookup_barcode
-from ..database import get_db, PantryItem, AppSettings, LidlImport
+from ..database import get_db, PantryItem, AppSettings, LidlImport, ReceiptProductLink
+from ..known_products import collect_known_products, label_values
+from ..pantry_use import norm_name
 from pydantic import BaseModel as _BaseModel
 
 _LOG = logging.getLogger(__name__)
@@ -225,6 +227,8 @@ class LidlTokenBody(_BaseModel):
 
 class LidlImportItem(schemas.PantryItemCreate):
     count: int = 1
+    receipt_name: Optional[str] = None   # dicitura grezza: chiave dell'abbinamento
+    linked: bool = False                 # valori da un prodotto scansionato: ricordarlo
 
 
 class LidlConfirmBody(_BaseModel):
@@ -294,18 +298,61 @@ def sync_lidl_preview(request: Request, ticket_id: Optional[str] = None,
     raw_items = lidl.extract_items(detail)
     receipt_date = str(detail.get("date") or target["date"])[:10] or date.today().isoformat()
 
+    known = collect_known_products(db)
     gw = getattr(request.app.state, "llm_gateway", None)
-    items = gw.normalize_lidl_receipt(raw_items, receipt_date) if gw else None
+    items = (gw.normalize_lidl_receipt(raw_items, receipt_date, [k["name"] for k in known])
+             if gw else None)
     if items is None:
         raise HTTPException(status_code=503, detail={
             "code": "llm_unavailable",
             "message": "L'AI non ha risposto: riprova (lo scontrino non è stato importato)."})
+    links = {l.receipt_name: l for l in db.query(ReceiptProductLink).all()}
+    items = [_with_label_values(it, known, links) for it in items]
     return {
         "ticket": dict(target, date=receipt_date, already_imported=target["id"] in seen),
         "raw_items": raw_items,
         "items": items,
+        "known_products": known,
         "pending": [t for t in pending if t["id"] != target["id"]],
     }
+
+
+def _with_label_values(item: dict, known: list, links: dict) -> dict:
+    """Valori per 100 g della riga, in ordine di affidabilità:
+    1. abbinamento già confermato dall'utente per questa dicitura di scontrino
+    2. prodotto scansionato che l'AI riconosce come lo stesso
+    3. stima dell'AI per quel prodotto (marca e linea comprese)
+    `match` = indice in `known` (o None); `ai_name` = nome proposto dall'AI,
+    per tornarci se nella finestra si sceglie la stima."""
+    item = dict(item)
+    item["ai_name"] = item["name"]
+    est = item.pop("estimated_nutrition", None)
+    item["ai_nutrition"] = dict(est, source="stima") if est else None
+    link = links.get(item.get("receipt_name") or "")
+    product = None
+    if link and label_values(link.nutrition):
+        product = {"name": link.product_name, "barcode": link.barcode,
+                   "nutrition": label_values(link.nutrition)}
+        item["match_from"] = "ricordato"
+    elif item.get("known_product") is not None:
+        product = known[item["known_product"]]
+        item["match_from"] = "ai"
+    item.pop("known_product", None)
+    if product:
+        norm = norm_name(product["name"])
+        item["match"] = next((i for i, k in enumerate(known) if norm_name(k["name"]) == norm), None)
+        if item["match"] is None:          # ricordato ma non più fra i noti: lo si aggiunge
+            known.append(product)
+            item["match"] = len(known) - 1
+        item["name"] = product["name"]
+        item["barcode"] = product.get("barcode")
+        item["nutrition"] = dict(product["nutrition"], source="etichetta")
+    else:
+        item["match"] = None
+        item["match_from"] = None
+        item["barcode"] = None
+        item["nutrition"] = item["ai_nutrition"]
+    return item
 
 
 def _valid_iso(d: Optional[str]) -> Optional[str]:
@@ -323,6 +370,24 @@ def _mark_seen(db: Session, ticket_id: str, receipt_date, total, items_count: in
                       imported_at=datetime.now().isoformat(timespec="seconds")))
 
 
+def _remember_link(db: Session, it: "LidlImportItem", now: str) -> None:
+    """Abbinamento confermato -> ricordato per gli scontrini futuri; se per una
+    dicitura già abbinata si è scelta la stima, l'abbinamento si dimentica."""
+    if not it.receipt_name:
+        return
+    link = db.query(ReceiptProductLink).filter(
+        ReceiptProductLink.receipt_name == it.receipt_name).first()
+    values = label_values(it.nutrition)
+    if it.linked and values:
+        if link is None:
+            link = ReceiptProductLink(receipt_name=it.receipt_name)
+            db.add(link)
+        link.product_name, link.barcode = it.name, it.barcode
+        link.nutrition, link.updated_at = values, now
+    elif link is not None:
+        db.delete(link)
+
+
 @router.post("/sync-lidl/confirm")
 def sync_lidl_confirm(body: LidlConfirmBody, db: Session = Depends(get_db)):
     """Salva le righe riviste: una riga di dispensa per confezione (come col
@@ -330,8 +395,10 @@ def sync_lidl_confirm(body: LidlConfirmBody, db: Session = Depends(get_db)):
     _mark_seen(db, body.ticket_id, body.receipt_date, body.total_amount,
                sum(max(1, it.count) for it in body.items), skipped=False)
     created = 0
+    now = datetime.now().isoformat(timespec="seconds")
     for it in body.items:
-        data = it.model_dump(exclude={"count"})
+        _remember_link(db, it, now)
+        data = it.model_dump(exclude={"count", "receipt_name", "linked"})
         data["expiration_date"] = _valid_iso(data.get("expiration_date"))
         for _ in range(max(1, min(it.count, 50))):
             db.add(PantryItem(**data, id=str(uuid.uuid4())))

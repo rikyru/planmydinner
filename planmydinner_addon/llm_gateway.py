@@ -684,23 +684,30 @@ class LLMGateway:
     LIDL_CATEGORIES = ("carboidrati", "proteine", "latticini", "verdure", "frutta", "grassi", "altro")
 
     def normalize_lidl_receipt(self, raw_items: List[Dict[str, Any]], receipt_date: str,
+                               known_products: Optional[List[str]] = None,
                                use_cache: bool = True) -> Optional[List[Dict[str, Any]]]:
         """Articoli grezzi di uno scontrino Lidl (vedi lidl.extract_items) ->
         prodotti per la dispensa, uno per riga di scontrino:
-        {name, quantity, unit, category, expiration_date, synonyms, count}.
+        {name, quantity, unit, category, expiration_date, synonyms, count,
+         receipt_name, known_product, estimated_nutrition}.
         I primi sei campi sono quelli di PantryItemCreate; `count` è il numero di
         confezioni (la dispensa tiene una riga per confezione, come il barcode).
         quantity/unit si riferiscono a UNA confezione. I non alimentari spariscono.
+        `known_products`: nomi di prodotti già scansionati; `known_product` è
+        l'indice di quello che corrisponde alla riga (stessa marca e gusto) o None.
+        `estimated_nutrition`: stima per 100 g di QUEL prodotto, o None.
         None se l'LLM non risponde: il chiamante non deve importare niente."""
         if not raw_items:
             return []
+        known_products = list(known_products or [])
         lines = []
         for i, it in enumerate(raw_items):
             extra = (f"pesato alla cassa: {it['weight_kg']:.3f} kg" if it.get("weight_kg")
                      else f"pezzi: {int(it.get('quantity') or 1)}")
             lines.append(f"{i}. {it['name']} ({extra}, prezzo unitario € {it.get('unit_price', 0):.2f})")
         items_text = "\n".join(lines)
-        cache_key = self._cache_key("lidl_receipt", receipt_date, items_text)
+        known_text = "\n".join(f"K{i}. {n}" for i, n in enumerate(known_products)) or "(nessuno)"
+        cache_key = self._cache_key("lidl_receipt_v2", receipt_date, items_text, known_text)
         if use_cache and cache_key in self._cache:
             _LOGGER.info("LLM cache hit: normalize_lidl_receipt")
             return self._cache[cache_key]
@@ -714,8 +721,9 @@ Devi convertire gli articoli grezzi di uno scontrino Lidl Italia in prodotti per
 DATA ACQUISTO: {receipt_date}
 
 REGOLE OBBLIGATORIE:
-1. NOME (name): decodifica le abbreviazioni in un nome italiano chiaro, senza marca
-   (es. 'MSC FIL.MERL.IN PORZ' -> 'Filetti di merluzzo', 'YOMO DELT.YOG.GR.MIR' -> 'Yogurt greco ai mirtilli').
+1. NOME (name): decodifica le abbreviazioni in un nome italiano chiaro. Tieni marca e
+   linea quando distinguono il prodotto (light, proteico, 0%...): 'YOMO DELT.YOG.GR.MIR' ->
+   'Yogurt greco Yomo Delta ai mirtilli'; 'MSC FIL.MERL.IN PORZ' -> 'Filetti di merluzzo'.
 2. CATEGORIA (category): ESATTAMENTE una tra {list(self.LIDL_CATEGORIES)}.
 3. UNA CONFEZIONE (quantity, unit): quantity e unit descrivono UNA SOLA confezione.
    - Peso o volume scritto nel nome (es. 'ZUCCHINE 750G'): quantity=750, unit="g".
@@ -732,13 +740,22 @@ REGOLE OBBLIGATORIE:
 6. SINONIMI (synonyms): includi SEMPRE la dicitura originale dello scontrino.
 7. SOURCE (source): l'indice numerico della riga di partenza.
 8. Ignora i non alimentari (sacchetti, detersivi, casalinghi) e le righe di sconto.
+9. PRODOTTO NOTO (known): l'utente ha già scansionato i prodotti dell'elenco K. Se la riga
+   è LO STESSO prodotto (stessa marca, stessa linea, stesso gusto) metti il suo indice
+   numerico (K3 -> 3), altrimenti null. Nel dubbio null: un gusto diverso NON è lo stesso
+   prodotto ('Delta ai mirtilli' non è 'Delta bianco').
+10. VALORI PER 100 g (per_100g): stima i valori nutrizionali di QUEL prodotto come da
+   etichetta (kcal, protein_g, carbs_g, fat_g), tenendo conto di marca e linea
+   (uno yogurt greco 0% ha ~0,1 g di grassi, non 5).
 
 Rispondi SOLO con JSON:
 {{"pantry_items": [{{"source": 0, "name": "...", "quantity": 150, "unit": "g", "count": 2,
-  "category": "latticini", "expiration_date": "YYYY-MM-DD", "synonyms": ["VOCE SCONTRINO"]}}]}}"""
+  "category": "latticini", "expiration_date": "YYYY-MM-DD", "synonyms": ["VOCE SCONTRINO"],
+  "known": null, "per_100g": {{"kcal": 70, "protein_g": 8, "carbs_g": 8.5, "fat_g": 0.1}}}}]}}"""
         messages = [
             {"role": "system", "content": task},
-            {"role": "user", "content": f"Articoli dello scontrino:\n{items_text}"},
+            {"role": "user", "content": f"Articoli dello scontrino:\n{items_text}\n\n"
+                                        f"Prodotti già scansionati (elenco K):\n{known_text}"},
         ]
         try:
             if self.provider == "openai":
@@ -781,6 +798,15 @@ Rispondi SOLO con JSON:
                 synonyms = [str(s) for s in (it.get("synonyms") or []) if s]
                 if src is not None and src["name"] not in synonyms:
                     synonyms.insert(0, src["name"])
+                known = it.get("known")
+                known = int(known) if isinstance(known, (int, float)) and not isinstance(known, bool) \
+                    and 0 <= int(known) < len(known_products) else None
+                est = it.get("per_100g") if isinstance(it.get("per_100g"), dict) else {}
+                try:
+                    est = {k: round(float(est[k]), 2) for k in ("kcal", "protein_g", "carbs_g", "fat_g")}
+                    est = est if 0 < est["kcal"] <= 950 else None
+                except (KeyError, TypeError, ValueError):
+                    est = None
                 out.append({
                     "name": name,
                     "quantity": qty or 1.0,
@@ -789,6 +815,9 @@ Rispondi SOLO con JSON:
                     "expiration_date": str(it.get("expiration_date") or "")[:10] or None,
                     "synonyms": synonyms,
                     "count": count,
+                    "receipt_name": src["name"] if src is not None else (synonyms[0] if synonyms else name),
+                    "known_product": known,
+                    "estimated_nutrition": est,
                 })
             except (KeyError, TypeError, ValueError):
                 continue

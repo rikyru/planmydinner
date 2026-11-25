@@ -191,6 +191,19 @@ class LidlImport(Base):
     skipped = Column(Boolean, default=False)
 
 
+class ReceiptProductLink(Base):
+    """Riga di scontrino ('YOMO DELT.YOG.GR.MIR') abbinata a un prodotto di cui
+    si conoscono i valori da etichetta (scansionato col barcode): dal prossimo
+    scontrino si usano quelli, senza chiedere all'AI."""
+    __tablename__ = "receipt_product_links"
+
+    receipt_name = Column(String, primary_key=True)   # dicitura grezza dello scontrino
+    product_name = Column(String)
+    barcode = Column(String, nullable=True)
+    nutrition = Column(JSON)                          # {kcal, protein_g, carbs_g, fat_g} per 100 g
+    updated_at = Column(String, nullable=True)
+
+
 class ShoppingCheck(Base):
     """A shopping-list item ticked as taken, persisted per week so the check-off
     survives reloads and is shared across devices."""

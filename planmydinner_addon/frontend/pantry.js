@@ -35,7 +35,7 @@ const Pantry = defineComponent({
                             <span v-if="lidl.pending.length"> Dopo questo restano {{ lidl.pending.length }} scontrini più vecchi da vedere
                                 — <a href="#" @click.prevent="skipOlderLidl">ignorali tutti</a> (spesa già consumata).</span></p>
                         <table class="recipe-table">
-                            <thead><tr><th></th><th>Prodotto</th><th>Conf.</th><th>Ciascuna</th><th>Scadenza</th></tr></thead>
+                            <thead><tr><th></th><th>Prodotto</th><th>Conf.</th><th>Ciascuna</th><th>Scadenza</th><th>Valori /100 g</th></tr></thead>
                             <tbody>
                                 <tr v-for="(it, i) in lidl.items" :key="i" :style="it.include ? '' : 'opacity:.45'">
                                     <td><input type="checkbox" v-model="it.include"></td>
@@ -45,6 +45,18 @@ const Pantry = defineComponent({
                                     <td style="white-space:nowrap;"><input v-model.number="it.quantity" type="number" min="0" style="width:70px;">
                                         <input v-model="it.unit" style="width:42px;"></td>
                                     <td><input v-model="it.expiration_date" type="date"></td>
+                                    <td style="min-width:200px;">
+                                        <select v-model.number="it.choice" @change="applyLidlChoice(it)" style="width:100%;font-size:12px;">
+                                            <option :value="-1">≈ stima AI</option>
+                                            <option v-for="(k, ki) in lidl.known" :key="ki" :value="ki">🏷 {{ k.name }}</option>
+                                        </select>
+                                        <div v-if="it.nutrition" class="hint" style="font-size:11px;"
+                                             :style="it.choice >= 0 ? 'color:#2a9d8f' : ''">
+                                            {{ it.choice >= 0 ? (it.match_from === 'ricordato' && it.choice === it.match ? 'etichetta, abbinato in passato' : 'etichetta') : 'stima' }}:
+                                            {{ Math.round(it.nutrition.kcal) }} kcal · P {{ it.nutrition.protein_g }} · C {{ it.nutrition.carbs_g }} · G {{ it.nutrition.fat_g }}
+                                        </div>
+                                        <div v-else class="hint" style="font-size:11px;">nessun valore: li cercherà dal nome</div>
+                                    </td>
                                 </tr>
                             </tbody>
                         </table>
@@ -165,7 +177,7 @@ const Pantry = defineComponent({
             _lastCode: null,
             _lastAt: 0,
             lidl: { open: false, loading: false, saving: false, needToken: false, error: '',
-                    token: '', ticket: {}, items: [], pending: [] },
+                    token: '', ticket: {}, items: [], pending: [], known: [] },
         };
     },
     computed: {
@@ -283,7 +295,9 @@ const Pantry = defineComponent({
                 }
                 Object.assign(this.lidl, {
                     open: true, needToken: false, ticket: d.ticket, pending: d.pending || [],
-                    items: (d.items || []).map(i => ({ ...i, include: true })),
+                    known: d.known_products || [],
+                    items: (d.items || []).map(i => ({
+                        ...i, include: true, choice: i.match == null ? -1 : i.match })),
                 });
             } catch (e) {
                 this.toast && this.toast.add('Lidl: ' + e.message, 'error');
@@ -298,6 +312,16 @@ const Pantry = defineComponent({
             if (!r.ok) { this.toast && this.toast.add('Token non salvato', 'error'); return; }
             this.lidl.open = false;
             this.syncLidl();
+        },
+        applyLidlChoice(it) {
+            // prodotto scansionato: nome e valori dell'etichetta; stima: quelli dell'AI
+            const k = this.lidl.known[it.choice];
+            if (k) {
+                Object.assign(it, { name: k.name, barcode: k.barcode || null,
+                                    nutrition: { ...k.nutrition, source: 'etichetta' } });
+            } else {
+                Object.assign(it, { name: it.ai_name, barcode: null, nutrition: it.ai_nutrition });
+            }
         },
         _lidlTicketBody() {
             return { ticket_id: this.lidl.ticket.id, receipt_date: this.lidl.ticket.date,
@@ -326,6 +350,8 @@ const Pantry = defineComponent({
                 name: i.name.trim(), quantity: Number(i.quantity) || 0, unit: i.unit || 'g',
                 category: i.category || null, expiration_date: i.expiration_date || null,
                 synonyms: i.synonyms || [], count: Math.max(1, Math.round(Number(i.count) || 1)),
+                nutrition: i.nutrition || null, barcode: i.barcode || null,
+                receipt_name: i.receipt_name || null, linked: i.choice >= 0,
             }));
             this._lidlDone('/pantry/sync-lidl/confirm', { ...this._lidlTicketBody(), items },
                 d => `Aggiunte ${d.created} confezioni in dispensa ✓`);
